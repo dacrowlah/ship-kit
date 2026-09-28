@@ -214,8 +214,8 @@ declares `superpowers` (claude-plugins-official) as a dependency.
   usable.
 - Run the same checks locally before pushing:
   `docker run --rm -v "$PWD:/repo" -w /repo zricethezav/gitleaks:v8.30.1 git . --config .gitleaks.toml --redact` and
-  `node scripts/assert-test-globs.mjs "tests/**/*.test.mjs" "scripts/*.test.mjs" && node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"`.
-  The first command fails loudly if either glob matches zero files (`node --test` does not), so a moved or deleted test file cannot silently drop coverage while the suite still exits 0.
+  `node scripts/assert-test-globs.mjs "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}" && node --test "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}"`.
+  The first command fails loudly if either glob matches zero files, if a `scripts/**` module (any of `.mjs`/`.js`/`.cjs`, any depth) has no paired test at the path this repo's convention puts it, or if that paired test registers no `test()`/`describe()`/`it()` call -- none of which `node --test` fails on by itself.
 
 ### Testing and validation
 
@@ -232,6 +232,9 @@ declares `superpowers` (claude-plugins-official) as a dependency.
   <name>` shows the expected component inventory.
   (https://code.claude.com/docs/en/plugins/publish;
   https://code.claude.com/docs/en/plugins/security)
+- CI enforces a `scripts/**` code-coverage floor via `node --experimental-test-coverage`
+  (line/branch/function thresholds just below the measured current values);
+  raising or lowering it is a reviewed change, not a mechanical bump.
 - When ship-kit's own repo is loaded into CI via
   `anthropics/claude-code-action`, pin both `plugin_marketplaces` (the
   marketplace git URL) and `plugins` (`ship-kit@<marketplace-name>`)

@@ -47,8 +47,25 @@ jobs:
 
       - name: Unit suites and repository gates
         run: |
-          node scripts/assert-test-globs.mjs "tests/**/*.test.mjs" "scripts/*.test.mjs"
-          node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"
+          node scripts/assert-test-globs.mjs "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}"
+          node --test "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}"
+
+      # Thresholds are set just below the measured current values (line
+      # 99.08%, branch 94.09%, function 100.00%, all files under scripts/**
+      # excluding test files, at the commit that added this step), so a real
+      # regression fails CI while rounding noise does not. Raising or
+      # lowering these numbers is a reviewed change, not a mechanical bump.
+      # This floor catches a test that imports its module but exercises it
+      # only partially; it does not, by itself, catch a module no test
+      # imports at all -- Node's coverage report omits an unloaded file
+      # rather than showing it at 0%, so `scripts/assert-test-globs.mjs`'s
+      # pairing check (previous step) is what covers that case.
+      - name: Coverage floor for scripts/**
+        run: |
+          node --experimental-test-coverage --test-coverage-include="scripts/**" \
+            --test-coverage-exclude="scripts/**/*.test.*" --test-coverage-lines=99 \
+            --test-coverage-branches=94 --test-coverage-functions=99 \
+            --test "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}"
 
       - name: actionlint
         run: actionlint .github/workflows/*.yml
