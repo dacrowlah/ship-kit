@@ -20,6 +20,10 @@ import { pathToFileURL } from "node:url";
 import { decodeStateMarker } from "../lib/state-marker.mjs";
 
 export const DEFAULT_LIMIT = 1000;
+// gh pr list --search never returns more than this many results, regardless
+// of --limit, so a --limit above it could never be satisfied and a PR count
+// that reaches it is not necessarily "every PR since --since".
+const MAX_SEARCH_RESULTS = 1000;
 const USAGE =
   "usage: collect.mjs --target code|design --since YYYY-MM-DD --list <path> --out <dir> [--limit N]";
 
@@ -45,6 +49,11 @@ export function parseArgs(argv) {
   if (!opts.out) throw new UsageError(`--out is required\n${USAGE}`);
   opts.limit = Number(opts.limit);
   if (!Number.isSafeInteger(opts.limit) || opts.limit < 1) throw new UsageError(`--limit must be a positive integer\n${USAGE}`);
+  if (opts.limit > MAX_SEARCH_RESULTS) {
+    throw new UsageError(
+      `--limit cannot exceed ${MAX_SEARCH_RESULTS}: gh pr list --search never returns more than that\n${USAGE}`,
+    );
+  }
   return opts;
 }
 
@@ -128,10 +137,16 @@ export function collect(opts, { gh, git, readFile }) {
     `PRs kept for the ${opts.target} target: ${kept.length}`,
     `state markers decoded (all unverified): ${markers.length}`,
   ];
-  if (prs.length === opts.limit) {
+  const effectiveCap = Math.min(opts.limit, MAX_SEARCH_RESULTS);
+  if (prs.length >= effectiveCap) {
+    const atSearchCap = effectiveCap === MAX_SEARCH_RESULTS;
     lines.push(
-      `WARNING: the PR count equals --limit (${opts.limit}); the listing is probably truncated. ` +
-        "Re-run with a larger --limit or a later --since.",
+      `WARNING: the PR count equals ${
+        atSearchCap ? `GitHub's ${MAX_SEARCH_RESULTS}-result search cap` : `--limit (${opts.limit})`
+      }; the listing is probably truncated. ` +
+        (atSearchCap
+          ? "gh pr list --search cannot return more; re-run with a later --since to narrow the date window."
+          : "Re-run with a larger --limit or a later --since."),
     );
   }
   const reconciliation = `${lines.join("\n")}\n`;

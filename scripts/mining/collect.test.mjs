@@ -68,8 +68,23 @@ test("design target keeps only PRs with a design-doc marker", () => {
 });
 
 test("a PR count equal to --limit prints the truncation warning; one less does not", () => {
-  assert.match(collect({ ...OPTS, limit: 2 }, deps(fakeGh().gh)).reconciliation, /WARNING: the PR count equals --limit \(2\)/);
+  const underCap = collect({ ...OPTS, limit: 2 }, deps(fakeGh().gh)).reconciliation;
+  assert.match(underCap, /WARNING: the PR count equals --limit \(2\)/);
+  assert.match(underCap, /Re-run with a larger --limit or a later --since\./);
   assert.doesNotMatch(collect({ ...OPTS, limit: 3 }, deps(fakeGh().gh)).reconciliation, /WARNING/);
+});
+
+// GitHub's search API never returns more than 1,000 results, no matter what
+// --limit asks for. A PR count that reaches that cap can never be pushed
+// past it by raising --limit, so the advice (and the wording) must differ
+// from the ordinary under-cap truncation warning above.
+test("a PR count that reaches GitHub's 1000-result search cap warns without suggesting a larger --limit", () => {
+  const prs = Array.from({ length: DEFAULT_LIMIT }, (_, i) => ({ number: i + 1, title: "T", body: "" }));
+  const gh = (args) => (args[0] === "pr" ? JSON.stringify(prs) : JSON.stringify([[]]));
+  const { reconciliation } = collect({ ...OPTS, limit: DEFAULT_LIMIT }, deps(gh));
+  assert.match(reconciliation, /WARNING: the PR count equals GitHub's 1000-result search cap/);
+  assert.match(reconciliation, /re-run with a later --since to narrow the date window/);
+  assert.doesNotMatch(reconciliation, /a larger --limit/);
 });
 
 test("a failed call mid-collection stops with a CallError", () => {
@@ -209,6 +224,7 @@ for (const [name, argv] of [
   ["bad target", ["--target", "docs", "--since", "2026-01-01", "--list", "l", "--out", "o"]],
   ["bad date", ["--target", "code", "--since", "Jan 1", "--list", "l", "--out", "o"]],
   ["bad limit", ["--target", "code", "--since", "2026-01-01", "--list", "l", "--out", "o", "--limit", "0"]],
+  ["limit above 1000", ["--target", "code", "--since", "2026-01-01", "--list", "l", "--out", "o", "--limit", "1001"]],
   ["unknown flag", ["--target", "code", "--since", "2026-01-01", "--list", "l", "--out", "o", "--repo", "x"]],
   ["dangling flag", ["--target"]],
 ]) {
@@ -216,3 +232,13 @@ for (const [name, argv] of [
     assert.throws(() => parseArgs(argv), /usage|must be|required/);
   });
 }
+
+test("parseArgs rejects a --limit above 1000 because the search API cannot return more", () => {
+  const argv = ["--target", "code", "--since", "2026-01-01", "--list", "l", "--out", "o", "--limit", "1001"];
+  assert.throws(() => parseArgs(argv), /--limit cannot exceed 1000/);
+});
+
+test("parseArgs accepts a --limit of exactly 1000", () => {
+  const argv = ["--target", "code", "--since", "2026-01-01", "--list", "l", "--out", "o", "--limit", "1000"];
+  assert.equal(parseArgs(argv).limit, 1000);
+});
