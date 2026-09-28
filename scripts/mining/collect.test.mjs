@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -79,6 +79,87 @@ test("a failed call mid-collection stops with a CallError", () => {
 test("a non-array page response is a CallError, not an empty result", () => {
   const gh = (args) => (args[0] === "pr" ? JSON.stringify([{ number: 1 }]) : JSON.stringify({ message: "Not Found" }));
   assert.throws(() => collect(OPTS, deps(gh)), /expected an array of pages/);
+});
+
+test("a gh pr list response that is not JSON is a CallError naming the call", () => {
+  const gh = () => "HTTP 502: Bad Gateway";
+  assert.throws(() => collect(OPTS, deps(gh)), /gh pr list.*output is not JSON/s);
+});
+
+function fakeExecutable(dir, name, script) {
+  const path = join(dir, name);
+  writeFileSync(path, `#!/bin/sh\n${script}\n`);
+  chmodSync(path, 0o755);
+}
+
+// These exercise the real `run()` wrapper (the child_process.execFileSync
+// call collect.mjs makes when a caller does not override `gh`/`git`), by
+// putting stand-in executables named `gh` and `git` first on PATH.
+test("with the real command wrapper, a working gh and git produce written evidence", () => {
+  const binDir = mkdtempSync(join(tmpdir(), "collect-bin-"));
+  fakeExecutable(binDir, "git", 'echo "aaa\\t2026-01-01\\tSubject"');
+  fakeExecutable(binDir, "gh", [
+    'if [ "$1" = "pr" ]; then',
+    '  echo \'[{"number":1,"title":"T","body":""}]\'',
+    "else",
+    "  echo '[[]]'",
+    "fi",
+  ].join("\n"));
+  const { list, out } = tempDirs();
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${originalPath}`;
+  let code;
+  try {
+    code = main(["--target", "code", "--since", "2026-01-01", "--list", list, "--out", out]);
+  } finally {
+    process.env.PATH = originalPath;
+  }
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(join(out, "prs.json"), "utf8")).map((p) => p.number), [1]);
+});
+
+test("with the real command wrapper, a failing gh reports its stderr and exits 1", () => {
+  const binDir = mkdtempSync(join(tmpdir(), "collect-bin-"));
+  fakeExecutable(binDir, "git", 'echo "aaa\\t2026-01-01\\tSubject"');
+  fakeExecutable(binDir, "gh", 'echo "rate limit exceeded" 1>&2\nexit 3');
+  const { list, out } = tempDirs();
+  const io = { out: sink(), err: sink() };
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${originalPath}`;
+  let code;
+  try {
+    code = main(["--target", "code", "--since", "2026-01-01", "--list", list, "--out", out], undefined, io);
+  } finally {
+    process.env.PATH = originalPath;
+  }
+  assert.equal(code, 1);
+  assert.equal(existsSync(out), false);
+  // The failed-call message carries the trimmed stderr only, not the whole
+  // execFileSync error (which also repeats the command and adds its own
+  // "Command failed:" preamble).
+  assert.match(io.err.text(), /failed: rate limit exceeded\n/);
+  assert.doesNotMatch(io.err.text(), /Command failed/);
+});
+
+test("with the real command wrapper, a missing gh executable falls back to the error message", () => {
+  const binDir = mkdtempSync(join(tmpdir(), "collect-bin-only-git-"));
+  fakeExecutable(binDir, "git", 'echo "aaa\\t2026-01-01\\tSubject"');
+  const { list, out } = tempDirs();
+  const io = { out: sink(), err: sink() };
+  const originalPath = process.env.PATH;
+  process.env.PATH = binDir;
+  let code;
+  try {
+    code = main(["--target", "code", "--since", "2026-01-01", "--list", list, "--out", out], undefined, io);
+  } finally {
+    process.env.PATH = originalPath;
+  }
+  assert.equal(code, 1);
+  // With no stderr captured (the executable itself was never found), the
+  // message falls back to the execFileSync error's own message, which
+  // names ENOENT; it must never render as the literal string "undefined".
+  assert.match(io.err.text(), /failed: .*ENOENT/);
+  assert.doesNotMatch(io.err.text(), /failed: undefined/);
 });
 
 function tempDirs() {
