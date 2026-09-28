@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { findTemplateSecretViolations } from "./check-template-secrets.mjs";
+import { findTemplateSecretViolations, main } from "./check-template-secrets.mjs";
 
 const SCRIPT_PATH = fileURLToPath(
   new URL("./check-template-secrets.mjs", import.meta.url),
@@ -123,12 +123,34 @@ test("a with: block ends when indentation returns to the block header's level", 
 
 // --- CLI-level (end-to-end) tests over real directories ------------------
 
+// Runs main in this process so its coverage is measured here, in the one
+// process that loads the module; see the spawned test below for why.
 function runCli(cwd) {
-  return spawnSync(process.execPath, [SCRIPT_PATH], {
-    cwd,
-    encoding: "utf8",
+  const stdout = [];
+  const stderr = [];
+  const status = main(cwd, {
+    log: (line) => stdout.push(line),
+    error: (line) => stderr.push(line),
   });
+  return { status, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
 }
+
+// The one test that runs the script as a command, to prove the entry point
+// calls main and exits with its code. Its environment drops NODE_V8_COVERAGE
+// so the child adds no coverage of its own: Node merges coverage from
+// several processes in directory-listing order, and merging this module's
+// coverage from two processes made its branch percentage vary run to run.
+test("CLI: the command runs main and exits with its code", () => {
+  const dir = mkdtempSync(join(tmpdir(), "check-template-secrets-cmd-"));
+  try {
+    const { NODE_V8_COVERAGE, ...env } = process.env;
+    const result = spawnSync(process.execPath, [SCRIPT_PATH], { cwd: dir, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /nothing to scan/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("CLI: exits 0 and skips scanning when no templates/workflows/.github/workflows dirs exist", () => {
   const dir = mkdtempSync(join(tmpdir(), "check-template-secrets-none-"));

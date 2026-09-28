@@ -1,0 +1,77 @@
+name: CI
+
+# ship-kit's own CI: the unit suites and repository gates (ASCII, skill
+# naming, size and pressure-test records, plugin validation and component
+# inventory against a pinned Claude Code CLI), then actionlint over every
+# workflow. The job name `ci` is the required-check context.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CLAUDE_CODE_VERSION: "2.1.284"
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_LINUX_X64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Install the Claude Code CLI (pinned)
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Install actionlint (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          curl -sSL -o "$archive" "$url"
+          echo "${ACTIONLINT_LINUX_X64_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$archive" -C "$HOME/.local/bin" actionlint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # assert-test-globs.mjs fails if a test glob matches nothing, if a
+      # scripts/** module (.mjs/.js/.cjs, any depth) has no test at its
+      # paired path, or if that test, run alone with coverage restricted to
+      # its module, fails, passes no test, or never loads the module (Node
+      # omits an unloaded file from the coverage report, so a missing row
+      # means the test does not import what it claims to test).
+      - name: Unit suites and repository gates
+        run: |
+          node scripts/assert-test-globs.mjs "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}"
+          node --test "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}"
+
+      # Floors sit at least one point below the measured values (line
+      # 99.22%, branch 93.50%, function 100.00% over scripts/** excluding
+      # test files, identical on every one of 10 runs at Node 22 and Node 24),
+      # so a real regression fails CI. The measurement is deterministic
+      # because each module's coverage comes from one process: Node merges
+      # coverage from several processes in directory-listing order, and the
+      # merge result depends on that order, so tests that run a script as a
+      # command drop NODE_V8_COVERAGE from the child's environment and cover
+      # the script's main function in the test process instead. Raising or
+      # lowering these numbers is a reviewed change, not a mechanical bump.
+      - name: Coverage floor for scripts/**
+        run: |
+          node --experimental-test-coverage --test-coverage-include="scripts/**" \
+            --test-coverage-exclude="scripts/**/*.test.*" --test-coverage-lines=98 \
+            --test-coverage-branches=92 --test-coverage-functions=99 \
+            --test "tests/**/*.test.mjs" "scripts/**/*.test.{mjs,js,cjs}"
+
+      - name: actionlint
+        run: actionlint .github/workflows/*.yml

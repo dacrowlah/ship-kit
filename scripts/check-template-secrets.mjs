@@ -138,12 +138,16 @@ function walk(dir) {
   return results;
 }
 
-function main() {
-  const cwd = process.cwd();
+/**
+ * @param {string} cwd the directory whose scan roots are checked
+ * @param {{ log: (line: string) => void, error: (line: string) => void }} out
+ * @returns {number} the exit code
+ */
+export function main(cwd = process.cwd(), out = console) {
   const files = SCAN_ROOTS.flatMap((root) => walk(join(cwd, root)));
 
   if (files.length === 0) {
-    console.log(
+    out.log(
       "check-template-secrets: no templates/, workflows/ or " +
         ".github/workflows/ directories found; nothing to scan.",
     );
@@ -166,14 +170,14 @@ function main() {
   }
 
   if (allViolations.length > 0) {
-    console.error("check-template-secrets: found hardcoded credential values:");
+    out.error("check-template-secrets: found hardcoded credential values:");
     for (const violation of allViolations) {
-      console.error(`  ${violation}`);
+      out.error(`  ${violation}`);
     }
     return 1;
   }
 
-  console.log(
+  out.log(
     `check-template-secrets: scanned ${files.length} file(s), no hardcoded credentials found.`,
   );
   return 0;

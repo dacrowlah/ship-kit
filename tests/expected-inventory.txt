@@ -1,0 +1,4 @@
+Agents 0
+Hooks 0
+MCP servers 0
+LSP servers 0
