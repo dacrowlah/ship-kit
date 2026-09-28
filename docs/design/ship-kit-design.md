@@ -63,7 +63,7 @@ points at the section that implements it and the test that pins it.
 | R14 | "Agents MAY commit and push, with a per-repo opt-out: ship and ci-watch are model-invocable (no disable-model-invocation). setup asks one question ("Allow agents to commit and push without asking?"), default yes, stored as one boolean in the ship-kit config ... When false, the skill runs but stops before each commit/push to ask the user, and never pushes when no user can be asked (CI/headless). Enforcement lives in the skill, since disable-model-invocation is static frontmatter. Amend the CLAUDE.md rule on side-effecting skills to "must honour this setting" (release 1 first PR). setup and any release/tag command stay disable-model-invocation." Merge scope is narrowed by R17. | 5.4, 15, 16, 19.3, 22.1 | `tests/lib/agent-policy.test.mjs`; pressure tests for `ship` and `ci-watch` (21.5) |
 | R15 | "Review jobs use the workflow GITHUB_TOKEN, not the Claude GitHub App." | 6.3, 20.3 | `tests/workflows/review-yml.test.mjs` (seat step passes `github_token` from `secrets.GITHUB_TOKEN`) |
 | R16 | "No cross-account scratch repo for now: remove it from the plan; cross-owner behaviour stays UNVERIFIED with a note naming what would test it later." | 2 (F17), 21.4 | none |
-| R17 | "agents.commitAndPush covers commit, push and NORMAL merge only. An agent may merge only via a normal (non-admin) merge, bound to the exact head SHA it verified (--match-head-commit), and only when required checks read from BOTH rulesets and classic protection are all green and the required set is non-empty (empty or unreadable set = refuse)." Amended: "admin merge becomes a SEPARATE opt-in setting (e.g. agents.adminMerge, default false), asked at setup as its own question after the commit/push one, read only from the default branch's config like the other agent setting (missing/unreadable = false) ... When agents.adminMerge is true, an agent may run the admin-merge path, but only: (1) when every required check (from rulesets AND classic protection, non-empty set) is green on the exact head SHA; admin only bypasses the branch-up-to-date/strict requirement, never a failing, pending or missing check; (2) bound to that SHA (--match-head-commit); (3) if the path toggles enforce_admins or a ruleset bypass, it restores it in a finally-style step and verifies the protection afterwards, reporting failure loudly if restore fails; (4) it states in its output that it used admin. When false, agents never use --admin or toggle protection; they report that an admin merge is needed and stop." Further: "Remove the enforce_admins/protection TOGGLE entirely. Admin merge uses a ruleset bypass actor ... so `gh pr merge --admin --match-head-commit <sha>` works without mutating protection." "Admin scope ... bypass ONLY the branch-up-to-date/strict requirement ... never past failing/pending/missing checks, and never past required code-owner review. The same refusal list as normal merge ... applies to admin merges too." The two settings are "a BEHAVIOURAL contract enforced by the skills (plus a best-effort hook as a tripwire, explicitly not a boundary) ... The real boundary is GitHub-side: rulesets, required checks, CODEOWNERS, and which identity holds admin." | 5.1, 5.4, 16.3, 16.4, 19.3, 20.1 | `tests/lib/agent-policy.test.mjs`, `tests/merge/required-checks.test.mjs`, `tests/merge/merge.test.mjs`, `tests/merge/admin-merge.test.mjs`, `tests/hooks/deny-admin-bypass.test.mjs` (16.3, 16.4) |
+| R17 | "agents.commitAndPush covers commit, push and NORMAL merge only. An agent may merge only via a normal (non-admin) merge, bound to the exact head SHA it verified (--match-head-commit), and only when required checks read from BOTH rulesets and classic protection are all green and the required set is non-empty (empty or unreadable set = refuse)." Amended: "admin merge becomes a SEPARATE opt-in setting (e.g. agents.adminMerge, default false), asked at setup as its own question after the commit/push one, read only from the default branch's config like the other agent setting (missing/unreadable = false) ... When agents.adminMerge is true, an agent may run the admin-merge path, but only: (1) when every required check (from rulesets AND classic protection, non-empty set) is green on the exact head SHA; admin only bypasses the branch-up-to-date/strict requirement, never a failing, pending or missing check; (2) bound to that SHA (--match-head-commit); (3) if the path toggles enforce_admins or a ruleset bypass, it restores it in a finally-style step and verifies the protection afterwards, reporting failure loudly if restore fails; (4) it states in its output that it used admin. When false, agents never use --admin or toggle protection; they report that an admin merge is needed and stop." Further: "Remove the enforce_admins/protection TOGGLE entirely. Admin merge uses a ruleset bypass actor ... so `gh pr merge --admin --match-head-commit <sha>` works without mutating protection." "Admin scope ... bypass ONLY the branch-up-to-date/strict requirement ... never past failing/pending/missing checks, and never past required code-owner review. The same refusal list as normal merge ... applies to admin merges too." The two settings are "a BEHAVIOURAL contract enforced by the skills (plus a best-effort hook as a tripwire, explicitly not a boundary) ... The real boundary is GitHub-side: rulesets, required checks, CODEOWNERS, and which identity holds admin." | 5.1, 5.4, 16.3, 16.4, 19.3, 20.1 | `tests/lib/agent-policy.test.mjs`, `tests/merge/required-checks.test.mjs`, `tests/merge/merge.test.mjs`, `tests/hooks/admin-tripwire.test.mjs` (16.3, 16.4) |
 
 ---
 
@@ -96,7 +96,7 @@ them before the dependent release ships.
 | F18 | `pull_request_target` runs the workflow file from the base repository's default branch, with `GITHUB_SHA` = last commit on the default branch; it gets the base repository's secrets and a read/write-capable `GITHUB_TOKEN`, fork PRs included; it runs even when the PR has a merge conflict; checks created by its jobs are evaluated for the PR and can satisfy a required status check. Safe only while PR content is inspected as data and never executed. | docs.github.com: events that trigger workflows; "Securely using pull_request_target"; "Troubleshooting required status checks" (eligible events list) | Verified |
 | F19 | Public repositories get a default Actions event policy that blocks `pull_request_target` (evaluate mode now; enforced on 2026-11-02 for repos on the default policy); an explicit event policy must allow it. `actions/checkout` refuses to check out a fork PR's ref under `pull_request_target` unless `allow-unsafe-pr-checkout` is set. | docs.github.com, "Securely using pull_request_target"; actions/checkout `src/unsafe-pr-checkout-helper.ts` (default branch, 2026-09-28) | Verified |
 | F20 | The ruleset rule "Require workflows to pass before merging" is configured only in organization (or enterprise) rulesets, on GitHub Enterprise Cloud and GHES 3.12+. A personal-account repository cannot use it. | docs.github.com, available rules for rulesets; `data/features/repo-rules-required-workflows.yml` | Verified |
-| F21 | A required status check is matched by name, optionally restricted to a source app; every workflow job reports under the same GitHub Actions app. "If a check and a commit status have the same name, both must pass." A job skipped by its `if` condition reports success. Which of two same-named check runs on one commit GitHub evaluates is not documented. | docs.github.com, troubleshooting required status checks | First three sentences verified; the last is UNVERIFIED and nothing relies on it (20.1) |
+| F21 | A required status check is matched by name, optionally restricted to a source app; every workflow job reports under the same GitHub Actions app. "If a check and a commit status have the same name, both must pass." A job skipped by its `if` condition reports success. Which of two same-named check runs on one commit GitHub evaluates is not documented. | docs.github.com, troubleshooting required status checks | First three sentences verified; the last is UNVERIFIED. The forged-check residual (20.1) assumes the worst; re-runs and the reopen route (6.3, 6.5) rely on the newer same-named run deciding, which the private-repo exit check (22.8) observes |
 | F22 | claude-code-action loads setting sources `user, project, local` unless `claude_args` carries `--setting-sources`; its `settings` input is merged into `~/.claude/settings.json` (user scope); on PR events it restores `.claude/`, `CLAUDE.md`, `.mcp.json` and similar paths from the PR base before starting; it refuses to run Claude when the event's actor (the sender, not the PR author) lacks write access; it sets `GITHUB_TOKEN` and `GH_TOKEN` in Claude's environment and, in agent mode, writes the token into the workspace's `.git/config` remote URL. `github.actor` is the user whose event started the run; a re-run keeps it (only `github.triggering_actor` changes) and uses its privileges. | docs.github.com contexts reference (`github.actor`); claude-code-action v1.0.236: `base-action/src/parse-sdk-options.ts` 338-344, `base-action/src/setup-claude-code-settings.ts`, `src/github/operations/restore-config.ts`, `src/github/validation/permissions.ts` 33-47, `src/github/operations/git-config.ts` 132-133, `src/entrypoints/run.ts` 189-191, `docs/security.md` | Verified |
 | F23 | Claude Code CLI: `--setting-sources` limits loaded sources; `--tools` restricts the built-in tools that exist (not MCP tools); `--permission-mode dontAsk`; `--add-dir`; `--settings` overrides settings files for the session. `disableAllHooks: true` outside managed settings turns off user, project, local and plugin hooks. | code.claude.com/docs/en/cli-reference; settings-reference `disableAllHooks`; settings precedence | Verified for the CLI. That the action passes `--tools`, `--permission-mode`, `--disallowedTools` and `--add-dir` through `claude_args` unchanged is UNVERIFIED; settled by the canary in PR 2.4 |
 | F24 | The `claude-plugins-official` marketplace entry for `superpowers` pins its source by `sha`, so a copy of that marketplace at a fixed commit fixes the superpowers commit. superpowers registers a `SessionStart` hook that injects instructions into every session, and `SessionStart` fires under `-p`. | local clone of claude-plugins-official at `fbe07fb6`; superpowers 6.4.1 `hooks/hooks.json` and `session-start`; code.claude.com/docs/en/hooks | Verified |
@@ -104,7 +104,7 @@ them before the dependent release ships.
 | F26 | `gh pr merge --admin` only skips gh's own client-side refusal for merge states `BLOCKED` and `BEHIND`; it then calls the same merge mutation, passing `--match-head-commit` as `expectedHeadOid`, and GitHub decides whether the caller may bypass. A branch ruleset's bypass list names actors (including a repository role) with `bypass_mode` `always`, `pull_request` (bypass only when merging a PR; branch rulesets only) or `exempt`; a bypass actor bypasses the rules of that ruleset. Rulesets and classic protection targeting one branch aggregate, and every applicable rule applies. | cli/cli `pkg/cmd/pr/merge/merge.go` at v2.101.0 (`blockedReason`, `expectedHeadOid`); REST description schema `repository-ruleset-bypass-actor`; docs.github.com creating rulesets (bypass, "For pull requests only") and about rulesets (rule layering) | Verified |
 | F27 | `GET /repos/{o}/{r}/collaborators/{user}/permission` returns the user's base permission and is enabled for GitHub App tokens. Which job-token permission it needs, and its answer for a private repo, are not stated. | REST description (`x-github.enabledForGitHubApps: true`) | First sentence verified; the rest UNVERIFIED, settled by the canary and the private-repo exit check (22.8); a failed call counts as "no write access" (6.3) |
 | F28 | `permissions.blockReadsOutsideWorkingDirectories: true` makes Read, Grep, Glob and LSP refuse paths outside the working directories in every permission mode (Claude Code v2.1.257 or later); `Read` deny rules apply to Grep and Glob on a best-effort basis; `--disallowedTools "mcp__*"` removes every MCP tool. | code.claude.com/docs/en/settings-reference; permissions; cli-reference | Verified |
-| F29 | With two branch rulesets on one branch, (a) requiring the contexts with the strict up-to-date policy off and no bypass actor, and (b) requiring the same contexts with strict on and the repository admin role as a `pull_request`-mode bypass actor, an admin merge of a PR that is behind but green is accepted, and an admin merge of a PR with a red, pending or missing required context is refused by (a). The docs state that rules aggregate and that a bypass actor bypasses the rules of its ruleset (F26), but not how a per-ruleset bypass interacts with aggregation. | docs.github.com about rulesets (rule layering), creating rulesets (bypass) | UNVERIFIED. Settled by the live test `tests/live/ruleset-bypass.md` on ship-kit's own repository before release 2 is tagged (22.8): create both rulesets on a scratch branch pattern, then record GitHub's answer to `gh pr merge --admin --match-head-commit` for (1) a behind PR with all contexts green, (2) a behind PR with one context failing, (3) one pending, (4) one missing. Expected: (1) merges, (2) to (4) refused. If any of (2) to (4) merges, setup never creates ruleset (b), admin merge is unavailable, and 16.4 says so |
+| F29 | With two branch rulesets on one branch, (a) requiring the contexts with the strict up-to-date policy off and no bypass actor, and (b) requiring the same contexts with strict on and the repository admin role as a `pull_request`-mode bypass actor, an admin merge of a PR that is behind but green is accepted, and an admin merge of a PR with a red, pending or missing required context is refused by (a). The docs state that rules aggregate and that a bypass actor bypasses the rules of its ruleset (F26), but not how a per-ruleset bypass interacts with aggregation. | docs.github.com about rulesets (rule layering), creating rulesets (bypass) | UNVERIFIED. Settled by the live test `tests/live/ruleset-bypass.md` on ship-kit's own repository before release 2 is tagged (22.8): create both rulesets and a review ruleset requiring an approval, with no bypass, on a scratch branch pattern, then record GitHub's answer to `gh pr merge --admin --match-head-commit` for (1) a behind PR with all contexts green and approved, (2) a behind PR with one context failing, (3) one pending, (4) one missing, (5) a behind, green PR without the required approval; and record the `mergeStateStatus` the bypass actor sees for (1). Expected: (1) merges, (2) to (5) refused. If any of (2) to (5) merges, setup never adds the bypass to (b), admin merge is unavailable, and 16.4 says so |
 
 ---
 
@@ -559,7 +559,9 @@ so it works on a private repository:
 `git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0)" fetch --no-tags origin +refs/pull/<n>/head:refs/ship-kit/head`,
 with `FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` in that step's `env`
 only; plan fetches full history, seats `--depth 1`. The fetched commit
-must equal `github.event.pull_request.head.sha` (otherwise `fail-config`,
+must equal `github.event.pull_request.head.sha` in plan and in every seat
+(a seat that finds another commit exits non-zero before extracting `pr/`,
+so its receipt is null; in plan it is `fail-config`,
 "head moved"; the newer event's run supersedes it through the caller's
 concurrency group). Diffs use `git diff --no-ext-diff --no-textconv
 --no-renames TRUSTED_SHA...head` in plan, so they work while the PR has a
@@ -659,8 +661,11 @@ when `count` is 0, `empty` is true or `override` is true):
      ["Read(./.git/**)", "Read(//proc/**)", "Read(~/.ssh/**)",
      "Read(~/.config/**)", "Read(~/.claude/**)", "Read(~/.gitconfig)",
      "Read(~/.git-credentials)"]}}` (user scope, F22, F23, F28). The
-     block is what fences off everything outside the working directories;
-     the denies name credential locations again as a second layer, and
+     block fences off everything outside the working directories except
+     the skill, plugin, rule, agent, command and memory files under
+     `~/.claude/`, which the settings reference exempts from it, so
+     `Read(~/.claude/**)` is the only guard for that tree and must stay;
+     the other denies name credential locations as a second layer, and
      none of them may cover a working directory: on hosted runners the
      workspace and `$RUNNER_TEMP` both sit under `$HOME`, so a deny of
      `~/**` would refuse the seat's own inputs.
@@ -730,11 +735,15 @@ directory without the slash command, and aggregate expects it to be
 uploads the action's `execution_file` output, from which aggregate
 asserts the session's tool list (exactly the `--tools` set), that no hook
 ran, that reads of `review/diff.patch`, a file under `pr/` and the
-workspace `CLAUDE.md` succeeded, and that reads of `.git/config`, a Grep
-for `x-access-token` over the workspace, `/proc/self/environ`,
-`~/.gitconfig`, `$RUNNER_TEMP` outside `review/` and `pr/`, and a `pr/`
-placeholder for a symlink were each refused, using a canary fixture PR
-that asks the seat to read them. A failed assertion fails the canary.
+workspace `CLAUDE.md` succeeded; that reads of `.git/config`,
+`/proc/self/environ`, `~/.gitconfig`, `~/.claude/settings.json`,
+`~/.ssh/ship-kit-canary`, `$RUNNER_TEMP/ship-kit-canary` and a `pr/`
+placeholder for a symlink were each refused by permission, not by a
+missing file (the canary seat job first writes a sentinel file at each
+probed path that might not exist); and that a Grep for `x-access-token`
+over the workspace, which is a permitted directory, returns no match from
+`.git/` and no token text. The canary fixture PR asks the seat to do each
+of these. A failed assertion fails the canary.
 
 `tests/workflows/review-yml.test.mjs` parses `review.yml` and asserts the
 seat step's `claude_args`, `settings`, `github_token` and marketplaces as
@@ -886,7 +895,11 @@ to `pass` or `override`, or `ENFORCED` was `false`.
 
 **Re-runs.** A rebuttal (11.2) or an override (11.3) is read by plan, so it
 takes effect only on a run whose plan job runs again: a new push, or
-"Re-run all jobs" (`gh run rerun <run-id>`). "Re-run failed jobs" re-runs
+"Re-run all jobs" (`gh run rerun <run-id>`). A re-run keeps the original
+sender (F22), so when that sender lacks write access (every fork PR, and
+any PR whose last event came from a non-writer) the re-run stays
+`needs-maintainer`; such a PR takes the rebuttal or override on the next
+maintainer-sent event instead, a close and reopen (6.3 plan step 3). "Re-run failed jobs" re-runs
 only `gate`, which re-reads the old attempt's outputs, and the gate's error
 text says so. `/ship-kit:ci-watch` and `resolving-review-findings` always
 use `gh run rerun <run-id>` without `--failed`; the watcher test asserts the
@@ -895,8 +908,9 @@ argument list.
 ### 6.6 Required-check names
 
 The required contexts are the rendered gate `name:` values from
-`render.checks` (5.1), added to the checks ruleset (or classic
-protection) that setup recommends (19.3), and ship-kit reads both
+`render.checks` (5.1), added to the checks ruleset and, where it exists,
+the up-to-date ruleset (or to classic protection) that setup recommends
+(19.3), so a promotion updates both, and ship-kit reads both
 sources (16.3). A shadow seat's gate is required like any other, added
 once its caller has run on a PR (19.3), so promotion is a reviewed config
 change and a deleted caller shows as a pending required check rather than
@@ -1179,7 +1193,8 @@ Valid when, at plan time, all hold:
   at least `minPermission`.
 
 The override is read when plan runs, so it takes effect on a re-run of
-all jobs (6.5, Re-runs). Binding the override to the full head SHA means
+all jobs, or for a PR whose last event came from a non-writer on a close
+and reopen by a maintainer (6.5, Re-runs). Binding the override to the full head SHA means
 a later push needs a new override, so an override cannot silently cover code written after it. The
 plan emits `override=true`, seats are skipped, aggregate posts
 "overridden by <login> for <sha>: <reason>" and sets `status=override`.
@@ -1631,12 +1646,15 @@ in it changes protection or rulesets.
    headRefOid,mergeStateStatus`) and run 16.3 against it.
    Any context not green, a forged context, or any refusal from 16.3
    stops with the report.
-3. **Normal merge.** `agent-policy.mjs` (5.4), then
-   `gh pr merge <pr> --<merge.method> --match-head-commit <sha>`. GitHub
-   refuses the merge if the head moved after step 2. Success goes to
-   step 5.
-4. **Admin merge**, only when GitHub refused step 3 and all of these hold;
-   otherwise stop with the report:
+3. **Normal merge.** `merge.mjs` checks step 2's `mergeStateStatus`
+   itself rather than relying on gh's client-side refusal (F26): `BEHIND`
+   goes to step 4; any state other than `CLEAN`, `HAS_HOOKS` or
+   `UNSTABLE` stops with the report. Otherwise `agent-policy.mjs` (5.4),
+   then `gh pr merge <pr> --<merge.method> --match-head-commit <sha>`.
+   GitHub refuses the merge if the head moved after step 2, and that
+   refusal stops with the report. Success goes to step 5.
+4. **Admin merge**, only when step 2's state is `BEHIND` and all of these
+   hold; otherwise stop with the report:
    - `mergeStateStatus` is `BEHIND`: the only refusal is that the branch
      is not up to date with the base under a strict rule. `BLOCKED`
      (reviews, code-owner review, a failing check, other rules) is never
@@ -1648,8 +1666,9 @@ in it changes protection or rulesets.
      reviews and checks (`enforce_admins` off), so admin merge is
      unavailable and the skill reports "admin merge unavailable under
      classic protection; move the rules to rulesets (19.3)" and stops;
-   - the up-to-date ruleset of 19.3 exists (otherwise nothing grants the
-     bypass and the skill reports that and stops);
+   - the up-to-date ruleset of 19.3 exists, identified as the ruleset
+     named `ship-kit up-to-date` targeting the default branch (otherwise
+     nothing grants the bypass and the skill reports that and stops);
    - `agent-policy.mjs --admin` prints `proceed`.
    Then `gh pr merge <pr> --<merge.method> --admin --match-head-commit
    <sha>`. Under 19.3's layout the admin identity bypasses only the
@@ -1890,12 +1909,13 @@ covering the lines between. The config carries `shipKit.version` and
      - **up-to-date**, only when the repo wants the strict policy: the
        same contexts with strict **on**. It has the repository admin role
        as a bypass actor in `pull_request` mode (F26) only when
-       `agents.adminMerge` is true or the maintainer asks for it, and no
-       bypass actor otherwise.
+       `agents.adminMerge` is true, and no bypass actor otherwise. Setup
+       names it `ship-kit up-to-date` (16.4 looks it up by that name).
      Because no ruleset holding the contexts or the reviews has a bypass
      actor, bypassing the up-to-date ruleset skips only the up-to-date
      requirement (F29, whose live test gates release 2; if it fails,
-     setup never adds the bypass and admin merge is unavailable). A
+     setup never adds the bypass, still creates the ruleset when the repo
+     wants the strict policy, and admin merge is unavailable). A
      maintainer who keeps classic protection keeps normal agent merges;
      admin merge is then unavailable (16.4). A maintainer who adds a
      bypass actor to the checks or review ruleset widens what GitHub lets
@@ -1905,7 +1925,10 @@ covering the lines between. The config carries `shipKit.version` and
      repository admin and has write access only (for example a machine
      account or GitHub App): GitHub then stops that identity, whatever the
      agent does, from bypassing any ruleset or editing protection, and
-     `agents.adminMerge` does nothing for it. A fine-grained token of the
+     `agents.adminMerge` does nothing for it. It still has write access,
+     which with the default `review.override.minPermission` of `write` lets
+     it post maintainer approvals and overrides (6.3, 11.3), so pair it
+     with `minPermission: "maintain"`. A fine-grained token of the
      maintainer's own admin account is not a substitute: whether such a
      token without the Administration permission can still use its
      user's role bypass is undocumented;
@@ -2319,7 +2342,10 @@ passing on the release PR, and a run in a private repository owned by
 the same account (a scratch repository, or the first adopting repo on a
 branch) whose caller pins the release candidate by an owner-approved
 pre-release tag `ship-kit--v<version>-rc.<n>`, which the tag check
-accepts; its plan and seats must fetch the PR head and produce receipts;
+accepts; its plan and seats must fetch the PR head and produce receipts,
+and a PR opened by a read-only collaborator must go from
+`needs-maintainer` to green after an approval comment and a maintainer's
+close and reopen (F21);
 the live ruleset test `tests/live/ruleset-bypass.md` (F29) recorded with
 its four expected outcomes; and `gitleaks` is green on the release
 commit.
@@ -2376,6 +2402,24 @@ each:
 - PR 6.2: `merge.mjs` lists PR files through the paginated REST endpoint
   and refuses when the listing is truncated, with a more-than-100-files
   test.
+- PR 2.4: pin the `review-yml` deny-ancestor test to the hosted runner
+  layout and to one self-hosted layout, since it evaluates `~` and `./`
+  where `ci.yml` runs.
+- PR 2.5: when setup lacks permission to create rulesets, or the plan
+  offers none, it reports GitHub's refusal and prints the ruleset JSON for
+  an admin to apply; 16.3 already refuses every merge while no required
+  check exists.
+- PR 2.5: consider an `agents.identity` login that plan refuses as an
+  approver, overrider or sender, as an alternative to raising
+  `minPermission`.
+- PR 2.2: match approvals as a whole trimmed one-line issue-comment body,
+  `^/ship-kit-review ([0-9a-f]{40})$`, lower-cased; review bodies and
+  review comments do not count; test a quoted or multi-line body.
+- PR 2.2: the `needs-maintainer` text names convert-to-draft then
+  ready-for-review as the alternative for a PR that cannot be reopened.
+- PR 6.2: before the admin call, `merge.mjs` reads every ruleset on the
+  default branch and refuses unless `ship-kit up-to-date` is the only one
+  with a bypass actor.
 - PR 3.1: setup writes `.githooks/pre-push` as mode 100755 and the fixture
   test checks the staged mode.
 - PR 3.2: the hook script parses `git -C <dir>` and `-c core.hooksPath=`
