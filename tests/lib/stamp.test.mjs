@@ -87,6 +87,29 @@ test("stamping then reading back a shebang file round-trips as current", () => {
   assert.equal(read.bodyMatches, true);
 });
 
+test("swapping the shebang and stamp lines reads as modified", () => {
+  const file = stampFile("echo hi\n", META, "hash", "#!/usr/bin/env bash");
+  const lines = file.split("\n");
+  assert.match(lines[1], /^# ship-kit-managed: /);
+  const reordered = [lines[1], lines[0], ...lines.slice(2)].join("\n");
+  assert.equal(readManagedFile(reordered).bodyMatches, false);
+});
+
+test("a stamp line moved to the end of the file is unmanaged, not falsely current", () => {
+  const file = stampFile("echo hi\necho bye\n", META, "hash");
+  const lines = file.split("\n");
+  const stampLine = lines[0];
+  const moved = [...lines.slice(1), stampLine].join("\n");
+  assert.equal(readManagedFile(moved), null);
+});
+
+test("a duplicated stamp line reads as modified", () => {
+  const file = stampFile("echo hi\n", META, "hash");
+  const lines = file.split("\n");
+  const duplicated = [lines[0], lines[0], ...lines.slice(1)].join("\n");
+  assert.equal(readManagedFile(duplicated).bodyMatches, false);
+});
+
 test("slash and html syntaxes round-trip", () => {
   for (const syntax of ["slash", "html"]) {
     const file = stampFile("x\n", META, syntax);
