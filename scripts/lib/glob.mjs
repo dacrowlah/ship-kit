@@ -4,12 +4,10 @@
 // including `[`, `{` and regex metacharacters, is literal. Dotfiles are
 // not special.
 //
-// matchGlob/matchAny match through a segment-wise, backtrack-to-the-last-
-// star algorithm (bounded polynomial time) instead of driving a single
-// backtracking RegExp: a naive multi-wildcard regex can blow up
-// exponentially on adversarial input (many non-adjacent `*` inside one
-// segment, or many `**` segments), which a synchronous matcher on a
-// merge-gating path cannot afford.
+// globToRegExp returns the equivalent RegExp. matchGlob and matchAny never
+// run it: a backtracking RegExp built from a star-heavy pattern can take
+// exponential time, so they match segment by segment in time bounded by
+// pattern length times path length.
 
 function assertRelative(value, what) {
   if (typeof value !== "string" || value === "") {
@@ -41,10 +39,10 @@ function segmentToRegExp(segment) {
   return out;
 }
 
-// Collapses runs of consecutive whole "**" segments into one: they are
-// semantically identical ("zero or more segments", repeated), and leaving
-// them uncollapsed is a cheap way for a caller to blow up matcher work
-// (each occurrence would otherwise contribute its own choice point).
+// Collapses runs of consecutive whole "**" segments into one. This keeps
+// the RegExp's meaning: two inner "**" (each zero or more segments) read
+// as one, and an inner "**" before the last "**" (one or more segments)
+// reads as the last "**" alone.
 function dedupeStarSegments(segments) {
   const out = [];
   for (const segment of segments) {
@@ -102,50 +100,50 @@ function matchOneSegment(pattern, text) {
   return pi === pattern.length;
 }
 
-// Matches path segments against pattern segments. A whole "**" segment
-// matches zero or more path segments, backtracking only to the position of
-// the last unresolved "**" -- the same shape as matchOneSegment, one level
-// up, so the total cost stays bounded even when many "**" segments are
-// present. The pattern's *trailing* "**" segment is the one exception: it
-// must consume at least one path segment (matched by checking a minimum
-// path length up front, rather than by special-casing the walk itself).
+// Matches path segments against pattern segments, with the meaning of the
+// RegExp globToRegExp builds:
+// - an inner "**" matches zero or more non-empty path segments, each
+//   followed by "/", so it never takes the path's last segment;
+// - the last "**" matches all remaining path segments, which must be one
+//   or more, all non-empty;
+// - any other pattern segment matches exactly one path segment, and an
+//   inner one needs a following path segment.
+// canMatch[si] says whether pattern segments pi.. match path segments si..;
+// filling it from the last pattern segment back visits each (pi, si) pair
+// once.
 function matchSegments(patternSegments, pathSegments) {
-  const nonStarCount = patternSegments.reduce((count, segment) => (segment === "**" ? count : count + 1), 0);
-  const lastIsStar = patternSegments[patternSegments.length - 1] === "**";
-  if (lastIsStar && pathSegments.length < nonStarCount + 1) {
-    return false;
+  const n = pathSegments.length;
+  const lastPi = patternSegments.length - 1;
+  const restNonEmpty = new Array(n + 1).fill(true);
+  for (let si = n - 1; si >= 0; si--) {
+    restNonEmpty[si] = restNonEmpty[si + 1] && pathSegments[si] !== "";
   }
 
-  let pi = 0;
-  let si = 0;
-  let starPi = -1;
-  let starSi = 0;
-  while (si < pathSegments.length) {
-    const atStar = pi < patternSegments.length && patternSegments[pi] === "**";
-    if (pi < patternSegments.length && !atStar && matchOneSegment(patternSegments[pi], pathSegments[si])) {
-      pi++;
-      si++;
-    } else if (atStar) {
-      starPi = pi;
-      starSi = si;
-      pi++;
-    } else if (starPi !== -1) {
-      pi = starPi + 1;
-      starSi++;
-      si = starSi;
-    } else {
-      return false;
+  let canMatch = new Array(n).fill(false);
+  for (let si = 0; si < n; si++) {
+    canMatch[si] =
+      patternSegments[lastPi] === "**"
+        ? restNonEmpty[si]
+        : si === n - 1 && matchOneSegment(patternSegments[lastPi], pathSegments[si]);
+  }
+  for (let pi = lastPi - 1; pi >= 0; pi--) {
+    const next = canMatch;
+    canMatch = new Array(n).fill(false);
+    const segment = patternSegments[pi];
+    for (let si = n - 1; si >= 0; si--) {
+      if (segment === "**") {
+        canMatch[si] = next[si] || (si + 1 < n && pathSegments[si] !== "" && canMatch[si + 1]);
+      } else {
+        canMatch[si] = si + 1 < n && next[si + 1] && matchOneSegment(segment, pathSegments[si]);
+      }
     }
   }
-  while (pi < patternSegments.length && patternSegments[pi] === "**") pi++;
-  return pi === patternSegments.length;
+  return canMatch[0];
 }
 
 function matchesPattern(path, pattern) {
   assertRelative(pattern, "pattern");
-  const patternSegments = dedupeStarSegments(pattern.split("/"));
-  const pathSegments = path.split("/");
-  return matchSegments(patternSegments, pathSegments);
+  return matchSegments(pattern.split("/"), path.split("/"));
 }
 
 /** @param {string} path @param {string} pattern @returns {boolean} */

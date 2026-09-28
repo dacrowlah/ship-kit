@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { globToRegExp, matchGlob, matchAny } from "../../scripts/lib/glob.mjs";
+import { findMismatches, generatePairs, referenceMatchGlob, seededRandom } from "./glob-reference.mjs";
 
 const cases = [
   ["*.md", "a.md", true],
@@ -118,3 +119,54 @@ test(
     assertBounded(() => matchGlob(path, pattern), false);
   },
 );
+
+// A trailing "**" needs at least one path segment of its own, even when a
+// leading "**" and a middle segment could otherwise use up the whole path;
+// a "**" never matches an empty path segment.
+const segmentRuleCases = [
+  ["**/*b/**", "a/b", false],
+  ["**/*b/**", "x/yb", false],
+  ["**/*b/**", "a/b/c", true],
+  ["**/*b/**", "yb", false],
+  ["**/**", "a", true],
+  ["a/**/**", "a", false],
+  ["**/b", "a//b", false],
+  ["a/*/b", "a//b", true],
+];
+
+for (const [pattern, path, expected] of segmentRuleCases) {
+  test(`segment rule: matchGlob(${JSON.stringify(path)}, ${JSON.stringify(pattern)}) is ${expected}`, () => {
+    assert.equal(matchGlob(path, pattern), expected);
+  });
+}
+
+// Differential: every generated pair must match exactly as the original
+// RegExp matcher (tests/lib/glob-reference.mjs) does.
+const DIFFERENTIAL_SEED = 20260928;
+const DIFFERENTIAL_COUNT = 5000;
+
+function assertAgrees(candidate) {
+  const pairs = generatePairs(DIFFERENTIAL_COUNT, seededRandom(DIFFERENTIAL_SEED));
+  const mismatches = findMismatches(pairs, candidate);
+  const minimal = mismatches[0];
+  assert.equal(
+    mismatches.length,
+    0,
+    minimal &&
+      `${mismatches.length} mismatches; minimal: pattern ${JSON.stringify(minimal.pattern)}, ` +
+        `path ${JSON.stringify(minimal.path)}, reference ${minimal.expected}, got ${minimal.actual}`,
+  );
+}
+
+test(`matchGlob agrees with the reference matcher on ${DIFFERENTIAL_COUNT} generated pairs`, () => {
+  assertAgrees(matchGlob);
+});
+
+test(`globToRegExp agrees with the reference matcher on ${DIFFERENTIAL_COUNT} generated pairs`, () => {
+  assertAgrees((path, pattern) => globToRegExp(pattern).test(path));
+});
+
+test("the reference fixture reproduces the original trailing-** rule", () => {
+  assert.equal(referenceMatchGlob("a/b", "**/*b/**"), false);
+  assert.equal(referenceMatchGlob("docs", "docs/**"), false);
+});
