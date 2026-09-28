@@ -1,0 +1,52 @@
+name: CI
+
+# ship-kit's own CI: the unit suites and repository gates (ASCII, skill
+# naming, size and pressure-test records, plugin validation and component
+# inventory against a pinned Claude Code CLI), then actionlint over every
+# workflow. The job name `ci` is the required-check context.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CLAUDE_CODE_VERSION: "2.1.284"
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_LINUX_X64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Install the Claude Code CLI (pinned)
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Install actionlint (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          curl -sSL -o "$archive" "$url"
+          echo "${ACTIONLINT_LINUX_X64_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$archive" -C "$HOME/.local/bin" actionlint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Unit suites and repository gates
+        run: node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"
+
+      - name: actionlint
+        run: actionlint .github/workflows/*.yml

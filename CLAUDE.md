@@ -30,14 +30,24 @@ declares `superpowers` (claude-plugins-official) as a dependency.
   `when_to_use` is capped at 1,536 characters in the skill listing.
   (https://code.claude.com/docs/en/skills; superpowers writing-skills SKILL.md)
 - Name skills in gerund form (`writing-skills`, `condition-based-waiting`),
-  letters/numbers/hyphens only. (superpowers writing-skills SKILL.md)
+  letters/numbers/hyphens only. The rule applies to every skill except a
+  command skill, meaning one whose documented entry point is
+  `/ship-kit:<name>`. The command skills are exactly `setup`, `develop`,
+  `ship`, `ci-watch` and `merge`; they keep the owner's imperative names
+  whether or not they are also model-invocable.
+  `tests/skills/naming.test.mjs` enforces both halves.
+  (superpowers writing-skills SKILL.md; design section 1, R13)
 - Cross-reference other skills by name only (`**REQUIRED SUB-SKILL:** Use
   x:y`), never with `@`-links, which force-load the whole file immediately.
   (superpowers writing-skills SKILL.md)
-- Mark any skill with side effects (release, deploy, commit, teardown)
-  `disable-model-invocation: true` so only an explicit `/ship-kit:<name>`
-  invocation triggers it, never autonomous model judgment.
-  (https://code.claude.com/docs/en/skills)
+- A skill that commits, pushes or normally merges must honour the repo's
+  `agents.commitAndPush` setting; an admin merge is only taken by
+  `/ship-kit:merge` under `agents.adminMerge`, and both settings are a
+  behavioural contract, not access control. Setup and any release or tag
+  command stay `disable-model-invocation: true`. Both settings are defined
+  by the config schema that ships in release 2; this rule is its
+  prerequisite, and until that schema exists no skill in this repository
+  commits, pushes or merges. (design section 1, R14 and R17; section 5.4)
 - Author discipline-enforcing skills with TDD-for-skills: RED (run a pressure
   scenario without the skill, record verbatim rationalizations), GREEN (write
   the minimal skill addressing exactly those failures), REFACTOR (close each
@@ -81,10 +91,13 @@ declares `superpowers` (claude-plugins-official) as a dependency.
   interpreter in skill prose (`bash scripts/x.sh`), never a bare path: some
   plugin packagers strip the executable bit.
   (superpowers writing-skills SKILL.md)
-- `${CLAUDE_PLUGIN_ROOT}` resolves only in hook/MCP/LSP command fields, never
-  inside SKILL.md prose. A skill that copies bundled templates must locate
-  them itself (shell out to resolve the path). (verified against
-  code.claude.com/docs/en/plugins, 2026-09-28)
+- SKILL.md content substitutes `${CLAUDE_SKILL_DIR}`, `${CLAUDE_PLUGIN_ROOT}`
+  (plugin skills only) and `${CLAUDE_PROJECT_DIR}`. Skill prose names a
+  bundled script or file as `${CLAUDE_PLUGIN_ROOT}/<path>` and runs scripts
+  through their interpreter (`node ${CLAUDE_PLUGIN_ROOT}/scripts/x.mjs`).
+  `disable-model-invocation: true` removes a skill from Claude's context
+  listing and leaves it user-invocable.
+  (https://code.claude.com/docs/en/skills, verified 2026-09-28)
 
 ### Manifests and naming
 
@@ -201,12 +214,17 @@ declares `superpowers` (claude-plugins-official) as a dependency.
   usable.
 - Run the same checks locally before pushing:
   `docker run --rm -v "$PWD:/repo" -w /repo zricethezav/gitleaks:v8.30.1 git . --config .gitleaks.toml --redact` and
-  `node --test scripts/*.test.mjs`.
+  `node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"`.
 
 ### Testing and validation
 
-- Run `claude plugin validate --strict <dir>` in CI on every push; `--strict`
-  fails CI on warnings such as a missing `version`.
+- Run `claude plugin validate --strict .` (the marketplace manifest) in CI
+  on every push; `--strict` fails CI on warnings such as a missing
+  description. Validate the plugin itself with
+  `claude plugin validate --json .claude-plugin/plugin.json` and fail on
+  every error and every warning except the one saying the root `CLAUDE.md`
+  is not loaded for consumers, which this maintainer manual triggers by
+  design. `tests/plugin-validate.test.mjs` runs both.
   (https://code.claude.com/docs/en/plugins/publish)
 - Before tagging a release, confirm a fresh `claude --plugin-dir <dir>`
   install actually loads and `claude --plugin-dir <dir> plugin details
@@ -250,6 +268,7 @@ declares `superpowers` (claude-plugins-official) as a dependency.
 - ASCII punctuation only. No em dashes anywhere in the repo.
 - Commit trailer on every commit:
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
+- Commits and PR bodies carry no session links or other private URLs.
 
 ---
 
@@ -306,5 +325,8 @@ Re-check:
    `uses:` pin (tag or SHA exists, is not a moving branch).
 8. No adopting-repo-specific content (names, paths, ticket numbers,
    incidents) anywhere in the diff.
-9. Tag the release `ship-kit--v<version>` via `claude plugin tag --push`
-   only after the owner approves.
+9. A tag-protection ruleset covers `ship-kit--v*` (in place): a moved or
+   deleted release tag breaks every adopter whose callers pin it.
+10. `gitleaks` is green on the release commit.
+11. Tag the release `ship-kit--v<version>` via `claude plugin tag --push`
+    only after the owner approves.
