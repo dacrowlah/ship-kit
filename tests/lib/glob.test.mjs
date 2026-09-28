@@ -51,3 +51,70 @@ for (const bad of ["", "/abs", "./rel", "dir/"]) {
     assert.throws(() => matchAny(bad, ["**"]), TypeError);
   });
 }
+
+// Regression: the matcher must run in bounded time even on adversarial,
+// star-heavy patterns. A backtracking RegExp built naively from these
+// shapes blows up exponentially; a correct implementation stays well
+// under the bound regardless of input size.
+const BOUND_MS = 200;
+
+function assertBounded(fn, expected) {
+  const start = performance.now();
+  const actual = fn();
+  const elapsed = performance.now() - start;
+  assert.equal(actual, expected);
+  assert.ok(elapsed < BOUND_MS, `expected under ${BOUND_MS}ms, took ${elapsed}ms`);
+}
+
+test(
+  "30x 'a*' + literal X against 40 a's completes in bounded time (false)",
+  { timeout: 5000 },
+  () => {
+    const pattern = "a*".repeat(30) + "X";
+    const path = "a".repeat(40);
+    assertBounded(() => matchGlob(path, pattern), false);
+  },
+);
+
+test(
+  "12x '**/' segments then 'b' against a 50-segment path completes in bounded time (true)",
+  { timeout: 5000 },
+  () => {
+    const pattern = "**/".repeat(12) + "b";
+    const segments = Array.from({ length: 49 }, (_, i) => `s${i}`);
+    segments.push("b");
+    const path = segments.join("/");
+    assertBounded(() => matchGlob(path, pattern), true);
+  },
+);
+
+test(
+  "12x '**/' segments then 'b' against a 50-segment path completes in bounded time (false)",
+  { timeout: 5000 },
+  () => {
+    const pattern = "**/".repeat(12) + "b";
+    const segments = Array.from({ length: 49 }, (_, i) => `s${i}`);
+    segments.push("notb");
+    const path = segments.join("/");
+    assertBounded(() => matchGlob(path, pattern), false);
+  },
+);
+
+test(
+  "a 10,000-character path against '**/x/**' completes in bounded time",
+  { timeout: 5000 },
+  () => {
+    const pattern = "**/x/**";
+    const segments = [];
+    let length = 0;
+    let i = 0;
+    while (length < 10000) {
+      const segment = `seg${i}`;
+      segments.push(segment);
+      length += segment.length + 1;
+      i++;
+    }
+    const path = segments.join("/");
+    assertBounded(() => matchGlob(path, pattern), false);
+  },
+);
