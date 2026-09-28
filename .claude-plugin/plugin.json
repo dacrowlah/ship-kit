@@ -1,0 +1,9 @@
+{
+  "name": "ship-kit",
+  "version": "0.0.1",
+  "description": "Review gates, design-doc review mode, defect-shape mining and a local ship loop for Claude Code.",
+  "author": { "name": "Ryan Crowley" },
+  "dependencies": [
+    { "name": "superpowers", "marketplace": "claude-plugins-official" }
+  ]
+}

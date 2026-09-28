@@ -1,0 +1,8 @@
+{
+  "name": "ship-kit",
+  "owner": { "name": "Ryan Crowley" },
+  "allowCrossMarketplaceDependenciesOn": ["claude-plugins-official"],
+  "plugins": [
+    { "name": "ship-kit", "source": "." }
+  ]
+}
