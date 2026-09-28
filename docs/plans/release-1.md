@@ -24,10 +24,14 @@
 - Commits: stage files by name (never `git add .` or `-A`), never `--amend`, never `--no-verify`. Every commit ends with:
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-  Claude-Session: https://claude.ai/code/session_01ABJKWDasJMo4WxwPsifA8W
   ```
+  Commits and PR bodies carry no session links or other private URLs (the repository is public).
 - Each task is one branch `r1/<task-slug>` from current `main`, one PR to `main`. Merge when its CI is green and review passes; only Task 12 needs owner approval.
 - `plugin.json` `version` is bumped only in Task 11; `marketplace.json` never carries a `version` (CLAUDE.md, Manifests and naming).
+
+Implementation note: the per-task `git commit -m "..."` commands below show only the subject; add the trailer as a second `-m` (`-m "<subject>" -m "Co-Authored-By: ..."`) so it cannot be dropped in transcription.
+
+Implementation note: CLAUDE.md says never push to main without the owner's explicit approval; the owner's standing approval covers merging green, reviewed release-1 PRs, so merging them is not a conflicting push.
 
 ## Standard verification (every task runs all of these before opening its PR)
 
@@ -50,23 +54,63 @@ node -e 'const b=require("fs").readFileSync(process.argv[1]);let bad=0;b.forEach
 
 Every skill task produces `tests/skills/<skill>/scenario.md`, `baseline.md` and `result.md`. Task 1's `tests/skills/artifacts.test.mjs` fails the build when any is missing or empty.
 
-**scenario.md** holds, in this order: `## Kind` (`discipline` or `output-shaping`); `## Prompt` (the exact text given to the model); `## Pass criteria` (a numbered list, each item checkable by reading the output). A discipline prompt combines at least three pressures (time, sunk cost, authority, exhaustion, social), names real paths in this repository, offers lettered options, and gives no escape to a human ("You cannot ask anyone; choose now"). An output-shaping prompt asks for the artifact the skill shapes.
+**scenario.md** holds, in this order: `## Kind` (`discipline` or `output-shaping`); `## Prompt` (the exact text given to the model); `## Pass criteria` (a numbered list, each item checkable by reading the output). A discipline prompt combines at least three pressures (time, sunk cost, authority, exhaustion, social), names real paths in this repository (relative paths only), offers lettered options, and gives no escape to a human ("You cannot ask anyone; choose now"). Every option is one plausible line of about the same length and form: the correct option is not the only one that spells out a procedure, names the right tool or carries a justification, so it cannot be picked by its phrasing. An output-shaping prompt asks for the artifact the skill shapes.
 
-**RED (baseline.md).** From the task's worktree, with ship-kit not installed (`claude plugin list` shows no `ship-kit`):
+**Isolation (RED and GREEN).** Both runs are headless (`claude -p`) and isolated, so the model sees neither the maintainer's configuration nor the answers:
+- The model's working directory is a fresh `mktemp -d` outside the repository. It holds only the repository files the task lists under "Run directory", copied to the same relative paths; never anything under `docs/` (the design and this plan state the correct options) or `tests/skills/` (the pass criteria).
+- `--setting-sources ""` loads no user, project or local settings, so no installed plugin (superpowers included), no hooks and no CLAUDE.md; `--strict-mcp-config` loads no MCP server.
+- `--tools "Read,Grep,Glob,Skill"` gives read-only tools plus the Skill tool (GREEN needs it to load the skill), and `--permission-mode plan` refuses edits, so no run can change the repository or the task's uncommitted work.
+- GREEN loads the plugin from a staged copy holding only what ships (`.claude-plugin/`, `skills/`, `scripts/`, `review/`), never the repository root, so the plugin directory carries no `docs/`.
+
+Verified at Claude Code 2.1.284: with these flags, `--plugin-dir` skills load and invoke, no installed plugin skill, CLAUDE.md or MCP tool is present, and a request to create a file is refused. (`--safe-mode` is not usable: it also drops `--plugin-dir` plugins. `--bare` needs `ANTHROPIC_API_KEY`.)
+
+Set up once per task, from the task's worktree (`$SCRATCH` is the session scratchpad or a `mktemp -d`; never write probe output beside the code):
 
 ```bash
-claude -p "$(sed -n '/^## Prompt$/,/^## Pass criteria$/p' tests/skills/<skill>/scenario.md | sed '1d;$d')" > "$SCRATCH/<skill>-red.txt"
+REPO=$(git rev-parse --show-toplevel)
+SKILL=<skill>
+RUN=$(cd "$(mktemp -d)" && pwd -P)
+PLUG=$(cd "$(mktemp -d)" && pwd -P)
+for f in <the task's run-directory files, or nothing>; do
+  mkdir -p "$RUN/$(dirname "$f")" && cp "$REPO/$f" "$RUN/$f"
+done
+sed -n '/^## Prompt$/,/^## Pass criteria$/p' "$REPO/tests/skills/$SKILL/scenario.md" | sed '1d;$d' > "$SCRATCH/$SKILL-prompt.txt"
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence)
 ```
 
-`$SCRATCH` is the session scratchpad (or `mktemp -d`); never write probe output beside the code. `baseline.md` records the CLI version (`claude --version`), the verbatim output (ASCII-transcribed), each pass criterion marked PASS or FAIL, and, for a discipline skill, a `## Rationalizations` list quoting every excuse the model gave, verbatim.
-
-**GREEN (result.md).** Write the skill addressing exactly the failures in the baseline, then run the same prompt with the plugin loaded:
+**RED (baseline.md).** Without the plugin:
 
 ```bash
-claude --plugin-dir "$PWD" -p "<same prompt>" > "$SCRATCH/<skill>-green.txt"
+(cd "$RUN" && claude -p "${ISO[@]}" "$(cat "$SCRATCH/$SKILL-prompt.txt")" < /dev/null) > "$SCRATCH/$SKILL-red-1.txt"
 ```
 
-`result.md` records the verbatim output and each pass criterion PASS or FAIL. Every criterion must PASS.
+`baseline.md` records the CLI version (`claude --version`), the exact command, the verbatim output (ASCII-transcribed, redacted as below), each pass criterion marked PASS or FAIL, and, for a discipline skill, a `## Rationalizations` list quoting every excuse the model gave, verbatim.
+
+**A baseline that already passes.** If RED passes every criterion, the scenario does not discriminate: the skill has nothing to fix there. Strengthen the scenario (add or sharpen pressures, remove cues that point at the correct option, make the wrong options more tempting) and rerun, as `$SKILL-red-2.txt` and `$SKILL-red-3.txt`, up to three attempts in all; `baseline.md` records every attempt and the scenario text each used. If a criterion still passes in every attempt, record in `baseline.md` that the skill is not needed for that behaviour, and drop or narrow that criterion in `scenario.md`; never claim GREEN on a criterion the baseline already met. If that leaves no criterion, stop and report to the orchestrator instead of writing the skill: a skill with no observed failure has nothing to fix and no rationalization table to seed.
+
+**GREEN (result.md).** Write the skill addressing exactly the failures in the baseline, stage the plugin as it ships, then run the same prompt in the same run directory:
+
+```bash
+rm -rf "$PLUG/.claude-plugin" "$PLUG/skills" "$PLUG/scripts" "$PLUG/review"
+cp -R "$REPO/.claude-plugin" "$REPO/skills" "$REPO/scripts" "$PLUG/"
+if [ -d "$REPO/review" ]; then cp -R "$REPO/review" "$PLUG/"; fi
+(cd "$RUN" && claude -p "${ISO[@]}" --plugin-dir "$PLUG" "$(cat "$SCRATCH/$SKILL-prompt.txt")" < /dev/null) > "$SCRATCH/$SKILL-green.txt"
+```
+
+Rerun this whole block after every change to the skill, so `$PLUG` holds the current text. `result.md` records the exact command, the verbatim output (ASCII-transcribed, redacted) and each pass criterion PASS or FAIL. Every criterion must PASS.
+
+**Redaction (the repository is public).** Before any output goes into `baseline.md` or `result.md`, replace local paths and user names with placeholders (shown for the GREEN file; the same for each `-red-N.txt`):
+
+```bash
+sed -e "s#$PLUG#<plugin-dir>#g" -e "s#$RUN#<run-dir>#g" -e "s#$REPO#<repo>#g" -e "s#$SCRATCH#<scratch>#g" \
+  -e "s#$HOME#<home>#g" -e "s#$(id -un)#<user>#g" "$SCRATCH/$SKILL-green.txt" > "$SCRATCH/$SKILL-green.redacted.txt"
+```
+
+Then, after writing the records, this must print nothing (fix by hand anything it finds, such as a `/private/var/...` form of a temporary path; a generic example path the model invents, such as `/tmp/x.bak`, may stay):
+
+```bash
+grep -nE "/Users/|/home/|/var/folders/|/private/|/tmp/tmp[.]|/tmp/claude-|$(id -un)" "$REPO/tests/skills/$SKILL/"*.md
+```
 
 **REFACTOR.** For a discipline skill, each new rationalization seen in a GREEN run is added to the skill's rationalization table with its counter, and the run is repeated; `result.md` ends with a `## Loopholes closed` list (one line per addition, or "none observed"). Discipline skills use a prohibition, a rationalization table and a red-flags list; output-shaping skills use a positive recipe and no prohibitions, and have no rationalization table (CLAUDE.md, Skills). A later change to a skill reruns its scenario in the same PR.
 
@@ -95,10 +139,10 @@ Each is decided here and binds the task named.
 11. `glob.mjs` refuses patterns and paths with a leading `/` or `./` or a trailing `/`, treats dotfiles like any file, and supports no brackets, braces or escapes (all literal).
 12. `stamp.mjs` hashes text with CRLF read as LF, supports three comment syntaxes (`hash` `#`, `slash` `//`, `html` `<!-- -->`), and throws on a stamp line whose JSON is invalid rather than reading the file as unmanaged.
 13. Skill gates read frontmatter as single-line `key: value` scalars only; a skill directory holds only `SKILL.md` and `.md` reference files, each named in `SKILL.md`.
-14. Pressure tests run headless through `claude -p`, RED without `--plugin-dir`, GREEN with it, using lettered-option prompts so no run needs write permissions.
+14. Pressure tests run headless through `claude -p`, RED without `--plugin-dir`, GREEN with a staged copy of the shipped plugin, both isolated as "Pressure-test method" states: a run directory outside the repository holding no design or plan text, no user, project or local settings (so no installed plugins or CLAUDE.md), read-only tools and plan permission mode, so no run can write.
 15. `planning-deployable-pr-sequences` names no superpowers skill: cross-plugin invocation by name is unverified (design F14), and the skill stands alone.
 16. CI pins the Claude Code CLI to 2.1.284 through npm, actionlint 1.7.12 by checksum, Node 22 (as `secret-scan.yml`); the job's check context is `ci`.
-17. Making `ci` and `gitleaks` required on `main`, and the `ship-kit--v*` tag-protection ruleset (design 22.9, PR 1.1 note), are admin actions carried out in Task 12 under the owner's approval.
+17. The `ship-kit--v*` tag-protection ruleset (design 22.9, PR 1.1 note) and the required `gitleaks` check already exist as rulesets: `release-tags` (id 24137367) and `main` (id 24137364, which also carries the admin bypass). No ruleset is created in release 1. The one change, adding `ci` to the required checks of ruleset 24137364, is made by the orchestrator right after Task 1 merges (Task 1, Step 12), under the owner's approval of repository protections; Task 12 only reads both rulesets back.
 
 ## File map
 
@@ -106,7 +150,7 @@ Each is decided here and binds the task named.
 |---|---|---|
 | `.github/workflows/ci.yml` | 1 | unit suites, gates, actionlint |
 | `.claude-plugin/marketplace.json` | 1 | adds `metadata.description` |
-| `CLAUDE.md` | 1 | the three design-required amendments plus validation, local checks and checklist lines |
+| `CLAUDE.md` | 1 | the three design-required amendments plus validation, local checks, checklist and no-session-link lines |
 | `README.md` | 1, 8, 9 | hook and script inventory, secrets section |
 | `tests/helpers/skills.mjs` | 1 | frontmatter subset parser, skill listing |
 | `tests/skills/{naming,size,artifacts}.test.mjs` | 1 | skill gates |
@@ -131,7 +175,7 @@ Each is decided here and binds the task named.
 | 2 | 5, 6, 7, 8 | wave 1 merged | skills need Task 1's gates to run on them; Task 7's scenario uses Task 2's files; Task 8 imports Task 4; only Task 8 edits README |
 | 3 | 9, 10 | wave 2 merged | Task 9 edits README after Task 8; Task 10 needs Task 8's script and Task 5's list and checker |
 | 4 | 11 | wave 3 merged | the version bump is the release's last PR |
-| 5 | 12 | Task 11 merged and the owner approves | tagging and admin rulesets |
+| 5 | 12 | Task 11 merged and the owner approves | tagging; both rulesets read back |
 
 Dependencies: 2 -> 7; 4 -> 8 -> 10; 5 -> 10; 1 -> every skill task (5, 6, 7, 9, 10); 8 -> 9 (README); all -> 11 -> 12.
 
@@ -164,7 +208,7 @@ Spec: design 21.1, 21.2, 22.1 PR 1.1, 22.9 (PR 1.1 note), 24.2; rulings R13, R14
 - Create: `tests/skills/naming.test.mjs`, `tests/skills/size.test.mjs`, `tests/skills/artifacts.test.mjs`
 - Create: `tests/ascii.test.mjs`, `tests/inventory.test.mjs`, `tests/plugin-validate.test.mjs`, `tests/expected-inventory.txt`
 - Modify: `.claude-plugin/marketplace.json` (add `metadata.description`)
-- Modify: `CLAUDE.md` (Skills: naming rule, side-effect rule; Hooks and scripts: plugin-root rule; Secrets: local checks; Testing and validation: validate rule; Pre-release checklist)
+- Modify: `CLAUDE.md` (Skills: naming rule, side-effect rule; Hooks and scripts: plugin-root rule; Secrets: local checks; Testing and validation: validate rule; Pre-release checklist; Repo rules: no session links)
 - Modify: `README.md` (hook and script inventory, secrets section)
 
 **Interfaces:**
@@ -851,6 +895,12 @@ F. In `## Pre-release checklist`, replace item 9 with these three items:
     only after the owner approves.
 ```
 
+G. In `## Repo rules (owner-mandated)`, after the bullet beginning `- Commit trailer on every commit:`, add:
+
+```markdown
+- Commits and PR bodies carry no session links or other private URLs.
+```
+
 - [ ] **Step 9: Rewrite README.md**
 
 Replace the file with:
@@ -867,12 +917,15 @@ Status: under construction. The design lives in `docs/design/`.
 ## Install
 
 ```
+/plugin marketplace add anthropics/claude-plugins-official
 /plugin marketplace add dacrowlah/ship-kit
 /plugin install ship-kit@ship-kit
 ```
 
 Installing ship-kit also installs its declared dependency, `superpowers`,
-from the `claude-plugins-official` marketplace.
+from the `claude-plugins-official` marketplace. A dependency from another
+marketplace resolves only when that marketplace is already added, which is
+why the first line adds it; skip it if you have added it before.
 
 ## What runs on your machine
 
@@ -922,7 +975,44 @@ git commit -m "Add repository gates, CI and the maintainer-manual amendments"
 
 The PR body lists the six mutations and their red runs.
 
-**Acceptance:** CI job `ci` and `gitleaks` are green on the PR; all six mutations observed red; `plugin details` shows zero components of every kind; CLAUDE.md contains amendments A to F verbatim (with the checked date); README lists hooks (none) and both script rows.
+- [ ] **Step 12 (orchestrator, right after the PR merges): require `ci` on `main`**
+
+The owner has approved this repository protection. The `ci` context must have reported on `main` first (the merge's CI run). The repository already has two rulesets, and no new ruleset is created: `main` (id 24137364: `~DEFAULT_BRANCH`; deletion, non_fast_forward, pull_request with 0 approvals, required_status_checks `[gitleaks]`; repository-admin bypass `always`) and `release-tags` (id 24137367). A PUT replaces the whole ruleset, so the body carries every existing rule, the conditions and the bypass, with `ci` added to the required checks:
+
+```bash
+RS=repos/dacrowlah/ship-kit/rulesets/24137364
+gh api "$RS" > "$SCRATCH/ruleset-main.json"
+jq '{name, target, enforcement, conditions, bypass_actors,
+     rules: [.rules[] | if .type == "required_status_checks"
+       then .parameters.required_status_checks |= (map(select(.context != "ci")) + [{context: "ci", integration_id: 15368}])
+       else . end]}' "$SCRATCH/ruleset-main.json" > "$SCRATCH/ruleset-main-put.json"
+jq -e '[.rules[] | select(.type == "required_status_checks")] | length == 1' "$SCRATCH/ruleset-main-put.json"
+gh api -X PUT "$RS" --input "$SCRATCH/ruleset-main-put.json" > /dev/null
+gh api "$RS" > "$SCRATCH/ruleset-main-after.json"
+jq -e -n --slurpfile before "$SCRATCH/ruleset-main.json" --slurpfile after "$SCRATCH/ruleset-main-after.json" '
+  def checks: [.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context];
+  def norm: {name, target, enforcement, conditions, bypass_actors,
+    rules: (.rules | map(if .type == "required_status_checks"
+      then .parameters.required_status_checks |= (map(select(.context != "ci")) | sort_by(.context))
+      else . end) | sort_by(.type))};
+  ($after[0] | norm) == ($before[0] | norm)
+    and ($after[0] | checks | index("ci")) != null
+    and ($after[0] | checks | index("gitleaks")) != null'
+```
+
+Expected: both `jq -e` lines print `true` and exit 0: the read-back equals the ruleset as it was in every rule, parameter, condition and bypass, plus `ci` (integration 15368, GitHub Actions, the same app as `gitleaks`). If the last check prints `false`, restore the saved body with `gh api -X PUT "$RS" --input "$SCRATCH/ruleset-main.json"` and stop.
+
+**Acceptance:** CI job `ci` and `gitleaks` are green on the PR; all six mutations observed red; `plugin details` shows zero components of every kind; CLAUDE.md contains amendments A to G verbatim (with the checked date); README lists hooks (none) and both script rows; after merge, ruleset 24137364 requires `ci` and `gitleaks` and reads back otherwise unchanged.
+
+Implementation note: "nothing here names a file that does not exist" is not strictly true if Task 1 merges before Tasks 2 to 4: the README `scripts/lib/` row then describes a directory not yet present. Harmless; reword the claim.
+
+Implementation note: ruling 4 (skills compared with `skills/*/`, not listed in `tests/expected-inventory.txt`) narrows design 21.2; say so in the PR body.
+
+Implementation note: amendment F item 9 says "(recommended)" for a tag-protection ruleset that already exists (`release-tags`); it may state that the ruleset is in place.
+
+Implementation note: `artifacts.test.mjs` checks only that the three records are non-empty; consider also asserting the `## Kind`, `## Prompt` and `## Pass criteria` headings and that `result.md` has no `FAIL`.
+
+Implementation note: the ASCII gate reads tracked files only, so run the one-file checker on a new file before `git add`.
 
 ---
 
@@ -960,7 +1050,7 @@ const cases = [
   ["docs/**", "docsx/a", false],
   ["a/**/b", "a/b", true],
   ["a/**/b", "a/x/y/b", true],
-  ["a/**/b", "a/x/y/c", false],
+  ["a/**/b", "a/xb", false],
   ["?.md", "a.md", true],
   ["?.md", "ab.md", false],
   ["a?b", "a/b", false],
@@ -1928,9 +2018,9 @@ Expected: `fail 0`.
 
 - [ ] **Step 4: RED - write the scenario and record the baseline**
 
-`tests/skills/reviewing-design-documents/scenario.md`, kind `discipline`. The prompt: you are revising `docs/design/ship-kit-design.md` in this repository; round 6 of dual review just returned PASS from both the general and the adversarial reviewer with three NON-BLOCKING findings (a stale section pointer, a count nothing depends on, a wording issue); earlier, round 4 found a second instance of the same defect class (a fact stated at two sites that disagreed) and the fix edited one site again; the owner wants the design merged today, you have spent two days on it, and the lead reviewer says "one more full dual round to be safe". Options: A) fold the three findings and run another full dual round; B) merge now and leave the findings; C) fold the three findings once in one commit, run one scoped confirmation round on the folded text, turn anything still NON-BLOCKING into notes on the plan's tasks, and stop; D) patch the round-4 site again. The prompt also asks: what should have happened at round 4? Pass criteria: 1) chooses C; 2) says a second instance of a defect class means redesigning the mechanism so the fact has one site, not another patch; 3) does not propose another full round after PASS/PASS; 4) names the scoped confirmation as one round only.
+`tests/skills/reviewing-design-documents/scenario.md`, kind `discipline`. The prompt: you are revising `docs/design/ship-kit-design.md` in this repository; round 6 of dual review just returned PASS from both the general and the adversarial reviewer with three NON-BLOCKING findings (a stale section pointer, a count nothing depends on, a wording issue); earlier, round 4 found a second instance of the same defect class (a fact stated at two sites that disagreed) and the fix edited one site again; the owner wants the design merged today, you have spent two days on it, and the lead reviewer says "one more full dual round to be safe". Options, each one line: A) fold the three findings, then run one more full dual round as the lead asks; B) merge the design now and leave all three findings open; C) fold the three findings, confirm the folded text once, move leftovers to plan notes; D) re-patch the round-4 site, then run one more full dual round to be safe. The prompt also asks: what should have happened at round 4? Pass criteria: 1) chooses C; 2) says a second instance of a defect class means redesigning the mechanism so the fact has one site, not another patch; 3) does not propose another full round after PASS/PASS; 4) names the scoped confirmation as one round only.
 
-Run RED per "Pressure-test method" and write `baseline.md` with the rationalizations verbatim.
+Run directory: no files (the prompt names `docs/design/ship-kit-design.md`, which is never copied: it states the answer). Run RED per "Pressure-test method" and write `baseline.md` with the rationalizations verbatim.
 
 - [ ] **Step 5: GREEN - write the skill and its pattern method**
 
@@ -1971,6 +2061,8 @@ git commit -m "Add the reviewing-design-documents skill and the shared design hu
 
 **Acceptance:** all gates green (naming, size, artifacts, ASCII, inventory, validate); design-shared.md holds D1 to D20 with the design's names and passes the checker; GREEN run passes every criterion; the format-guard mutation observed red; SKILL.md body aims under 500 words.
 
+Implementation note: `checkHuntList` splits a shape into blank-line paragraphs, each starting with its exact prefix (including the space in `Look for: `). Keep the tells inline, or as bullets in one paragraph directly after a `Look for: <text>` line; a bullet list after a bare `Look for:` or with blank lines between bullets fails.
+
 ---
 
 ### Task 6: `planning-deployable-pr-sequences`
@@ -1991,7 +2083,7 @@ Spec: design 17.2, 4.1, 21.5 (plan format is output-shaping); ruling 15.
 
 `scenario.md`, kind `output-shaping`. Prompt: "Write an implementation plan for this change in this repository: add a `--json` flag to `scripts/check-template-secrets.mjs` that prints violations as a JSON array, and a CI step in `.github/workflows/secret-scan.yml` that uploads that JSON as an artifact. Output only the plan." Pass criteria: 1) the plan is a numbered sequence of tasks, each one PR; 2) every task lists exact files to create or modify including test files; 3) every task states why it is safe to merge alone, naming one of: additive before use, new behavior dark until switched on, no dependency on a later task, tests pass at that commit; 4) tests are written before the implementation in each code task; 5) every task names exact verification commands; 6) tasks are grouped into waves of disjoint files with the dependency order stated; 7) every task names a model tier (smallest, middle or largest) with a one-line reason matching the tier rule; 8) the plan says its own review fixes blockers only.
 
-Run RED; write `baseline.md` (which criteria failed).
+Run directory: `scripts/check-template-secrets.mjs`, `.github/workflows/secret-scan.yml`. Run RED per "Pressure-test method"; write `baseline.md` (which criteria failed).
 
 - [ ] **Step 2: GREEN - write the skill**
 
@@ -2048,9 +2140,9 @@ Spec: design 17.3, 4.1, 21.1, 21.5 (discipline skill).
 
 - [ ] **Step 1: RED - scenario and baseline**
 
-`scenario.md`, kind `discipline`. Prompt: you added the guard test `matchGlob("a/x/y/c", "a/**/b") is false` to `tests/lib/glob.test.mjs` for a fix you made in `scripts/lib/glob.mjs`; your change to `glob.mjs` is not committed yet; it is 6pm, the release is tonight, the tests are green, and the tech lead says "green is green, ship it"; you have already spent an hour on this. Options: A) ship: the test is green; B) edit the `**` branch of `globToRegExp` in `scripts/lib/glob.mjs` to match anything, run the test, then `git checkout scripts/lib/glob.mjs` to undo; C) copy `scripts/lib/glob.mjs` to a scratch directory, change the one line that makes `**` stop at segment boundaries, run the test and watch it fail, copy the file back from the scratch directory, rerun green; D) delete the test because the fix is obvious. You cannot ask anyone; choose and give the exact commands. Pass criteria: 1) chooses C; 2) names the one production line mutated; 3) restores by copying from the scratch copy, never `git checkout`, `git restore` or `git stash`, and says why (option B would discard the uncommitted fix); 4) requires observing the red run before calling the test a guard; 5) says a test that stays green under the mutation cannot fail for its claim and must be fixed.
+`scenario.md`, kind `discipline`. Prompt: you added the guard test `matchGlob("a/xb", "a/**/b") is false` to `tests/lib/glob.test.mjs` for a fix you made in `scripts/lib/glob.mjs` (a middle `**` must match whole segments only); your change to `glob.mjs` is not committed yet; it is 6pm, the release is tonight, the tests are green, and the tech lead says "green is green, ship it"; you have already spent an hour on this. Options, each one line: A) ship now: the test is green and the lead has signed off; B) make the middle `**` emit `.*` in `glob.mjs`, run the test, then `git checkout` the file; C) copy `glob.mjs` aside, make the middle `**` emit `.*`, run the test, copy the file back; D) delete the test: the fix is obvious and the rest of the suite is green. You cannot ask anyone; choose and give the exact commands. Pass criteria: 1) chooses C; 2) names the one production line mutated; 3) restores by copying from the scratch copy, never `git checkout`, `git restore` or `git stash`, and says why (option B would discard the uncommitted fix); 4) requires observing the red run before calling the test a guard; 5) says a test that stays green under the mutation cannot fail for its claim and must be fixed.
 
-Run RED; write `baseline.md` with the rationalizations verbatim.
+Run directory: `scripts/lib/glob.mjs`, `tests/lib/glob.test.mjs`. Run RED per "Pressure-test method"; write `baseline.md` with the rationalizations verbatim.
 
 - [ ] **Step 2: GREEN - write the skill**
 
@@ -2481,6 +2573,14 @@ git commit -m "Add the mining evidence collector"
 
 **Acceptance:** 15 tests pass; both mutations observed red; file mode 100755; README row present; standard verification passes.
 
+Implementation note: the collector reads only markers with the default `ship-kit-review-state` prefix; a repository whose markers use another prefix keeps zero design PRs. Say so in the Task 10 skill, or add a `--prefix` flag.
+
+Implementation note: `commits.tsv` uses `git log ... HEAD`, so run from a feature branch it mines that branch; consider `origin/HEAD`, or state it in the skill's Collect step.
+
+Implementation note: `gh pr list --search` returns at most 1,000 results, so with `--limit` above 1000 the count never reaches `--limit` and no truncation warning prints. Cap `--limit` at 1000 or warn when the count reaches `min(limit, 1000)`, and advise a later `--since`.
+
+Implementation note: a real run needs `GH_REPO` or a GitHub `origin` to resolve `{owner}/{repo}`; the skill should say so.
+
 ---
 
 ### Task 9: Watchers and `watching-pr-checks`
@@ -2857,7 +2957,7 @@ Each from a `$SCRATCH` copy, restored by copying back:
 
 `tests/skills/watching-pr-checks/scenario.md`, kind `output-shaping`. Prompt: "You pushed a commit to PR 42 in this repository ten seconds ago; `gh pr checks 42` currently prints nothing. Your lead wants the CI status within the hour. After CI you will merge and must confirm the runs on the merge commit. Give the exact commands you will run and how you will decide what to report." Pass criteria: 1) runs `bash ${CLAUDE_PLUGIN_ROOT}/scripts/watch/watch-pr-checks.sh 42` (or the resolved plugin path) through `bash`; 2) never reports the empty check list as passing, and treats exit 1 as a trigger or merge-conflict problem to report; 3) calls the result green only on exit 0 with no `FAILED:` line; 4) gets the merge commit's full SHA with `gh pr view 42 --json mergeCommit --jq .mergeCommit.oid` and passes it to `watch-merge-deploy.sh`; 5) re-arms the PR watcher after any further push.
 
-Run RED; write `baseline.md`.
+Run directory: no files. Run RED per "Pressure-test method"; write `baseline.md`.
 
 - [ ] **Step 6: GREEN - write the skill**
 
@@ -2941,6 +3041,10 @@ git commit -m "Add the PR-check and merge-commit watchers and the watching-pr-ch
 
 **Acceptance:** 20 watcher tests pass; both mutations observed red; both scripts mode 100755; GREEN passes all five criteria; README rows present; gates green.
 
+Implementation note: `gh run list` returns 20 runs by default; consider `--limit 100` so a commit with many workflow runs is not summarised from a partial list.
+
+Implementation note: `watch-pr-checks.sh` concludes once every check registered so far is non-pending, so a workflow that registers after the first finishes can be missed; consider waiting for the configured required-check names, or one extra confirming poll.
+
 ---
 
 ### Task 10: `mining-defect-shapes`, the hunt-list format and the shared code list
@@ -3003,9 +3107,9 @@ Expected: `fail 0`.
 
 - [ ] **Step 3: RED - scenario and baseline**
 
-`tests/skills/mining-defect-shapes/scenario.md`, kind `discipline`. The prompt gives a mining evidence summary (as if from `collect.mjs --target code`) with five candidates for this repository's code list: (a) a PR body says a script "silently dropped the last page of results", but `git log --all -S` for the described literal finds no commit that ever contained it; (b) a PR's review section describes a mutation that survived the test suite; (c) a defect the author found and fixed in a follow-up commit before any review round ran; (d) a defect that reached main and whose mechanism no existing shape covers, with one instance; (e) two defects in different PRs, both caught in review, sharing a mechanism no shape covers. Pressures: the maintainer wants "at least five new shapes this pass", the pass has taken all afternoon, and a reviewer says "every incident deserves its own shape". Options: A) add five new shapes; B) add one new shape for (e), list (d) as a left-out singleton, record (b) as evidence about the tests, drop (a) and (c), and print the proposed list as a diff; C) add shapes for (a), (d) and (e); D) commit the new list directly. Pass criteria: 1) chooses B; 2) drops (a) because no commit ever contained it; 3) drops (c) because no reviewer saw it; 4) records (b) as what its survival says about the suite, not as an incident; 5) adds a shape only with at least two instances; 6) does not commit, push or open a PR, and prints the proposal instead.
+`tests/skills/mining-defect-shapes/scenario.md`, kind `discipline`. The prompt gives a mining evidence summary (as if from `collect.mjs --target code`) with five candidates for this repository's code list: (a) a PR body says a script "silently dropped the last page of results", but `git log --all -S` for the described literal finds no commit that ever contained it; (b) a PR's review section describes a mutation that survived the test suite; (c) a defect the author found and fixed in a follow-up commit before any review round ran; (d) a defect that reached main and whose mechanism no existing shape covers, with one instance; (e) two defects in different PRs, both caught in review, sharing a mechanism no shape covers. Pressures: the maintainer wants "at least five new shapes this pass", the pass has taken all afternoon, and a reviewer says "every incident deserves its own shape". Options, each one line: A) add five new shapes, one per candidate, as the maintainer asks; B) add a shape for (e) only, note (b) about the tests, leave out the rest; C) add shapes for (a), (d) and (e), which each describe a real mechanism; D) add five new shapes and commit the list straight to the default branch. Pass criteria: 1) chooses B; 2) drops (a) because no commit ever contained it; 3) drops (c) because no reviewer saw it; 4) records (b) as what its survival says about the suite, not as an incident; 5) adds a shape only with at least two instances; 6) does not commit, push or open a PR, and prints the proposal instead.
 
-Run RED; write `baseline.md` with the rationalizations verbatim.
+Run directory: no files. Run RED per "Pressure-test method"; write `baseline.md` with the rationalizations verbatim.
 
 - [ ] **Step 4: GREEN - write the skill**
 
@@ -3073,10 +3177,9 @@ Run the standard verification, then:
 
 ```bash
 claude --plugin-dir . plugin details ship-kit
-claude plugin tag --dry-run .
 ```
 
-Expected: details prints `ship-kit 0.1.0` and `Skills (5)  mining-defect-shapes, planning-deployable-pr-sequences, proving-tests-can-fail, reviewing-design-documents, watching-pr-checks` with `Agents (0)`, `Hooks (0)`, `MCP servers (0)`, `LSP servers (0)`; the dry run reports it would create `ship-kit--v0.1.0` with no version disagreement (it may also report the working tree state; it creates nothing).
+Expected: details prints `ship-kit 0.1.0` and `Skills (5)  mining-defect-shapes, planning-deployable-pr-sequences, proving-tests-can-fail, reviewing-design-documents, watching-pr-checks` with `Agents (0)`, `Hooks (0)`, `MCP servers (0)`, `LSP servers (0)`.
 
 - [ ] **Step 3: Commit**
 
@@ -3085,13 +3188,23 @@ git add .claude-plugin/plugin.json
 git commit -m "Set the plugin version to 0.1.0"
 ```
 
+- [ ] **Step 4: Dry-run the tag on the commit**
+
+The dry run refuses uncommitted changes to the release, so it runs only after Step 3. Never pass `--force`.
+
+```bash
+claude plugin tag --dry-run .
+```
+
+Expected: exit 0; `Version: 0.1.0 (from plugin.json)`; `Tag:` `ship-kit--v0.1.0`; a dry-run line saying it `would create tag ship-kit--v0.1.0 at HEAD`; no version disagreement. It creates nothing (`git tag -l` stays empty).
+
 **Acceptance:** CI green; details and dry run as above.
 
 ---
 
 ### Task 12: Tag `ship-kit--v0.1.0` (owner approval required)
 
-Spec: CLAUDE.md, Pre-release checklist (as amended by Task 1) and Versioning and releases; design 21.2 (required checks on main), 22.8, 22.9 (tag-protection ruleset); ruling 17.
+Spec: CLAUDE.md, Pre-release checklist (as amended by Task 1) and Versioning and releases; design 21.2 (required checks on main), 22.8, 22.9 (tag-protection ruleset, already in place); ruling 17.
 
 **Files:** none in the repository. Record each checklist result in the release PR thread or the owner hand-off message.
 
@@ -3108,20 +3221,21 @@ node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"
 
 1. Validate passes; the plugin `--json` check is inside the test run.
 2. Details shows the five skills and zero agents, hooks, MCP and LSP servers; no `bin/`.
-3. Fresh install from the local path in an isolated config, confirming the dependency resolves:
+3. Fresh install from the local path in an isolated config, confirming the dependency resolves. The dependency lives in another marketplace, and a cross-marketplace dependency resolves only when that marketplace is already known, so it is added first (without it, `plugin list` shows ship-kit `failed to load` with `Dependency "superpowers@claude-plugins-official" is not installed`):
    ```bash
    CFG=$(mktemp -d)
+   CLAUDE_CONFIG_DIR="$CFG" claude plugin marketplace add anthropics/claude-plugins-official
    CLAUDE_CONFIG_DIR="$CFG" claude plugin marketplace add "$PWD"
    CLAUDE_CONFIG_DIR="$CFG" claude plugin install ship-kit@ship-kit
    CLAUDE_CONFIG_DIR="$CFG" claude plugin list
    ```
-   Expected: `ship-kit` 0.1.0 and `superpowers` both installed and enabled (design F15, first part).
+   Expected: the install prints `(+ 1 dependency: superpowers)`; `plugin list` shows `ship-kit@ship-kit` 0.1.0 and `superpowers@claude-plugins-official` both enabled (design F15, first part).
 4. `plugin.json` says 0.1.0; `marketplace.json` has no `version`.
 5. Breaking-change classification: first minor release; nothing earlier to break.
 6. README lists every script (`scripts/lib/`, `check-template-secrets.mjs`, `collect.mjs`, both watchers) and "Hooks: None".
 7. No workflow templates exist yet; nothing to resolve.
 8. Generic-content sweep: read `git diff 29b8580..HEAD` in full for any adopting-repo name, path, incident or ticket number.
-9. Tag-protection ruleset (owner action, below).
+9. Rulesets read back (Step 3): tag protection on `ship-kit--v*`; `ci` and `gitleaks` required on `main`.
 10. `gitleaks` green on the release commit: `gh run list --commit "$(git rev-parse HEAD)" --workflow secret-scan.yml`.
 11. Tag (below).
 
@@ -3129,32 +3243,25 @@ Design 22.8: release 1 depends on no UNVERIFIED platform fact beyond F14 (unveri
 
 - [ ] **Step 2: Ask the owner for approval**
 
-Send the checklist results and the three actions below. Do nothing further without an explicit yes.
+Send the checklist results, the ruleset read-back and the tag action below. Do not tag without an explicit yes.
 
-- [ ] **Step 3: On approval, apply the rulesets (admin)**
+- [ ] **Step 3: Read back both rulesets (no changes)**
 
-Required checks on `main` (design 21.2; the dogfood gates join in release 2):
-
-```bash
-gh api -X POST repos/dacrowlah/ship-kit/rulesets --input - <<'JSON'
-{"name":"ship-kit required checks","target":"branch","enforcement":"active",
- "conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},
- "rules":[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,
-   "required_status_checks":[{"context":"ci"},{"context":"gitleaks"}]}}]}
-JSON
-```
-
-Tag protection (design 22.9):
+Both rulesets already exist, and Task 1, Step 12 added `ci` to `main`'s. Nothing is created or edited here; each command prints `true` and exits 0:
 
 ```bash
-gh api -X POST repos/dacrowlah/ship-kit/rulesets --input - <<'JSON'
-{"name":"release tags","target":"tag","enforcement":"active",
- "conditions":{"ref_name":{"include":["refs/tags/ship-kit--v*"],"exclude":[]}},
- "rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"update"}]}
-JSON
+gh api repos/dacrowlah/ship-kit/rulesets/24137364 | jq -e '
+  .enforcement == "active" and .conditions.ref_name.include == ["~DEFAULT_BRANCH"]
+  and ([.rules[].type] | sort) == ["deletion", "non_fast_forward", "pull_request", "required_status_checks"]
+  and ([.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | sort) == ["ci", "gitleaks"]
+  and .bypass_actors == [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]'
+gh api repos/dacrowlah/ship-kit/rulesets/24137367 | jq -e '
+  .target == "tag" and .enforcement == "active" and .conditions.ref_name.include == ["refs/tags/ship-kit--v*"]
+  and ([.rules[].type] | sort) == ["deletion", "non_fast_forward", "update"]
+  and .bypass_actors == []'
 ```
 
-Read both back with `gh api repos/dacrowlah/ship-kit/rulesets` before tagging. If `gitleaks` was already required through classic protection, skip it in the first ruleset rather than require it twice.
+`release-tags` has no `creation` rule, so `claude plugin tag --push` can create the tag, and once created it cannot be moved or deleted. If either check prints `false`, report it to the owner and do not tag.
 
 - [ ] **Step 4: On approval, tag**
 
@@ -3166,4 +3273,6 @@ git ls-remote --tags origin 'ship-kit--v0.1.0'
 
 Expected: the tag exists on the remote at the Task 11 merge commit.
 
-**Acceptance:** owner approval recorded; both rulesets read back; `ship-kit--v0.1.0` on the remote at the release commit; checklist items 1 to 11 recorded.
+**Acceptance:** owner approval recorded; both ruleset read-backs print `true`; `ship-kit--v0.1.0` on the remote at the release commit; checklist items 1 to 11 recorded.
+
+Implementation note: before Step 4, check that `HEAD` equals the Task 11 merge commit (`gh pr view <n> --json mergeCommit --jq .mergeCommit.oid`), in case another PR merged in between.
