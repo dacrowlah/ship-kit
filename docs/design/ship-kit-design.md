@@ -63,7 +63,7 @@ points at the section that implements it and the test that pins it.
 | R14 | "Agents MAY commit and push, with a per-repo opt-out: ship and ci-watch are model-invocable (no disable-model-invocation). setup asks one question ("Allow agents to commit and push without asking?"), default yes, stored as one boolean in the ship-kit config ... When false, the skill runs but stops before each commit/push to ask the user, and never pushes when no user can be asked (CI/headless). Enforcement lives in the skill, since disable-model-invocation is static frontmatter. Amend the CLAUDE.md rule on side-effecting skills to "must honour this setting" (release 1 first PR). setup and any release/tag command stay disable-model-invocation." Merge scope is narrowed by R17. | 5.4, 15, 16, 19.3, 22.1 | `tests/lib/agent-policy.test.mjs`; pressure tests for `ship` and `ci-watch` (21.5) |
 | R15 | "Review jobs use the workflow GITHUB_TOKEN, not the Claude GitHub App." | 6.3, 20.3 | `tests/workflows/review-yml.test.mjs` (seat step passes `github_token` from `secrets.GITHUB_TOKEN`) |
 | R16 | "No cross-account scratch repo for now: remove it from the plan; cross-owner behaviour stays UNVERIFIED with a note naming what would test it later." | 2 (F17), 21.4 | none |
-| R17 | "agents.commitAndPush covers commit, push and NORMAL merge only. An agent may merge only via a normal (non-admin) merge, bound to the exact head SHA it verified (--match-head-commit), and only when required checks read from BOTH rulesets and classic protection are all green and the required set is non-empty (empty or unreadable set = refuse)." Amended: "admin merge becomes a SEPARATE opt-in setting (e.g. agents.adminMerge, default false), asked at setup as its own question after the commit/push one, read only from the default branch's config like the other agent setting (missing/unreadable = false) ... When agents.adminMerge is true, an agent may run the admin-merge path, but only: (1) when every required check (from rulesets AND classic protection, non-empty set) is green on the exact head SHA; admin only bypasses the branch-up-to-date/strict requirement, never a failing, pending or missing check; (2) bound to that SHA (--match-head-commit); (3) if the path toggles enforce_admins or a ruleset bypass, it restores it in a finally-style step and verifies the protection afterwards, reporting failure loudly if restore fails; (4) it states in its output that it used admin. When false, agents never use --admin or toggle protection; they report that an admin merge is needed and stop." | 5.1, 5.4, 16.3, 16.4, 19.3 | `tests/lib/agent-policy.test.mjs`, `tests/merge/required-checks.test.mjs`, `tests/merge/merge.test.mjs`, `tests/merge/admin-merge.test.mjs`, `tests/hooks/deny-admin-bypass.test.mjs` (16.3, 16.4) |
+| R17 | "agents.commitAndPush covers commit, push and NORMAL merge only. An agent may merge only via a normal (non-admin) merge, bound to the exact head SHA it verified (--match-head-commit), and only when required checks read from BOTH rulesets and classic protection are all green and the required set is non-empty (empty or unreadable set = refuse)." Amended: "admin merge becomes a SEPARATE opt-in setting (e.g. agents.adminMerge, default false), asked at setup as its own question after the commit/push one, read only from the default branch's config like the other agent setting (missing/unreadable = false) ... When agents.adminMerge is true, an agent may run the admin-merge path, but only: (1) when every required check (from rulesets AND classic protection, non-empty set) is green on the exact head SHA; admin only bypasses the branch-up-to-date/strict requirement, never a failing, pending or missing check; (2) bound to that SHA (--match-head-commit); (3) if the path toggles enforce_admins or a ruleset bypass, it restores it in a finally-style step and verifies the protection afterwards, reporting failure loudly if restore fails; (4) it states in its output that it used admin. When false, agents never use --admin or toggle protection; they report that an admin merge is needed and stop." Further: "Remove the enforce_admins/protection TOGGLE entirely. Admin merge uses a ruleset bypass actor ... so `gh pr merge --admin --match-head-commit <sha>` works without mutating protection." "Admin scope ... bypass ONLY the branch-up-to-date/strict requirement ... never past failing/pending/missing checks, and never past required code-owner review. The same refusal list as normal merge ... applies to admin merges too." The two settings are "a BEHAVIOURAL contract enforced by the skills (plus a best-effort hook as a tripwire, explicitly not a boundary) ... The real boundary is GitHub-side: rulesets, required checks, CODEOWNERS, and which identity holds admin." | 5.1, 5.4, 16.3, 16.4, 19.3, 20.1 | `tests/lib/agent-policy.test.mjs`, `tests/merge/required-checks.test.mjs`, `tests/merge/merge.test.mjs`, `tests/merge/admin-merge.test.mjs`, `tests/hooks/deny-admin-bypass.test.mjs` (16.3, 16.4) |
 
 ---
 
@@ -97,10 +97,13 @@ them before the dependent release ships.
 | F19 | Public repositories get a default Actions event policy that blocks `pull_request_target` (evaluate mode now; enforced on 2026-11-02 for repos on the default policy); an explicit event policy must allow it. `actions/checkout` refuses to check out a fork PR's ref under `pull_request_target` unless `allow-unsafe-pr-checkout` is set. | docs.github.com, "Securely using pull_request_target"; actions/checkout `src/unsafe-pr-checkout-helper.ts` (default branch, 2026-09-28) | Verified |
 | F20 | The ruleset rule "Require workflows to pass before merging" is configured only in organization (or enterprise) rulesets, on GitHub Enterprise Cloud and GHES 3.12+. A personal-account repository cannot use it. | docs.github.com, available rules for rulesets; `data/features/repo-rules-required-workflows.yml` | Verified |
 | F21 | A required status check is matched by name, optionally restricted to a source app; every workflow job reports under the same GitHub Actions app. "If a check and a commit status have the same name, both must pass." A job skipped by its `if` condition reports success. Which of two same-named check runs on one commit GitHub evaluates is not documented. | docs.github.com, troubleshooting required status checks | First three sentences verified; the last is UNVERIFIED and nothing relies on it (20.1) |
-| F22 | claude-code-action loads setting sources `user, project, local` unless `claude_args` carries `--setting-sources`; its `settings` input is merged into `~/.claude/settings.json` (user scope); on PR events it restores `.claude/`, `CLAUDE.md`, `.mcp.json` and similar paths from the PR base before starting; it refuses to run Claude for an actor without write access. | claude-code-action v1.0.236: `base-action/src/parse-sdk-options.ts` 338-344, `base-action/src/setup-claude-code-settings.ts`, `src/github/operations/restore-config.ts`, `docs/security.md` | Verified |
-| F23 | Claude Code CLI: `--setting-sources` limits loaded sources; `--tools` restricts the built-in tools that exist (not MCP tools); `--permission-mode dontAsk`; `--strict-mcp-config`; `--add-dir`. `disableAllHooks: true` outside managed settings turns off user, project, local and plugin hooks. | code.claude.com/docs/en/cli-reference; settings-reference `disableAllHooks` | Verified for the CLI. That the action passes `--tools`, `--permission-mode` and `--strict-mcp-config` through `claude_args` unchanged, and that the inline-comment MCP tool survives `--strict-mcp-config`, is UNVERIFIED; settled by the canary in PR 2.4 |
+| F22 | claude-code-action loads setting sources `user, project, local` unless `claude_args` carries `--setting-sources`; its `settings` input is merged into `~/.claude/settings.json` (user scope); on PR events it restores `.claude/`, `CLAUDE.md`, `.mcp.json` and similar paths from the PR base before starting; it refuses to run Claude when the event's actor (the sender, not the PR author) lacks write access; it sets `GITHUB_TOKEN` and `GH_TOKEN` in Claude's environment and, in agent mode, writes the token into the workspace's `.git/config` remote URL. | claude-code-action v1.0.236: `base-action/src/parse-sdk-options.ts` 338-344, `base-action/src/setup-claude-code-settings.ts`, `src/github/operations/restore-config.ts`, `src/github/validation/permissions.ts` 33-47, `src/github/operations/git-config.ts` 132-133, `src/entrypoints/run.ts` 189-191, `docs/security.md` | Verified |
+| F23 | Claude Code CLI: `--setting-sources` limits loaded sources; `--tools` restricts the built-in tools that exist (not MCP tools); `--permission-mode dontAsk`; `--add-dir`; `--settings` overrides settings files for the session. `disableAllHooks: true` outside managed settings turns off user, project, local and plugin hooks. | code.claude.com/docs/en/cli-reference; settings-reference `disableAllHooks`; settings precedence | Verified for the CLI. That the action passes `--tools`, `--permission-mode`, `--disallowedTools` and `--add-dir` through `claude_args` unchanged is UNVERIFIED; settled by the canary in PR 2.4 |
 | F24 | The `claude-plugins-official` marketplace entry for `superpowers` pins its source by `sha`, so a copy of that marketplace at a fixed commit fixes the superpowers commit. superpowers registers a `SessionStart` hook that injects instructions into every session, and `SessionStart` fires under `-p`. | local clone of claude-plugins-official at `fbe07fb6`; superpowers 6.4.1 `hooks/hooks.json` and `session-start`; code.claude.com/docs/en/hooks | Verified |
 | F25 | Which definition wins when a CLI-added local marketplace and the working directory's `.claude/settings.json` `extraKnownMarketplaces` both use the name `ship-kit`. | no doc found | UNVERIFIED; settled by the canary in PR 2.4 against the adopter-shaped settings fixture (21.4); a wrong resolution fails closed through `skill_marker` (6.3) |
+| F26 | `gh pr merge --admin` only skips gh's own client-side refusal for merge states `BLOCKED` and `BEHIND`; it then calls the same merge mutation, passing `--match-head-commit` as `expectedHeadOid`, and GitHub decides whether the caller may bypass. A branch ruleset's bypass list names actors (including a repository role) with `bypass_mode` `always`, `pull_request` (bypass only when merging a PR; branch rulesets only) or `exempt`; a bypass actor bypasses the rules of that ruleset. Rulesets and classic protection targeting one branch aggregate, and every applicable rule applies. | cli/cli `pkg/cmd/pr/merge/merge.go` at v2.101.0 (`blockedReason`, `expectedHeadOid`); REST description schema `repository-ruleset-bypass-actor`; docs.github.com creating rulesets (bypass, "For pull requests only") and about rulesets (rule layering) | Verified |
+| F27 | `GET /repos/{o}/{r}/collaborators/{user}/permission` returns the user's base permission and is enabled for GitHub App tokens. Which job-token permission it needs, and its answer for a private repo, are not stated. | REST description (`x-github.enabledForGitHubApps: true`) | First sentence verified; the rest UNVERIFIED, settled by the canary and the private-repo exit check (22.8); a failed call counts as "no write access" (6.3) |
+| F28 | `permissions.blockReadsOutsideWorkingDirectories: true` makes Read, Grep, Glob and LSP refuse paths outside the working directories in every permission mode (Claude Code v2.1.257 or later); `Read` deny rules apply to Grep and Glob on a best-effort basis; `--disallowedTools "mcp__*"` removes every MCP tool. | code.claude.com/docs/en/settings-reference; permissions; cli-reference | Verified |
 
 ---
 
@@ -142,8 +145,8 @@ Paths are relative to the plugin root. "dmi" marks
 release or tag command would be dmi for the same reason), the seat skills so
 they cost nothing in a session's context listing (F8) and run only when
 named in a prompt. Skills that commit, push or normally merge are
-model-invocable and honour the agent commit-and-push setting (5.4). The
-admin-merge path is a separate opt-in (`agents.adminMerge`, 16.4).
+model-invocable and honour the agent settings (5.4), a behavioural contract; the admin
+merge is a separate opt-in (`agents.adminMerge`, 16.4).
 
 ### 4.1 Skills
 
@@ -179,7 +182,7 @@ and in the naming test.
 
 | Path | Event | Scope |
 |---|---|---|
-| `hooks/hooks.json` | PreToolUse, matcher `Bash` | 13.5 (`--no-verify` guard), 16.4 (admin-bypass guard) |
+| `hooks/hooks.json` | PreToolUse, matcher `Bash` | 13.5 (`--no-verify` guard, admin tripwire) |
 
 ### 4.3 Scripts
 
@@ -190,13 +193,16 @@ and in the naming test.
 | `scripts/lib/glob.mjs` | `*`, `**`, `?` path matching | 5, 12, 14 |
 | `scripts/lib/stamp.mjs` | managed-file stamps and hashes | 19.2 |
 | `scripts/lib/render.mjs` | `<<key>>` template rendering | 19.3 |
-| `scripts/lib/agent-policy.mjs` | read the commit-and-push setting from `origin/<default>`; decide ask or proceed | 5.4 |
+| `scripts/lib/agent-policy.mjs` | read the agent settings from `origin/<default>`; decide proceed, ask or refuse | 5.4 |
 | `scripts/lib/state-marker.mjs` | encode and decode state markers (codec only) | 8.2, 18.1 |
 | `scripts/review/review-mode.mjs` | modes, schemas, severity, state-marker trust (run-bound) | 8 |
 | `scripts/review/plan.mjs` | partition, scope, priors, materialize the review directory | 6.3, 8 |
 | `scripts/review/aggregate.mjs` | fail-closed verdict, comment, state | 6.3, 8 |
 | `scripts/review/override.mjs` | parse and authorize overrides and rebuttals | 11 |
 | `scripts/review/local-seats.mjs` | run seats headless for `/ship` | 15.3 |
+| `scripts/review/extract-tree.mjs` | write the PR head tree as plain files, symlinks as placeholders | 6.3 |
+| `scripts/review/receipt.mjs` | write a seat receipt from the environment | 6.3 |
+| `scripts/release/bump-version.mjs` | bump `plugin.json` and regenerate seat marker tokens | 6.4 |
 | `scripts/coverage/lcov.mjs` | parse and merge LCOV | 12 |
 | `scripts/coverage/patch-coverage.mjs` | changed-line coverage | 12 |
 | `scripts/coverage/baseline.mjs` | threshold from shadow runs | 12.4 |
@@ -206,11 +212,11 @@ and in the naming test.
 | `scripts/mining/collect.mjs` | fetch PRs, comments and state markers | 18 |
 | `scripts/promote/shadow-record.mjs` | count clean shadow runs | 10.3 |
 | `scripts/hooks/deny-hook-bypass.mjs` | the `--no-verify` guard | 13.5 |
-| `scripts/hooks/deny-admin-bypass.mjs` | denies an agent's direct `gh pr merge --admin` and protection or ruleset writes; the only admin path is `admin-merge.sh` | 16.4 |
+| `scripts/hooks/admin-tripwire.mjs` | best-effort tripwire: denies direct `gh pr merge --admin` and protection or ruleset writes in agent sessions; not a boundary | 13.5 |
 | `scripts/watch/watch-pr-checks.sh` | poll PR checks to one summary line | 16.2 |
 | `scripts/watch/watch-merge-deploy.sh` | poll a merge commit's runs | 16.2 |
 | `scripts/merge/required-checks.mjs` | read required contexts from rulesets and classic protection; verify provenance | 16.3 |
-| `scripts/merge/admin-merge.sh` | the admin-merge path, the only one that uses `--admin` | 16.4 |
+| `scripts/merge/merge.mjs` | the merge decision and the merge call, normal and admin, with one refusal list | 16.4 |
 
 No top-level `bin/` (CLAUDE.md, Hooks and scripts). Skill prose invokes
 every script through its interpreter (`node ...`, `bash ...`) using
@@ -347,7 +353,7 @@ halves with different lifetimes:
   "agents": { "commitAndPush": true, "adminMerge": false },
   "ship": { "maxIterations": 5 },
   "ciWatch": { "maxIterations": 3, "pollSeconds": 30 },
-  "merge": { "method": "squash" }
+  "merge": { "method": "squash", "humanOnlyPaths": ["docs/standards/**"] }
 }
 ```
 
@@ -363,7 +369,8 @@ preflight steps (`preflight.steps`), hub-file globs (`classify.hub`),
 repo-specific hunt list location (`review.huntLists`), whether agents
 may commit and push without asking (`agents.commitAndPush`, 5.4), and
 whether agents may use the admin-merge path (`agents.adminMerge`, 5.4,
-16.4).
+16.4), and the repo's standards paths that only a human merges
+(`merge.humanOnlyPaths`, 16.4).
 
 `maxSeats`, `targetLines` and `maxTurns` defaults are the working values of
 the first adopting repo, carried as starting points; nothing derives from
@@ -418,30 +425,41 @@ Local scripts read the config at `origin/<default>` after
 `TRUSTED_SHA`, so local and CI classify a change the same way when the
 local fetch is current.
 
-### 5.4 Agent commit-and-push setting
+### 5.4 Agent settings
 
-`agents.commitAndPush` (boolean, default `true`) is the answer to setup's
-one question "Allow agents to commit and push without asking?" (19.3). It
-governs every ship-kit skill step that commits, pushes, normally merges or
-opens a PR: `ship` (15.2), `ci-watch` (16.1), `merge` (16.4),
-`promoting-shadow-checks` (10.3), `measuring-coverage-baseline` (12.4) and
-`mining-defect-shapes` (18.3, from release 2). A normal merge counts
-because it publishes to the default branch, which is a push by another
-route. It covers nothing else: an admin merge, an `enforce_admins` or
-ruleset-bypass change, or `gh pr merge --admin` is governed by the second
-boolean, `agents.adminMerge` (default `false`), setup's second question
-(19.3). When it is not `true`, agents never take the admin path; they
-report that an admin merge is needed and stop (R17, 16.4).
+Two booleans, both answers to setup questions (19.3):
 
-Enforcement lives in the skills, because `disable-model-invocation` is
-static frontmatter and cannot vary per repo. Before each such step a skill
-runs `node ${CLAUDE_PLUGIN_ROOT}/scripts/lib/agent-policy.mjs`, which runs
-`git fetch origin <default>` and reads the setting from the config at
-`origin/<default>` (an agent's own branch cannot grant it permission; a
-failed fetch counts as unreadable) and prints `proceed` or `ask`. With
-`--admin` it reads `agents.adminMerge` instead and prints `proceed` or
-`refuse`; missing or unreadable is `refuse`, and there is no ask path,
-because 16.4 hands a refused admin merge to the human as a report:
+- `agents.commitAndPush` (default `true`), "Allow agents to commit and push
+  without asking?", governs every ship-kit skill step that commits,
+  pushes, normally merges or opens a PR: `ship` (15.2), `ci-watch` (16.1),
+  `merge` (16.4), `promoting-shadow-checks` (10.3),
+  `measuring-coverage-baseline` (12.4) and `mining-defect-shapes` (18.3,
+  from release 2). A normal merge counts because it publishes to the
+  default branch, which is a push by another route.
+- `agents.adminMerge` (default `false`), asked after it, governs the one
+  admin step, `gh pr merge --admin` inside `/ship-kit:merge` (16.4). When
+  it is not `true`, agents never use `--admin` or change protection; they
+  report that an admin merge is needed and stop.
+
+**These are a behavioural contract, not a security boundary.** A local
+agent runs with the user's own `gh` credentials, and nothing on the
+user's machine can stop a process holding those credentials from doing
+what they allow: it can call `gh api` or `curl` directly, drive a
+terminal, or skip a script. The skills honour the settings, and a
+best-effort hook (13.5) catches the common direct commands as a tripwire.
+What actually limits an agent is GitHub-side: the rulesets and required
+checks, CODEOWNERS with required review, and which identity holds admin
+and appears in a ruleset's bypass list (16.4, 20.1). An agent that runs
+with a credential lacking the Administration permission cannot bypass a
+ruleset or edit protection at all; setup says so (19.3).
+
+Before each governed step a skill runs
+`node ${CLAUDE_PLUGIN_ROOT}/scripts/lib/agent-policy.mjs`, which runs
+`git fetch origin <default>` and reads `agents.commitAndPush` from the
+config at `origin/<default>` (an agent's own branch cannot grant it
+permission; a failed fetch counts as unreadable) and prints `proceed` or
+`ask`. With `--admin` it reads `agents.adminMerge` and prints `proceed`
+or `refuse`; anything but an explicit `true` is `refuse`:
 
 - `proceed`: the step runs.
 - `ask`: the skill stops before the step and asks the user, naming the
@@ -449,14 +467,15 @@ because 16.4 hands a refused admin merge to the human as a report:
   unavailable question tool, or a run with `CI` or `GITHUB_ACTIONS` set
   (CI or headless) is a no: the skill reports what it would have done and
   stops without committing or pushing.
+- `refuse`: the skill reports that an admin merge is needed, with the
+  state that makes it so, and stops.
 
 `tests/lib/agent-policy.test.mjs` covers: true proceeds; false asks; false
 under `CI` never proceeds; a branch-local edit to `true` is ignored when
 `origin/<default>` says `false`; an absent or invalid config there, or a
-failed fetch, counts as `false` (the cautious default when the setting
-cannot be read); `--admin` proceeds only on an explicit `true` and
-refuses on `false`, absent, invalid, unreadable, or a branch-local edit to
-`true`.
+failed fetch, counts as `false`; `--admin` proceeds only on an explicit
+`true` and refuses on `false`, absent, invalid, unreadable, or a
+branch-local edit to `true`.
 
 ---
 
@@ -484,10 +503,10 @@ findings; it reports `status` and `enforced` and the caller's gate decides.
 | input | `seat` | string | yes | `general`, `adversarial`, `security` or `test-integrity` |
 | input | `runners` | string (JSON) | yes | `{"plan":[...],"seat":[...],"aggregate":[...]}` label arrays |
 | input | `config_path` | string | no, default `.ship-kit/config.json` | where the trusted commit's config lives |
-| input | `canary` | boolean | no, default `false` | skip the release-tag check; honoured only under the canary conditions in 6.3 |
+| input | `canary` | boolean | no, default `false` | skip the release-tag check and add the canary-only behaviour; honoured only under the canary conditions in 6.3 |
 | secret | `claude_code_oauth_token` | secret | no | OAuth auth for seats |
 | secret | `anthropic_api_key` | secret | no | API-key auth for seats |
-| output | `status` | string | | `pass`, `fail-findings`, `fail-coverage`, `fail-config`, `override` |
+| output | `status` | string | | `pass`, `fail-findings`, `fail-coverage`, `fail-config`, `needs-maintainer`, `override` |
 | output | `enforced` | string | | `true` or `false`; from the trusted config's seat mode |
 | output | `mode` | string | | `full` or `design-doc` |
 
@@ -520,109 +539,178 @@ ship-kit release.
 
 **Layout** (every job). The workspace root holds the adopting repo at
 `TRUSTED_SHA` (`actions/checkout` with `ref: TRUSTED_SHA`,
-`persist-credentials: false`). Everything else lives under
-`$RUNNER_TEMP/ship-kit/`, outside the checkout, each directory deleted and
-recreated before it is written:
+`persist-credentials: false`; `fetch-depth: 0` in plan, which needs
+history for merge bases and ancestry (8.2), and 1 elsewhere). Everything
+else lives under `$RUNNER_TEMP/ship-kit/`, outside the checkout, each
+directory deleted and recreated before it is written:
 
 | Directory | Content | How |
 |---|---|---|
-| `src/` | ship-kit at `job.workflow_sha` | `git init`, `git fetch --depth 1 https://github.com/<job.workflow_repository> <job.workflow_sha>`, checkout `FETCH_HEAD` |
-| `deps/claude-plugins-official/` | the official marketplace at `PLUGINS_OFFICIAL_SHA` | same, from its repository |
-| `review/` | the materialized review directory | written by `plan.mjs`, then carried as the plan artifact |
-| `pr/` | the PR head tree, as files | `git archive <head> \| tar -x`; nothing ever runs with this as its working directory |
+| `src/` | ship-kit at `job.workflow_sha` | `git init`, `git fetch --depth 1 https://github.com/<job.workflow_repository> <job.workflow_sha>`, checkout `FETCH_HEAD` (ship-kit is public; no credential) |
+| `deps/claude-plugins-official/` | the official marketplace at `PLUGINS_OFFICIAL_SHA` | same, from its public repository |
+| `review/` | the materialized review directory the seats read | written by `plan.mjs`, carried as the `ship-kit-plan` artifact |
+| `expect/` | `run.json`: the nonce and the expected markers | written by `plan.mjs`, carried as the `ship-kit-expect` artifact, which only aggregate downloads |
+| `pr/` | the PR head tree, as files | `scripts/review/extract-tree.mjs`: walks `git ls-tree -r -z <head>` and writes each blob with `git cat-file`; a symlink becomes a text file holding `symlink to <target>`, a submodule a text file naming its commit; no `.gitattributes` from the PR is applied (unlike `git archive`); nothing ever runs with this as its working directory |
 
-The PR head is fetched as objects only:
-`git fetch --no-tags origin +refs/pull/<n>/head:refs/ship-kit/head`, which
+**Fetching the PR head.** The head is fetched as objects only, with the
+job token supplied for that one command and never written to git config,
+so it works on a private repository:
+`git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0)" fetch --no-tags origin +refs/pull/<n>/head:refs/ship-kit/head`,
+with `FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` in that step's `env`
+only; plan fetches full history, seats `--depth 1`. The fetched commit
 must equal `github.event.pull_request.head.sha` (otherwise `fail-config`,
 "head moved"; the newer event's run supersedes it through the caller's
 concurrency group). Diffs use `git diff --no-ext-diff --no-textconv
---no-renames TRUSTED_SHA...head`, so they work while the PR has a merge
-conflict (F18). No step installs, builds or runs anything from the PR.
+--no-renames TRUSTED_SHA...head` in plan, so they work while the PR has a
+merge conflict (F18). No step installs, builds or runs anything from the
+PR. `tests/workflows/review-yml.test.mjs` asserts the header form, that no
+step sets `persist-credentials: true`, and that the token appears only in
+that step's `env`; the private-repo exit check (22.8) runs it live.
 
-**plan** (`runs-on: ${{ fromJSON(inputs.runners).plan }}`; permissions
-contents read, pull-requests read, issues read, actions read):
+**Expressions never reach a shell.** No `run:` body in `review.yml`, the
+other reusable workflows or any template contains `${{`. Every value from
+an event, an input, another step's output or model output reaches a
+script through `env:` and is read from the environment by the script (for
+example `node -e 'fs.writeFileSync(p, process.env.OUT)'`), never by
+interpolation into shell text. `tests/workflows/no-expression-in-run.test.mjs`
+parses every workflow and template in the repository and fails on any
+`run:` body containing `${{`.
 
-1. Resolve `TRUSTED_SHA`, check out, fetch `src/`, fetch the PR head.
-2. Verify the pin, unless the canary conditions above hold:
-   `git ls-remote https://github.com/<job.workflow_repository>
-   'refs/tags/ship-kit--v*'` must list a tag whose peeled commit (its
-   `^{}` line, or the tag line for a lightweight tag) equals
-   `job.workflow_sha`. The pin itself comes from the default-branch caller
-   (20.1), so this check confirms setup wrote a release; it is not what
-   keeps a PR out of its own review.
-3. Check that exactly one auth secret is non-empty.
-4. Run `node $RUNNER_TEMP/ship-kit/src/scripts/review/plan.mjs --trusted
-   <TRUSTED_SHA> --head <head> --out $RUNNER_TEMP/ship-kit/review`. It
-   reads the config at `TRUSTED_SHA` (5.3), classifies the mode (8.1),
-   evaluates overrides (11.3), partitions the diff and writes: `seat-N.patch`,
-   `seat-N.stat`, `pr.txt`, `scope.txt`, `seat-N.prior.json` (design-doc
-   mode), `rebuttals.json` (11.2), `contract/*.md` copied from `src/review/contract/`
-   with a fresh random `contract_nonce` substituted into `output.md`,
-   `hunt/` (9.2), and `run.json` (`nonce`, the expected `skill_marker` per
-   seat read from that seat's SKILL.md in `src/`, the plugin version, and
-   the superpowers `sha` read from `deps/`'s `marketplace.json`). It
-   asserts every changed file lands in exactly one seat.
-5. Steps 1 to 3 run as `plan.mjs` subcommands, so every recognized
-   failure in steps 1 to 4 (unsupported trigger, pin, secret, head moved,
-   partition) writes
-   `status.json` `{status: "fail-config", reason}` and sets `count=0`;
-   an unrecognized crash fails the job. Outputs: `matrix`, `count`,
-   `empty`, `mode`, `json_schema`, `enforced`, `override`.
-6. Upload `review/` as the plan artifact.
+**Secrets by job.**
+
+| Job | Job token permissions | Claude auth secret |
+|---|---|---|
+| plan | contents, pull-requests, issues, actions: read | only `HAS_AUTH: ${{ secrets.<x> != '' }}` booleans in one step's `env`; never the value |
+| seat | contents: read | in the claude-code-action step's inputs only |
+| aggregate | contents read, pull-requests write, issues read, actions read | none |
+| caller gate | none (`permissions: {}` in the caller) | none |
+
+**plan** (`runs-on: ${{ fromJSON(inputs.runners).plan }}`):
+
+1. Shell steps: check out, fetch `src/`, fetch the PR head. A failure here
+   fails the job, which the gate treats as a failure (6.5).
+2. `plan.mjs preflight`: the trigger rule above; the release pin, unless
+   the canary conditions hold (`git ls-remote
+   https://github.com/<job.workflow_repository> 'refs/tags/ship-kit--v*'`
+   must list a tag whose peeled commit, its `^{}` line or the tag line for
+   a lightweight tag, equals `job.workflow_sha`; the pin itself comes from
+   the default-branch caller (20.1), so this check confirms setup wrote a
+   release and is not what keeps a PR out of its own review); exactly one
+   auth secret present; the head check.
+3. `plan.mjs author`: seats run only when the PR's head repository is
+   this repository and the PR's author (`pull_request.user.login`, not
+   the event's sender) has write, maintain or admin permission (F27), or
+   when a maintainer has approved the current head: an unedited comment
+   `/ship-kit-review <sha>` whose `<sha>` (7 or more hex characters) is a
+   prefix of the head and whose author has at least
+   `review.override.minPermission`, never a bot login. Otherwise status
+   `needs-maintainer`, reason "the author lacks write access or the PR
+   comes from a fork; a maintainer who has read the diff comments
+   `/ship-kit-review <sha>` and re-runs all jobs". A permission read that
+   fails counts as no permission.
+4. `plan.mjs plan --trusted <TRUSTED_SHA> --head <head>`: reads the
+   config at `TRUSTED_SHA` (5.3), classifies the mode (8.1), evaluates
+   overrides (11.3), partitions the diff and writes `review/`:
+   `seat-N.patch`, `seat-N.stat`, `pr.txt`, `scope.txt`,
+   `seat-N.prior.json` (design-doc mode), `rebuttals.json` (11.2),
+   `contract/*.md` copied from `src/review/contract/` with a fresh random
+   `contract_nonce` substituted into `output.md`, and `hunt/` (9.2). It
+   writes `expect/run.json`: the nonce, the plugin version, and the
+   superpowers `sha` read from `deps/`'s `marketplace.json`. It asserts
+   every changed file lands in exactly one seat.
+5. Every recognized failure in steps 2 to 4 writes `review/status.json`
+   `{status, reason}` (`fail-config` or `needs-maintainer`) and sets
+   `count=0`. Outputs: `matrix`, `count`, `empty`, `mode`, `json_schema`,
+   `enforced`, `override`.
+6. Upload `review/` as `ship-kit-plan` and `expect/` as `ship-kit-expect`.
 
 **seat** (matrix over `plan.outputs.matrix`, `fail-fast: false`, skipped
-when `count` is 0, `empty` is true or `override` is true; permissions
-contents read, pull-requests write, issues read):
+when `count` is 0, `empty` is true or `override` is true):
 
-1. Resolve `TRUSTED_SHA`, check out, fetch `src/` and `deps/`, fetch the PR
-   head and extract `pr/`.
-2. Download the plan artifact into `review/`; copy this seat's chunk to
+1. Check out, fetch `src/` and `deps/`, fetch the PR head, extract `pr/`.
+2. Download `ship-kit-plan` into `review/`; copy this seat's chunk to
    `diff.patch`, `stat.txt`, `prior.json`.
 3. Run `anthropics/claude-code-action` with:
-   - `github_token: ${{ secrets.GITHUB_TOKEN }}` (F6, F16, R15; see 20.3)
-   - the auth secret from 6.2
-   - `settings: '{"disableAllHooks": true}'` (user scope, F22, F23)
-   - `plugin_marketplaces` and `plugins` per 7.2
-   - `prompt: /ship-kit:<skill for inputs.seat> <review dir>`
+   - `github_token: ${{ secrets.GITHUB_TOKEN }}` (F6, F16, R15), which is
+     contents-read here, so the copy the action writes into the
+     workspace's `.git/config` (F22) can only read;
+   - the auth secret from 6.2;
+   - `settings`: `{"disableAllHooks": true, "permissions":
+     {"blockReadsOutsideWorkingDirectories": true, "deny":
+     ["Read(./.git/**)", "Read(//proc/**)", "Read(~/**)"]}}` (user scope,
+     F22, F23, F28);
+   - `plugin_marketplaces` and `plugins` per 7.2;
+   - `prompt: /ship-kit:<skill for inputs.seat> <review dir>`;
    - `claude_args`: `--setting-sources user --permission-mode dontAsk
      --tools "Read,Grep,Glob,TodoWrite" --allowedTools
-     "Read,Grep,Glob,TodoWrite,mcp__github_inline_comment__create_inline_comment"
-     --strict-mcp-config --add-dir <review dir> <pr dir> --max-turns
-     <review.maxTurns> --json-schema '<plan json_schema>'`, plus
-     `--model <model>` when the seat's config names one.
-   The seat has no shell and no subagents: `Task` is absent because a
-   seat is already one shard and headless CI orphans in-agent subagents.
-4. Always write and upload a receipt `{seat, body}`; `body` is `null` when
-   the action returned no structured output.
+     "Read,Grep,Glob,TodoWrite" --disallowedTools "mcp__*" --add-dir
+     <review dir> <pr dir> --max-turns <review.maxTurns> --json-schema
+     '<plan json_schema>'`, plus `--model <model>` when the seat's config
+     names one.
+   The working directories are the workspace root (the default branch),
+   `review/` and `pr/`; reads anywhere else, including the rest of
+   `$RUNNER_TEMP`, `$HOME` and `/proc`, are refused (F28). The seat has no
+   shell, no MCP tool, no write tool and no subagents (`Task` is absent
+   because a seat is already one shard and headless CI orphans in-agent
+   subagents).
+4. Always write and upload a receipt: a step with
+   `env: OUT: ${{ steps.claude.outputs.structured_output }}` runs
+   `node $RUNNER_TEMP/ship-kit/src/scripts/review/receipt.mjs <index>`,
+   which writes `{index, seat, body}` from `process.env.OUT` (`body` is
+   `null` when `OUT` is empty or not JSON) to an artifact named
+   `ship-kit-receipt-<index>`.
 
 **aggregate** (`needs: [plan, seat]`, `if: always()`, on the `aggregate`
-runner so it does not share fate with the seat machines; permissions
-contents read, pull-requests write, issues read, actions read):
+runner so it does not share fate with the seat machines):
 
-1. Fetch `src/`; download the plan artifact and the receipts.
+1. Fetch `src/`; download `ship-kit-plan`, `ship-kit-expect` and the
+   receipts.
 2. `node $RUNNER_TEMP/ship-kit/src/scripts/review/aggregate.mjs` decides
    `status`, in order:
-   - a `status.json` from plan: its status (`fail-config`);
+   - a `status.json` from plan: its status (`fail-config` or
+     `needs-maintainer`);
    - no plan artifact: `fail-coverage`;
    - `override` true: `override`;
    - `empty` true (the PR changes no file): `pass`;
-   - coverage, for the `count` planned seats: a missing receipt, a null
-     body, a verdict outside `PASS`/`FAIL`, `complete !== true`, a
-     `contract_nonce` different from `run.json`'s, or a `skill_marker`
-     different from the one `run.json` expects is `fail-coverage`, as is
-     zero receipts when `count > 0`;
+   - coverage, for the `count` planned seats: exactly one receipt per
+     planned index, read only from `ship-kit-receipt-<index>`; a missing
+     receipt, a null body, a verdict outside `PASS`/`FAIL`,
+     `complete !== true`, a `contract_nonce` different from
+     `expect/run.json`'s, or a `skill_marker` different from the marker
+     line in `src/skills/<seat skill>/SKILL.md` at `job.workflow_sha`
+     (6.4) is `fail-coverage`;
    - otherwise the verdict (6.4, 8.3).
-3. Post the comment with `gh pr comment` (author `github-actions[bot]`),
-   then upload the artifact `ship-kit-state` holding the comment id and
-   the exact state-marker payload (8.2).
+3. Post the summary with `gh pr comment --body-file`, and any inline
+   findings (`findings[].file`, `line`) as one pull-request review through
+   `gh api --input <file>`, all as `github-actions[bot]`. Seat text is
+   rendered inert first: `@` mentions are wrapped in code spans so they
+   notify no one, HTML is escaped, and any string shaped like
+   a credential (`ghs_`, `gho_`, `ghp_`, `github_pat_`, `sk-ant-`,
+   `x-access-token:`) replaces the whole finding with "withheld: output
+   resembled a credential" and sets `status=fail-coverage`. Then upload
+   the `ship-kit-state` artifact holding the comment id and the exact
+   state-marker payload (8.2).
 4. Set outputs `status`, `enforced`, `mode`. The job exits 0 on every
    status; only a crash fails it, which the caller's gate treats as a
    failure (6.5).
 
+**Canary-only behaviour**, under the same guard as `inputs.canary`
+(event `pull_request` and `job.workflow_repository == github.repository`):
+plan adds one negative-control matrix entry whose prompt is the review
+directory without the slash command, and aggregate expects it to be
+`fail-coverage` and excludes it from the verdict; the seat step also
+uploads the action's `execution_file` output, from which aggregate
+asserts the session's tool list (exactly the `--tools` set), that no hook
+ran, and that reads of `.git/config`, `/proc/self/environ`,
+`$RUNNER_TEMP` outside `review/` and `pr/`, and a `pr/` placeholder for a
+symlink were each refused, using a canary fixture PR that asks the seat
+to read them. A failed assertion fails the canary.
+
 `tests/workflows/review-yml.test.mjs` parses `review.yml` and asserts the
 seat step's `claude_args`, `settings`, `github_token` and marketplaces as
-listed, that no step has a `working-directory` under `pr/`, and that no
-`actions/checkout` step names the PR head.
+listed, each job's permissions as in the table, that no step has a
+`working-directory` under `pr/`, that no `actions/checkout` step names
+the PR head, and that no seat step downloads `ship-kit-expect`.
 
 ### 6.4 Seat output contract
 
@@ -633,15 +721,29 @@ into this run's `output.md`, 6.3 plan step 4) and `skill_marker`. Full
 mode adds, from release 5, `findings[]` with `severity`, `file`, `line`,
 `finding`, `failure_scenario`; design-doc mode adds the fields in 8.3.
 
-`skill_marker` is a literal line in each seat SKILL.md,
-`<skill name>@<plugin version>`; `tests/skills/marker.test.mjs` fails when
-it differs from `plugin.json`'s `version`, so the release PR that bumps the
-version bumps every marker. A seat whose skill never loaded, or which
-loaded a different ship-kit version (F13, F25), has no instruction that
-yields both the per-run nonce and the expected marker, and aggregate
-scores a mismatch `fail-coverage` (6.3). This targets silent loading
-failures, not a seat trying to deceive. The canary includes a run whose prompt omits the
-slash command and asserts `fail-coverage`.
+`skill_marker` proves the seat's own skill text was in context. Each seat
+SKILL.md carries one literal line, `skill_marker:
+<skill name>@<plugin version>:<token>`, where `<token>` is 16 random hex
+characters that appear nowhere else in the repository.
+`scripts/release/bump-version.mjs`, run in the PR that bumps
+`plugin.json`, regenerates every token; `tests/skills/marker.test.mjs`
+fails when a marker's version differs from `plugin.json` or two tokens
+match. Aggregate reads the expected marker from `src/`, which no seat can
+read (6.3), and the seat's readable directories hold no expected value.
+
+Why both fields, and why this closes a seat that never loaded its skill:
+the nonce alone is not enough, because it sits in `review/contract/output.md`,
+which a model given only the literal prompt text and the schema could
+find by listing the directory it was named. The marker token exists only
+in the SKILL.md text, which reaches the model only when the skill loads;
+the ship-kit version string alone would not do, because the adopting
+repo's config and caller comments carry it. A seat that loaded an older
+ship-kit (F25) returns that release's token. The nonce adds that this
+run's contract was read, so an output cannot be a replay. Neither guards
+against a seat trying to deceive, which is outside this check's purpose.
+One exception: on ship-kit's own PRs the PR tree contains the SKILL.md
+files, so there the canary's negative control (6.3) is the check. Aggregate
+scores any mismatch `fail-coverage` (6.3).
 
 `review-mode.mjs` generates the matching JSON Schema for each mode; the
 schema is passed as a single-quoted shell word, so neither schema may
@@ -761,10 +863,10 @@ argument list.
 ### 6.6 Required-check names
 
 The required contexts are the rendered gate `name:` values from
-`render.checks` (5.1), added either to classic branch protection or to a
-branch ruleset's `required_status_checks` rule; setup detects which the
-repo uses (19.3) and ship-kit reads both (16.3). A shadow seat's gate is
-added at install like any other (19.3), so promotion is a reviewed config
+`render.checks` (5.1), added to the checks ruleset (or classic
+protection) that setup recommends (19.3), and ship-kit reads both
+sources (16.3). A shadow seat's gate is required like any other, added
+once its caller has run on a PR (19.3), so promotion is a reviewed config
 change and a deleted caller shows as a pending required check rather than
 silently disappearing. The default names are API: changing a default is a
 breaking change (CLAUDE.md, Versioning and releases).
@@ -1217,7 +1319,7 @@ PR 6.2 adds the third):
 
 ```json
 {
-  "description": "Blocks git commit/push with --no-verify (or git commit -n), and direct admin merges or branch-protection writes through gh, in Claude Code sessions.",
+  "description": "Blocks git commit/push with --no-verify (or git commit -n), and flags direct admin merges or branch-protection writes through gh, in Claude Code sessions. A tripwire for honest mistakes, not a security boundary.",
   "hooks": {
     "PreToolUse": [
       {
@@ -1228,7 +1330,7 @@ PR 6.2 adds the third):
           { "type": "command", "if": "Bash(git commit *)", "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/hooks/deny-hook-bypass.mjs"], "timeout": 5 },
           { "type": "command", "if": "Bash(gh *)", "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/hooks/deny-admin-bypass.mjs"], "timeout": 5 }
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/hooks/admin-tripwire.mjs"], "timeout": 5 }
         ]
       }
     ]
@@ -1250,13 +1352,15 @@ with `git`, and the rule is not widened to fire on every Bash call
 (CLAUDE.md, Hooks and scripts); the pre-push receipt check and CI remain
 the backstop.
 
-`deny-admin-bypass.mjs` tokenizes the command the same way and denies any
+`admin-tripwire.mjs` tokenizes the command the same way and denies any
 `gh` invocation that is `pr merge` with `--admin`, or `api` with a writing
 method (`-X`/`--method` `PUT`, `POST`, `PATCH`, `DELETE`, or any `-f`/`-F`
 field, which makes `gh api` default to `POST`) whose path contains
-`/protection` or `/rulesets`. Everything else passes. The admin path is
-`admin-merge.sh`, whose own `gh` calls run inside the script and are not
-tool calls (16.4).
+`/protection` or `/rulesets`. Everything else passes. It is a tripwire for
+an agent that forgets the contract, not a boundary: `curl`, another
+client, a script, or a command that does not begin with `gh` all pass it
+(5.4). The sanctioned admin merge is `merge.mjs --admin` (16.4), whose
+`gh` call runs inside the script and is not a tool call.
 
 ---
 
@@ -1364,16 +1468,31 @@ spawns in parallel:
 
 ```
 claude -p "/ship-kit:<seat skill> <review dir>" \
-  --allowedTools "Read,Grep,Glob,TodoWrite" \
+  --plugin-dir <plugin root> --setting-sources user \
+  --settings '{"disableAllHooks": true}' --permission-mode dontAsk \
+  --tools "Read,Grep,Glob,TodoWrite" --allowedTools "Read,Grep,Glob,TodoWrite" \
+  --disallowedTools "mcp__*" --add-dir <review dir> \
   --max-turns <review.maxTurns> --json-schema '<schema>' --output-format json
 ```
+
+`<plugin root>` is the root of the plugin `local-seats.mjs` itself runs
+from (resolved from its own module path), so the seat loads exactly the
+skills whose markers `local-seats.mjs` expects, whichever way the plugin
+was installed (19.4's project settings, a user-scope install, or
+`--plugin-dir`). `--setting-sources user` keeps the project's and local
+settings, hooks and MCP servers out, as in CI; the user's own settings and
+plugins still load, with hooks off, so a local seat is a fast pre-check
+and CI stays authoritative. Whether `--plugin-dir` wins over a
+same-named user-scope install is settled in PR 3.4; a wrong resolution
+fails the marker check rather than passing.
 
 It writes receipts in the CI format and runs `aggregate.mjs --local`. The
 seats are the same skills, contract and hunt lists CI uses; the config
 and repo hunt lists come from `origin/<default>` after a fetch (5.3), the
 local equivalent of CI's `TRUSTED_SHA`. `local-seats.mjs` writes a nonce
-into the local contract copy and checks `contract_nonce` and
-`skill_marker` exactly as CI does (6.4). Each run is a separate process, so
+into the local contract copy, keeps the expected values outside the
+review directory, and checks `contract_nonce` and `skill_marker` exactly
+as CI does (6.4). Each run is a separate process, so
 the cold pass is cold by construction. F13 is settled for `claude -p` in
 PR 3.4.
 
@@ -1436,81 +1555,79 @@ every normal merge itself, so this read cannot admit a merge GitHub would
 refuse; its job is to refuse where GitHub would allow, and to make the
 agent's decision explicit.
 
-For each context named in `render.checks` it also checks provenance: every
-check run of that name on the head must belong to a workflow run whose
-`event` is `pull_request_target` and whose `path` is the managed caller
+For each context named in `render.checks` it also checks provenance:
+every check run of that name on the head (check-runs listing with
+`filter=all`) must belong to a workflow run whose `event` is
+`pull_request_target` and whose `path` is the managed caller
 (`.github/workflows/ship-kit-<seat>.yml`, or the change-class caller); a
 same-named check from any other workflow makes the context "forged" and
-the script refuses (20.1). The coverage context is exempt, since it is
-PR-controlled by design (20.1).
+the script refuses (20.1). Green is judged on `filter=latest`, so a
+failure that a later full re-run fixed does not count against the head.
+The coverage context is exempt from provenance, since it is PR-controlled
+by design (20.1).
 
 `tests/merge/required-checks.test.mjs` runs the script against a fake `gh`
 for: classic only, rulesets only, both (union), classic 404 with a ruleset,
-both empty, a 403 from either, a pending context, a missing context, and a
-same-named check from a second workflow.
+both empty, a 403 from either, a pending context, a missing context, a
+failed first attempt fixed by a re-run, and a same-named check from a
+second workflow.
 
 ### 16.4 `/ship-kit:merge <pr>`
 
-Model-invocable. A normal merge honours 5.4. The skill:
+Model-invocable. The skill runs `node
+${CLAUDE_PLUGIN_ROOT}/scripts/merge/merge.mjs <pr>`, which does all of
+the following in order and prints one report line per decision. Nothing
+in it changes protection or rulesets.
 
-1. Refuses a PR that changes `.github/**` or `.ship-kit/**`: such a PR
-   changes how later PRs are reviewed, so a human merges it (20.1).
-2. Reads the head SHA once (`gh pr view <pr> --json headRefOid`) and runs
-   16.3 against it. Any context not green, or any refusal, stops the skill
-   with the report.
-3. Runs 5.4's check, then
+1. **Refusal list.** Refuse if the PR changes any path that decides how
+   later PRs are reviewed or worked on: `.github/**`, `.ship-kit/**`,
+   `.claude/**`, `.githooks/**`, any `CLAUDE.md`, and the globs in
+   `merge.humanOnlyPaths` of the config at `origin/<default>` (the repo's
+   standards). A human merges those (20.1).
+2. **Head.** Read the head SHA once (`gh pr view <pr> --json
+   headRefOid,mergeStateStatus,reviewDecision`) and run 16.3 against it.
+   Any context not green, a forged context, or any refusal from 16.3
+   stops with the report.
+3. **Normal merge.** `agent-policy.mjs` (5.4), then
    `gh pr merge <pr> --<merge.method> --match-head-commit <sha>`. GitHub
-   refuses the merge if the head moved after step 2.
-4. If GitHub refuses the normal merge although every required check is
-   green on that SHA (for example, the branch is behind under a strict
-   up-to-date rule, or a review requirement a solo maintainer cannot
-   meet), it runs `node ${CLAUDE_PLUGIN_ROOT}/scripts/lib/agent-policy.mjs
-   --admin`. On `refuse` it reports "an admin merge is needed" with the
-   exact `admin-merge.sh` command for a human and stops. On `proceed` it
-   runs `bash ${CLAUDE_PLUGIN_ROOT}/scripts/merge/admin-merge.sh <pr>
-   <sha>`.
-5. On success it arms `watch-merge-deploy.sh` with the merge commit's full
+   refuses the merge if the head moved after step 2. Success goes to
+   step 5.
+4. **Admin merge**, only when GitHub refused step 3 and all of these hold;
+   otherwise stop with the report:
+   - `mergeStateStatus` is `BEHIND`: the only refusal is that the branch
+     is not up to date with the base under a strict rule. `BLOCKED`
+     (reviews, code-owner review, other rules) is never bypassed;
+   - `reviewDecision` is `APPROVED` or empty, never `REVIEW_REQUIRED` or
+     `CHANGES_REQUESTED`;
+   - every required context is green on `<sha>` (step 2, re-run now);
+   - the default branch has no classic branch protection (16.3's classic
+     read returned 404): with classic protection, an admin either cannot
+     merge (`enforce_admins` on) or bypasses every classic rule including
+     reviews (`enforce_admins` off), so admin merge is unavailable and the
+     skill reports "admin merge unavailable under classic protection;
+     move the rules to rulesets (19.3)" and stops;
+   - `agent-policy.mjs --admin` prints `proceed`.
+   Then `gh pr merge <pr> --<merge.method> --admin --match-head-commit
+   <sha>`. GitHub accepts it only if the caller is a bypass actor of every
+   ruleset whose rules the merge does not meet (F26); setup's layout puts
+   the strict up-to-date requirement alone in a ruleset with that bypass
+   and reviews in one with none (19.3), so a mis-scoped admin merge fails
+   at GitHub. The report says `MERGED WITH ADMIN BYPASS (branch was behind
+   base): <pr> at <sha>`, and the skill repeats it.
+5. On success, arm `watch-merge-deploy.sh` with the merge commit's full
    SHA.
 
-`scripts/merge/admin-merge.sh <pr> <sha>` is the only code that uses
-`--admin` or changes protection. It proceeds only when one of these holds:
-a human confirms by typing the PR number at `/dev/tty` (an agent's Bash
-tool has no controlling terminal), or `agent-policy.mjs --admin` prints
-`proceed`. Then, in order:
-
-1. Re-runs 16.3 for `<sha>` and refuses unless every required context is
-   green: admin never bypasses a failing, pending or missing check, only
-   what GitHub refuses on other grounds.
-2. Records the prior `enforce_admins` value and, when a ruleset bypass is
-   the mechanism, the ruleset's prior bypass list, in
-   `$(git rev-parse --git-path ship-kit/admin-restore.json)`.
-3. Lifts `enforce_admins` (or adds the bypass) only if the prior state
-   blocks an admin merge, then runs
-   `gh pr merge <pr> --<method> --admin --match-head-commit <sha>`.
-4. In an `EXIT` trap (the finally-style step, so a failed merge still
-   restores), writes back the recorded prior values and reads them back;
-   a mismatch prints `ADMIN RESTORE FAILED: <setting> is <actual>, expected
-   <prior>` to stderr and exits non-zero. The record file is deleted only
-   after a verified restore. The trap cannot run on SIGKILL, so every run of
-   the script, and `/ship-kit:setup check`, starts by looking for a left-over
-   record file: if one exists it restores from it, verifies, and reports
-   loudly before doing anything else.
-5. Prints `MERGED WITH ADMIN BYPASS: <pr> at <sha>` on success, and the
-   skill repeats it in its own output.
-
-Agents never call `gh pr merge --admin` or write protection directly: the
-`Bash(gh *)` hook (13.5, `deny-admin-bypass.mjs`) denies both in agent
-sessions whatever the config, so the admin path always passes through the
-script's checks. `tests/merge/merge.test.mjs` covers each refusal in
-steps 1 to 4 and the `--match-head-commit` argument;
-`tests/merge/admin-merge.test.mjs` runs the script against a fake `gh` with
-no controlling terminal and `adminMerge` absent, false and true, a red
-context, a restore that reads back wrong, and a prior `enforce_admins` of
-`false` (restored as `false`); `tests/hooks/deny-admin-bypass.test.mjs`
-covers `gh pr merge --admin`, `gh -R x pr merge --admin`, `gh api -X PUT
-.../protection/enforce_admins`, `gh api --method DELETE
-.../protection/enforce_admins`, a ruleset `PUT`, and read-only `gh api`
-calls that must pass.
+These checks are the skill's contract (5.4); the GitHub-side limits are
+the ruleset layout and who holds admin. `tests/merge/merge.test.mjs` runs
+`merge.mjs` against a fake `gh` and covers: each refusal-list path, a
+`merge.humanOnlyPaths` glob, a red, pending, missing and forged context,
+the `--match-head-commit` argument on both calls, a head that moved, an
+admin attempt under `BLOCKED`, under `REVIEW_REQUIRED`, under classic
+protection, with `adminMerge` false and absent, and the admin report
+line; `tests/hooks/admin-tripwire.test.mjs` covers `gh pr merge --admin`,
+`gh -R x pr merge --admin`, `gh api -X PUT .../protection/enforce_admins`,
+`gh api --method DELETE .../protection`, a ruleset `PUT`, and read-only
+`gh api` calls that must pass.
 
 ---
 
@@ -1690,9 +1807,11 @@ covering the lines between. The config carries `shipKit.version` and
 4. **Ask** for every config key the detection could not settle (5.1's
    per-repo list), including "Allow agents to commit and push without
    asking?" (default yes, stored as `agents.commitAndPush`) and, as its
-   own question after it, "Allow agents to admin-merge a PR whose required
-   checks are all green when GitHub refuses a normal merge?" (default no,
-   stored as `agents.adminMerge`) (5.4, 16.4).
+   own question after it, "Allow agents to admin-merge a PR when every
+   required check is green on its head and the only thing GitHub refuses
+   is that the branch is not up to date?" (default no, stored as
+   `agents.adminMerge`) (5.4, 16.4). Both are explained as instructions
+   the skills follow, not as access control (5.4).
 5. **Render** everything into a staging dir under the git dir: config,
    callers, preflight, pre-push, seed hunt lists, CLAUDE.md block, coverage
    block, `.claude/settings.json` merge, `.gitignore` negations.
@@ -1708,20 +1827,36 @@ covering the lines between. The config carries `shipKit.version` and
      required contexts stay pending, which blocks merging;
    - set the fork-PR workflow approval policy to require approval for all
      outside contributors;
-   - add CODEOWNERS lines for `.github/` and `.ship-kit/`, and turn on
-     "require review from code owners" in the same protection that holds
-     the required checks;
+   - add CODEOWNERS lines for every path in 16.4's refusal list, and
+     require code-owner review;
    - create the override and false-positive labels;
-   - add the required contexts to the classic protection or ruleset the
-     repo already uses (6.6);
+   - protect the default branch with two branch rulesets, recommended
+     over classic protection and offered as a migration when classic
+     protection exists: a **checks** ruleset holding only the
+     `required_status_checks` rule (the required contexts, 6.6, and the
+     repo's choice of the strict up-to-date policy), and a **review**
+     ruleset holding the pull-request rule (approvals, code-owner review)
+     and any other rules. When `agents.adminMerge` is true, the checks
+     ruleset lists the repository admin role as a bypass actor in
+     `pull_request` mode (F26); the review ruleset lists no bypass actor.
+     A maintainer who keeps classic protection keeps normal agent merges;
+     admin merge is then unavailable (16.4). A solo maintainer who adds
+     themself as a bypass actor on the review ruleset should know that an
+     agent running with their admin credential is then held back from
+     skipping code-owner review only by the skill (5.4);
+   - optionally run agents with a credential that lacks the Administration
+     permission (for example a fine-grained token with contents and pull
+     requests write): then GitHub, not the skill, stops agents from
+     bypassing rules or editing protection, and `agents.adminMerge` can
+     only work if that identity is itself a bypass actor;
    - in an organization on GitHub Enterprise Cloud, the option of an
      organization ruleset that requires the callers as workflows (F20).
 
 Setup never commits or pushes. Because callers run from the default
 branch (F18), the callers a setup or update PR adds or changes first run on
 the PRs opened after it merges; the setup PR itself is reviewed by
-whatever was already there, and required contexts are added only after a
-caller has run once (23.1 M3).
+whatever was already there, and required contexts, shadow seats
+included, are added only after each caller has run once (6.6, 23.1 M3).
 
 ### 19.4 Local plugin pinning
 
@@ -1769,7 +1904,8 @@ a fresh render of the stamp's version with the current config.
 
 `/ship-kit:setup check` (and `cli.mjs check`, exit 1 on any state but
 current) also fails when any caller's pinned SHA differs from
-`config.shipKit.sha`, reports a left-over admin-restore record (16.4), and
+`config.shipKit.sha`, reports whether the default branch still has
+classic protection when `agents.adminMerge` is true (16.4), and
 compares the installed plugin version with `config.shipKit.version`, so a
 contributor on an older local plugin learns it. It suits a scheduled CI
 job.
@@ -1819,13 +1955,15 @@ what closes it:
 | Edit the caller, its gate or its pin | callers run on `pull_request_target`, so GitHub runs the default branch's copy (F18); `review.yml` refuses other events except the canary | 6.3, 6.5 | `tests/setup/render.test.mjs` (trigger); `tests/workflows/review-yml.test.mjs` |
 | Edit the config, a hunt list or a standard | read with `git show` at `TRUSTED_SHA` | 5.3, 9.2 | `tests/review/plan.test.mjs` |
 | Commit files where the seat looks (a planted hunt list or contract) | the review directory, ship-kit and its dependencies live under `$RUNNER_TEMP`, recreated before writing; the PR tree is extracted there as data | 6.3 | `tests/review/plan.test.mjs` with a PR fixture that commits `.pr-review/hunt/x.md` and `review/contract/output.md`, asserting neither is read |
-| Project settings, hooks, MCP servers or `CLAUDE.md` in the seat session | the workspace root is T1; the action also restores those paths from the base (F22); `--setting-sources user`, `disableAllHooks`, `--strict-mcp-config` | 6.3 | `tests/workflows/review-yml.test.mjs`; canary (F23) |
-| Tools beyond reading | `--tools "Read,Grep,Glob,TodoWrite"`, `--permission-mode dontAsk`, no Bash | 6.3 | canary asserts the session's tool list |
+| Project settings, hooks, MCP servers or `CLAUDE.md` in the seat session | the workspace root is T1; the action also restores those paths from the base (F22); `--setting-sources user`, `disableAllHooks`, `--disallowedTools "mcp__*"` | 6.3 | `tests/workflows/review-yml.test.mjs`; canary (F23) |
+| Tools beyond reading, and reads beyond the review | `--tools "Read,Grep,Glob,TodoWrite"`, `--permission-mode dontAsk`, no Bash, no MCP; reads confined to the workspace, `review/` and `pr/`, with `.git/`, `/proc` and `$HOME` denied; symlinks in `pr/` written as placeholders | 6.3 | canary asserts the tool list and each refused read |
+| Expression interpolation of PR-influenced text into a shell | no `run:` body contains `${{`; values pass through `env:` | 6.3 | `tests/workflows/no-expression-in-run.test.mjs` |
+| Prompt injection with the job's secrets present | seats run only for a same-repository PR by a writer, or a head a maintainer approved; seats hold a read-only token and cannot post; aggregate posts only rendered-inert structured output and withholds credential-shaped text | 6.3 | `tests/review/plan.test.mjs` (author rule), `tests/review/aggregate.test.mjs` (rendering, withholding) |
 | Dependency versions and their hooks | local marketplaces at `job.workflow_sha` and `PLUGINS_OFFICIAL_SHA`; hooks disabled | 7.2 | canary records the superpowers `sha` and asserts no hook ran |
-| A seat that never loaded its skill, or loaded another version | `contract_nonce` and `skill_marker` checked by aggregate | 6.4 | `tests/review/aggregate.test.mjs`; canary run without the slash command |
+| A seat that never loaded its skill, or loaded another version | `contract_nonce` and a `skill_marker` token that exists only in the skill text, checked by aggregate against `src/`; expected values never in a seat-readable directory | 6.4 | `tests/review/aggregate.test.mjs`; `tests/workflows/review-yml.test.mjs`; canary negative control |
 | Forged state markers (scope, promotion, mining) | `trustState` binds a marker to a T1 caller's run and its artifact | 8.2 | `tests/review/design-doc-mode.test.mjs` |
 | Overrides and rebuttals | commenter permission, head-SHA binding; rebuttals are data | 11 | `tests/review/override.test.mjs` |
-| An agent merging a forged green | provenance check; refusal of PRs that touch `.github/` or `.ship-kit/` | 16.3, 16.4 | `tests/merge/required-checks.test.mjs`, `tests/merge/merge.test.mjs` |
+| An agent merging a forged green, or a PR that changes review inputs | provenance check; the refusal list for normal and admin merges; admin only past a `BEHIND` state under the ruleset layout (a behavioural contract, 5.4, backed GitHub-side by the ruleset bypass scope) | 16.3, 16.4 | `tests/merge/required-checks.test.mjs`, `tests/merge/merge.test.mjs` |
 
 The release-tag check (6.3 plan step 2) is not on this list: the pin it
 checks already comes from T1.
@@ -1846,8 +1984,8 @@ checks already comes from T1.
    with required code-owner review, so a new or edited workflow needs an
    owner's approval; fork-PR workflow approval for all outside
    contributors, so a maintainer sees a fork's workflow before it runs;
-   `/ship-kit:merge` refusing a forged context and any PR touching
-   `.github/` or `.ship-kit/` (16.3, 16.4); and the genuine run's summary
+   `/ship-kit:merge` refusing a forged context and any PR on its refusal
+   list (16.3, 16.4); and the genuine run's summary
    comment, which shows the real verdict beside the forged check. What
    remains: a writer who can approve their own workflow change, or a
    human merging by hand without reading the checks, can merge a forged
@@ -1858,12 +1996,24 @@ checks already comes from T1.
    of the test workflow and measures code the PR supplies (12.2), so a PR
    can change what it reports. It guards honest mistakes only.
 3. **Prompt injection in seats.** Seats read PR-authored text while the
-   auth secret is in the job environment. They have no shell, no network
-   tool and no write tool except inline comments, and the action refuses
-   to start Claude for an actor without write access (F22), so a fork PR
-   from an outside contributor never reaches a seat: its seats return null
-   receipts and the gate fails closed. A maintainer who has read the diff
-   can re-open it from a branch in the repository.
+   Claude auth secret is in the action step's environment. The
+   author rule (6.3 plan step 3) keeps a fork PR, or a PR by someone
+   without write access, away from seats until a maintainer approves its
+   exact head (`needs-maintainer` fails the gate closed); the action's own
+   check is on the event's sender, so it alone would not (F22). A seat
+   that is steered anyway has no shell, no MCP or write tool, a read-only
+   job token, and reads confined away from `.git/`, `/proc`, `$HOME` and
+   the rest of `$RUNNER_TEMP` (F28); its only output is structured JSON,
+   which aggregate renders inert and withholds when it resembles a
+   credential. What remains: a PR from a writer, or one a maintainer
+   approved, can still steer a seat's verdict text, which is why the gate
+   is one input to a human merge decision and not the only one.
+4. **Agents with the maintainer's credential.** An agent using the
+   maintainer's own `gh` login can do anything that login can, including
+   editing rulesets; the agent settings (5.4) are instructions it
+   follows, and the tripwire hook (13.5) catches only the common direct
+   commands. Running agents with a credential lacking the Administration
+   permission (19.3) makes GitHub the boundary instead.
 
 ### 20.2 Untrusted inputs to seats
 
@@ -1873,13 +2023,15 @@ seats to treat each as a claim to check, never as an instruction.
 
 ### 20.3 Tokens
 
-Seats receive the workflow's `GITHUB_TOKEN` (as `secrets.GITHUB_TOKEN`,
-F16) through `github_token`, scoped by the caller to contents read,
-pull-requests write, issues read and actions read, and cannot raise it
-(F3). Under `pull_request_target` that token can write for fork PRs too
+Each job's token and secrets are listed in 6.3 ("Secrets by job"). The
+caller grants at most contents read, pull-requests write, issues read and
+actions read, and nothing can raise it (F3); only aggregate holds
+pull-requests write, and only the seat's action step holds the Claude
+secret. Under `pull_request_target` a token can write for fork PRs too
 (F18), which is why no job executes PR content (20.1). Passing
 `github_token` skips the action's app-token exchange (F6): comments post
-as `github-actions[bot]` (R15).
+as `github-actions[bot]` (R15), and no bot login ever authorizes an
+override, rebuttal or maintainer approval (6.3, 11).
 
 ### 20.4 Local
 
@@ -1889,7 +2041,9 @@ data anywhere except `gh` calls to the repository's own GitHub API, and
 the README lists every hook and script with what it does. Agents commit,
 push and normally merge without asking unless a repo sets
 `agents.commitAndPush` to false, and use the admin-merge path only when a
-repo sets `agents.adminMerge` to true (5.4, 16.4).
+repo sets `agents.adminMerge` to true (5.4, 16.4). Both are instructions
+the skills follow; GitHub-side rulesets and the agent's identity are the
+boundary (20.1).
 
 ### 20.5 Secrets in ship-kit itself
 
@@ -1921,7 +2075,7 @@ template or reusable workflow must pass it.
   `templates/files/preflight.mjs`), `tests/hooks/deny-hook-bypass.test.mjs`,
   `tests/watch/*.test.mjs` (the shell watchers run against a fake `gh` on
   `PATH`), `tests/setup/*.test.mjs`, `tests/promote/*.test.mjs`,
-  `tests/merge/*.test.mjs` (16.3, 16.4), `tests/hooks/deny-admin-bypass.test.mjs`,
+  `tests/merge/*.test.mjs` (16.3, 16.4), `tests/hooks/admin-tripwire.test.mjs`,
   `tests/skills/marker.test.mjs` (6.4), `tests/workflows/review-yml.test.mjs` (6.3).
 - Every test named for a guard is proven able to fail: its PR description
   names the mutation applied and the red run (`proving-tests-can-fail`).
@@ -1960,7 +2114,11 @@ writes nothing.
 ship-kit's own repo carries its config (`.ship-kit/config.json`: spec dir
 `docs/design/`, plan dir `docs/plans/`, general and adversarial
 `required`) and an adopter-shaped `.claude/settings.json` that declares the
-`ship-kit` marketplace at `ref: ship-kit--v0.1.0` (F25). It runs:
+`ship-kit` marketplace at `ref: ship-kit--v0.1.0` (F25). That file also
+enables ship-kit 0.1.0 in maintainers' own sessions in the repository
+once they trust the folder, which is the adopter experience ship-kit
+dogfoods; a maintainer testing unreleased skills uses `--plugin-dir .`.
+It runs:
 
 - **Required callers** (`ship-kit-general.yml`, `ship-kit-adversarial.yml`)
   on `pull_request_target`, calling `review.yml` at the latest release SHA
@@ -1973,8 +2131,10 @@ ship-kit's own repo carries its config (`.ship-kit/config.json`: spec dir
   `job.workflow_repository == github.repository` (6.3), which no adopting
   repo satisfies, so it is not a setting an adopter can turn on. It proves
   a changed workflow runs end to end before release, and each run asserts:
-  the seat session's tool list is exactly the `--tools` set plus the
-  inline-comment tool (F23); no hook ran (F24); the superpowers `sha`
+  plan's author rule read the canary PR author's permission and ran the
+  seats (F27); the seat session's tool list is exactly the `--tools` set
+  (F23); every read the fixture PR asks for outside the
+  review is refused (F28); no hook ran (F24); the superpowers `sha`
   recorded in `run.json` is the one `PLUGINS_OFFICIAL_SHA` pins (F15); the
   seats return the expected `skill_marker` despite the settings fixture
   (F25); and a second matrix entry whose prompt omits the slash command
@@ -1983,8 +2143,10 @@ ship-kit's own repo carries its config (`.ship-kit/config.json`: spec dir
 The canary runs on PR 2.4 itself: its caller is added by that PR (a
 `pull_request` run uses the PR's copy of a new workflow, F4), and the
 config and settings fixture it reads are on the default branch from PR
-2.1. F13, F15, F23 and F25 are settled by the first canary run that passes
-these assertions, and release 2 is not tagged before it (22.8).
+2.1. F13, F15, F23, F25, F27 and F28 are settled by the first canary run
+that passes these assertions, and release 2 is not tagged before it
+(22.8). ship-kit is public, so the canary cannot show the private-repo
+fetch; 22.8 adds a private-repo check.
 
 Cross-owner behaviour is not tested before release (R16); it stays
 UNVERIFIED as F17, which names what would test it.
@@ -2020,7 +2182,7 @@ While ship-kit is 0.x, a breaking change bumps the minor version.
 
 | PR | Content | Safe alone because | Tier | Wave |
 |---|---|---|---|---|
-| 1.1 | `ci.yml` (21.1, 21.2 gates), `scripts/lib/{glob,stamp}.mjs` with tests, README hook/script inventory and secrets section; CLAUDE.md amendments: the gerund naming rule applies to every skill except the five named command skills (R13, scoped as in 4.1); the side-effect rule becomes "a skill that commits, pushes or normally merges must honour the repo's `agents.commitAndPush` setting; an admin merge is only ever taken through `admin-merge.sh` under `agents.adminMerge`; setup and any release or tag command stay `disable-model-invocation`" (R14, R17), stated as a prerequisite for the release-2 settings it names; the `${CLAUDE_PLUGIN_ROOT}` rule replaced with F8's verified behavior | no user-visible component | M | 1 |
+| 1.1 | `ci.yml` (21.1, 21.2 gates), `scripts/lib/{glob,stamp}.mjs` with tests, README hook/script inventory and secrets section; CLAUDE.md amendments: the gerund naming rule applies to every skill except the five named command skills (R13, scoped as in 4.1); the side-effect rule becomes "a skill that commits, pushes or normally merges must honour the repo's `agents.commitAndPush` setting; an admin merge is only taken by `/ship-kit:merge` under `agents.adminMerge`, and both settings are a behavioural contract, not access control; setup and any release or tag command stay `disable-model-invocation`" (R14, R17), stated as a prerequisite for the release-2 settings it names; the `${CLAUDE_PLUGIN_ROOT}` rule replaced with F8's verified behavior | no user-visible component | M | 1 |
 | 1.2 | `reviewing-design-documents` + `pattern-method.md`, `review/hunt-lists/design-shared.md`, `planning-deployable-pr-sequences`, `proving-tests-can-fail`, with pressure tests | skills only, read-only | L | 2 |
 | 1.3 | `watching-pr-checks` + `scripts/watch/*` + fake-`gh` tests | read-only scripts | S | 2 |
 | 1.4 | `mining-defect-shapes` + `hunt-list-format.md` + `review/hunt-lists/code-shared.md` (METHOD only) + `scripts/lib/state-marker.mjs` (codec) + `scripts/mining/collect.mjs` (`--list` required, markers labelled unverified, 18.1) + tests; version 0.1.0 | reads APIs, writes the scratchpad only, never commits (18.3); depends on nothing later | L | 3 |
@@ -2029,7 +2191,7 @@ While ship-kit is 0.x, a breaking change bumps the minor version.
 
 | PR | Content | Safe alone because | Tier | Wave |
 |---|---|---|---|---|
-| 2.1 | `schemas/config.schema.json` (incl. `agents.commitAndPush`, `agents.adminMerge`), `scripts/lib/{schema,config}.mjs` with in-memory migration (5.2), tests; ship-kit's own `.ship-kit/config.json` and the adopter-shaped `.claude/settings.json` (21.4) | library, no consumer yet; the two files are read only by the canary added in 2.4 | M | 1 |
+| 2.1 | `schemas/config.schema.json` (incl. `agents.commitAndPush`, `agents.adminMerge`, `merge.humanOnlyPaths`), `scripts/lib/{schema,config}.mjs` with in-memory migration (5.2), tests; ship-kit's own `.ship-kit/config.json` and the adopter-shaped `.claude/settings.json` (21.4) | library, no consumer yet; the config is read only by the canary added in 2.4; the settings file enables the released 0.1.0 plugin in maintainers' sessions, which is read-only skills | M | 1 |
 | 2.2 | `scripts/review/{review-mode,plan,aggregate}.mjs` ported and generalized (trusted-SHA inputs, `$RUNNER_TEMP` layout, nonce and marker checks, `trustState`), suites ported | scripts not yet called by any workflow | M | 2 |
 | 2.3 | `reviewing-for-correctness`, `hunting-defect-shapes` (each with its `skill_marker` line), `review/contract/*`, `tests/skills/marker.test.mjs` | dmi skills, invisible until named | L | 2 |
 | 2.4 | `.github/workflows/review.yml` (6.3), `templates/callers/review.yml`, `templates/blocks/gate-step.sh`, gate test, `review-yml` test, ship-kit's canary caller; passes `check-template-secrets` | untagged; only ship-kit's non-required canary calls it | L | 3 |
@@ -2038,8 +2200,9 @@ While ship-kit is 0.x, a breaking change bumps the minor version.
 
 After the 0.2.0 tag: on ship-kit, an admin adds the Actions event policy
 allowing `pull_request_target` (F19), then one PR adds the required
-callers at the 0.2.0 SHA; migration 23 begins after that PR's first run
-shows both required contexts green.
+callers at the 0.2.0 SHA; migration 23 begins once a PR opened after that
+one merged shows both required contexts green (the adding PR itself runs
+only the callers already on the default branch).
 
 ### 22.3 Release 3 (0.3.0): preflight, `/ship`, `/develop`
 
@@ -2072,7 +2235,7 @@ shows both required contexts green.
 | PR | Content | Safe alone because | Tier | Wave |
 |---|---|---|---|---|
 | 6.1 | `/ship-kit:ci-watch` + pressure tests incl. the ask path and full re-runs (6.5) | capped, never merges, pushes under 5.4 | L | 1 |
-| 6.2 | `/ship-kit:merge`, `admin-merge.sh`, `deny-admin-bypass.mjs` and its `hooks.json` entry, `tests/merge/*`, `tests/hooks/deny-admin-bypass.test.mjs`; version 1.0.0 | normal merges only of green, provenance-checked PRs under 5.4; the admin path needs `agents.adminMerge` true (default false) or a human at a terminal | M | 1 |
+| 6.2 | `/ship-kit:merge`, `scripts/merge/merge.mjs`, `admin-tripwire.mjs` and its `hooks.json` entry, setup's ruleset layout and classic-to-ruleset migration offer, `tests/merge/*`, `tests/hooks/admin-tripwire.test.mjs`; version 1.0.0 | normal merges only of green, provenance-checked PRs under 5.4; the admin step needs `agents.adminMerge` true (default false), a `BEHIND` state, no classic protection, and a bypass GitHub itself grants; nothing changes protection | M | 1 |
 
 ### 22.7 Why this order
 
@@ -2086,7 +2249,12 @@ because it is deterministic and cheaper to trust.
 CLAUDE.md's pre-release checklist, plus: every UNVERIFIED row in 2 that the
 release depends on is settled, except F14 and F17, which stay UNVERIFIED by
 design and by ruling (R16); for release 2 that means a canary run (21.4)
-passing on the release PR; and `gitleaks` is green on the
+passing on the release PR, and a run in a private repository owned by
+the same account (a scratch repository, or the first adopting repo on a
+branch) whose caller pins the release candidate by an owner-approved
+pre-release tag `ship-kit--v<version>-rc.<n>`, which the tag check
+accepts; its plan and seats must fetch the PR head and produce receipts;
+and `gitleaks` is green on the
 release commit.
 
 ### 22.9 Implementation notes
@@ -2107,14 +2275,21 @@ each:
 - PR 2.4: render `secrets` and `permissions` for a local boot workflow,
   and have setup warn when a public repo's callers use self-hosted
   runners, which must be ephemeral under `pull_request_target` (F18).
-- PR 2.4: if the canary shows `Read` can reach `/proc/self/environ`, add
-  a deny rule for it to the seat's `claude_args`.
+- PR 2.4: the canary fixture PR also plants `.claude/skills/`,
+  `.claude/commands/`, `.claude/agents/` and a `CLAUDE.md` under `pr/`, and
+  asserts none of them loaded (they would only through the `project`
+  source, which `--setting-sources user` excludes).
 - PR 2.5: the CLAUDE.md block renders only lines whose feature exists in
   the installing version; the README documents the Dependabot path (no
   secrets, so gates fail closed) and settles F12 with a recorded live
   install rather than the fixture.
 - PR 2.5: the README reconciles R5 with the adversarial seat installing in
   shadow (R6).
+- PR 2.5: add a platform fact for the repository Actions policies endpoint
+  (it answers for a personal-account public repo; creating a policy there
+  is unverified), and have `setup check` read it on public repos so a
+  missing `pull_request_target` allowance is reported before
+  2026-11-02.
 - PR 2.6: promotion counts a run as clean only when it passed or a human
   marked its findings confirmed, and counts the trusted state whose `head`
   is the PR's final head; full mode writes the marker too.
@@ -2122,8 +2297,7 @@ each:
   test checks the staged mode.
 - PR 3.2: the hook script parses `git -C <dir>` and `-c core.hooksPath=`
   forms; the README states the routes the guard does not cover.
-- PR 3.4: each `/ship` restart counts as an iteration; local seats pass
-  `--setting-sources`, `--tools` and `--permission-mode` as CI does.
+- PR 3.4: each `/ship` restart counts as an iteration.
 - PR 4.2: the manual steps list uploading LCOV artifacts from the repo's
   test jobs and an organization's allowed-workflows policy.
 - PR 5.1: 11.1 names the fields each mode carries and from which release.
