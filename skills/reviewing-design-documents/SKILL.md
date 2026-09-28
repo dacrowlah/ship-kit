@@ -40,4 +40,4 @@ Review stops when the scoped confirmation round after PASS/PASS is done. What th
 - **NON-BLOCKING:** becomes a note on a plan task, and the design merges.
 - **BLOCKING:** is fixed, and the fix gets a scoped check of the changed text only.
 
-A request for "one more round to be safe" after PASS/PASS is answered with this budget: the confirmation round is the safety step it asks for. Write the request and the answer in the review record, so anyone with authority over the process can revisit it explicitly.
+A request for "one more round to be safe" after PASS/PASS is answered with this budget: the confirmation round is the safety step it asks for. Write the request and the answer in the review record. When the person the owner put in charge of review process directs another round, that direction stands: run the round, with the budget's answer on record.
