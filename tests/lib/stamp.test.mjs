@@ -56,6 +56,37 @@ test("the stamp goes on the second line after a shebang", () => {
   assert.equal(readManagedFile(file).bodyMatches, true);
 });
 
+test("adding a shebang to an already-stamped file reads as modified", () => {
+  const file = stampFile("echo hi\n", META, "hash");
+  const injected = "#!/usr/bin/env bash\n" + file;
+  assert.equal(readManagedFile(injected).bodyMatches, false);
+});
+
+test("removing an existing shebang from a stamped file reads as modified", () => {
+  const file = stampFile("echo hi\n", META, "hash", "#!/usr/bin/env bash");
+  const stripped = file.split("\n").slice(1).join("\n");
+  assert.equal(readManagedFile(stripped).bodyMatches, false);
+});
+
+test("changing the shebang line of a stamped file reads as modified", () => {
+  const file = stampFile("echo hi\n", META, "hash", "#!/usr/bin/env bash");
+  const changed = file.replace("#!/usr/bin/env bash", "#!/usr/bin/env node");
+  assert.equal(readManagedFile(changed).bodyMatches, false);
+});
+
+test("an unchanged shebang file still reads as current", () => {
+  const file = stampFile("echo hi\n", META, "hash", "#!/usr/bin/env bash");
+  assert.equal(readManagedFile(file).bodyMatches, true);
+});
+
+test("stamping then reading back a shebang file round-trips as current", () => {
+  const body = "echo hi\necho bye\n";
+  const file = stampFile(body, META, "hash", "#!/usr/bin/env bash");
+  const read = readManagedFile(file);
+  assert.equal(read.body, body);
+  assert.equal(read.bodyMatches, true);
+});
+
 test("slash and html syntaxes round-trip", () => {
   for (const syntax of ["slash", "html"]) {
     const file = stampFile("x\n", META, syntax);

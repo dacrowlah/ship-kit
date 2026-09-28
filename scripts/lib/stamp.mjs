@@ -86,8 +86,8 @@ export function parseStamp(json) {
  */
 export function stampFile(body, meta, syntax, shebang) {
   const { open, close } = syntaxOf(syntax);
-  const stamp = formatStamp({ ...meta, body: bodyHash(body) });
   const head = shebang === undefined ? "" : `${shebang}\n`;
+  const stamp = formatStamp({ ...meta, body: bodyHash(`${head}${body}`) });
   return `${head}${open}ship-kit-managed: ${stamp}${close}\n${body}`;
 }
 
@@ -99,10 +99,12 @@ export function stampFile(body, meta, syntax, shebang) {
  */
 export function readManagedFile(content) {
   let offset = 0;
+  let head = "";
   if (content.startsWith("#!")) {
-    const newline = content.indexOf("\n");
-    if (newline === -1) return null;
-    offset = newline + 1;
+    const shebangNewline = content.indexOf("\n");
+    if (shebangNewline === -1) return null;
+    offset = shebangNewline + 1;
+    head = content.slice(0, offset);
   }
   const newline = content.indexOf("\n", offset);
   const lineEnd = newline === -1 ? content.length : newline;
@@ -111,7 +113,7 @@ export function readManagedFile(content) {
   if (!match) return null;
   const stamp = parseStamp(match[1]);
   const body = newline === -1 ? "" : content.slice(newline + 1);
-  return { stamp, body, bodyMatches: bodyHash(body) === stamp.body };
+  return { stamp, body, bodyMatches: bodyHash(`${head}${body}`) === stamp.body };
 }
 
 /**
