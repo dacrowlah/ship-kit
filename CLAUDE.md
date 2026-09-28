@@ -177,6 +177,32 @@ declares `superpowers` (claude-plugins-official) as a dependency.
   `sha256` digest; use it if ship-kit ever ships via an archive source.
   (https://code.claude.com/docs/en/plugins/security)
 
+#### Secrets
+
+- Never commit a secret, token, key, real account ID, internal hostname, or
+  personal email address in any file, fixture, or example, anywhere in the
+  repo. This applies equally to code, tests, docs, and workflow templates.
+- A workflow template references a credential only as
+  `${{ secrets.NAME }}` (or `${{ inputs.NAME }}` for a value the caller
+  passes through). Document every `NAME` the template needs in the README.
+  A template never carries a default value for a credential-shaped input.
+- Every example uses an obviously fake placeholder (for example
+  `sk-ant-EXAMPLE`, not a string shaped like a real key) so the scanner
+  below doesn't need an allowlist entry to tolerate it.
+- `.github/workflows/secret-scan.yml` runs gitleaks (full history, pinned
+  version, checksum-verified) plus `scripts/check-template-secrets.mjs`
+  (flags a hardcoded value on a credential-shaped `with:`/`env:` key in
+  anything under `templates/`, `workflows/`, or `.github/workflows/`) on
+  every pull request and every push to main.
+- If a secret is ever pushed anyway: rotate it first, then purge it from
+  history. Rotating before purging matters because the exposed value stays
+  live (and thus dangerous) for as long as it's both in history and valid;
+  purging first without rotating just hides the leak while it's still
+  usable.
+- Run the same checks locally before pushing:
+  `docker run --rm -v "$PWD:/repo" -w /repo zricethezav/gitleaks:v8.30.1 git . --config .gitleaks.toml --redact` and
+  `node --test scripts/*.test.mjs`.
+
 ### Testing and validation
 
 - Run `claude plugin validate --strict <dir>` in CI on every push; `--strict`
@@ -249,6 +275,9 @@ update the rule in this file in the same PR as the code it affects.
 | github.com/anthropics/claude-plugins-official | Marketplace layout precedent, external-plugin submission path |
 | github.com/anthropics/skills | Skill-repo layout precedent |
 | github.com/cruft/cruft | Copy-with-update-path precedent for inlined templates |
+| https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning | GitHub secret scanning behavior and coverage |
+| https://docs.github.com/en/code-security/secret-scanning/enabling-secret-scanning-features/enabling-push-protection-for-a-repository | Push protection setup and behavior |
+| https://github.com/gitleaks/gitleaks | gitleaks releases, default ruleset, config schema |
 
 Re-check:
 

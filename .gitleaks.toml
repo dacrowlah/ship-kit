@@ -1,0 +1,48 @@
+title = "ship-kit gitleaks config"
+
+# Extends gitleaks' built-in default ruleset (generic API keys, cloud
+# provider keys, private keys, etc.) rather than replacing it.
+[extend]
+useDefault = true
+
+# --- Domain-specific additions -----------------------------------------
+#
+# Checked against the default ruleset at gitleaks v8.30.1
+# (https://github.com/gitleaks/gitleaks/blob/v8.30.1/config/gitleaks.toml)
+# before adding anything here, to avoid duplicating coverage:
+#
+#   - Anthropic API keys (sk-ant-api03-..., sk-ant-admin01-...): already
+#     covered by the default rules "anthropic-api-key" and
+#     "anthropic-admin-api-key".
+#   - GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_...): already covered by the
+#     default rules "github-pat", "github-oauth", "github-app-token" and
+#     "github-refresh-token" (that's the full gh[pousr]_ set).
+#   - Cloudflare API tokens/keys: already covered by the default rules
+#     "cloudflare-api-key" (40-char scoped API token),
+#     "cloudflare-global-api-key" and "cloudflare-origin-ca-key".
+#
+# Not covered by default, so added below:
+#   - Claude Code long-lived OAuth tokens (sk-ant-oat01-...), which are a
+#     distinct credential from an Anthropic API key and are exactly what
+#     this plugin's own setup/auth flows can generate or reference.
+#   - A generic sk-ant-<subtype>- catch-all, so a future or legacy
+#     Anthropic key subtype gitleaks' default config doesn't name yet is
+#     still caught here. The length floor keeps it well clear of a short,
+#     obviously-fake documentation placeholder such as "sk-ant-EXAMPLE".
+
+[[rules]]
+id = "claude-code-oauth-token"
+description = "Detected a Claude Code long-lived OAuth token, which grants full account access if leaked."
+regex = '''\bsk-ant-oat01-[a-zA-Z0-9_-]{80,140}\b'''
+keywords = ["sk-ant-oat01"]
+
+[[rules]]
+id = "anthropic-key-generic"
+description = "Detected a generic sk-ant-<subtype>- credential not matching a named Anthropic key rule; catches future or legacy Anthropic key formats."
+regex = '''\bsk-ant-[a-zA-Z0-9]{2,20}-[a-zA-Z0-9_-]{60,140}\b'''
+keywords = ["sk-ant-"]
+
+# No allowlist entries: nothing in this repo's history or current templates
+# has produced a false positive against the default ruleset or the rules
+# above. Add an allowlist entry only alongside an inline comment explaining
+# the specific false positive it exists for.
