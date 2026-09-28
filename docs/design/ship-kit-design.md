@@ -37,7 +37,6 @@ Contents:
 22. Release plan
 23. Migrating the adopting repos
 24. Self-check
-25. Owner decisions needed
 
 ---
 
@@ -60,6 +59,10 @@ points at the section that implements it and the test that pins it.
 | R10 | Releases 1 to 6 as listed in the brief, "each its own PR sequence" | 22 | release checklist (22.8) |
 | R11 | "Both adopting repos migrate from their hand-built copies (design the migration, including running old and new checks side by side and switching required-check names)." | 23 | migration exit criteria (23.1, 23.2) |
 | R12 | Owner practices: "plans as sequences of discrete PRs each safe to deploy alone, parallel waves, lowest-tier model per task; after PASS/PASS fold findings once and stop; no change logs in design docs; fix findings in the same PR; mutate to prove a test can fail; run preflight before push"; "admin-merge ritual when checks green" | 13, 15, 16, 17 | skill pressure tests (21.5) |
+| R13 | "Command names: keep setup/ship/develop/ci-watch/merge; the gerund naming rule applies only to model-invoked skills. Include the CLAUDE.md amendment in release 1's first PR." | 4.1, 22.1 | `tests/skills/naming.test.mjs` (gerund check exempts exactly the five command skills) |
+| R14 | "Agents MAY commit and push, with a per-repo opt-out: ship and ci-watch are model-invocable (no disable-model-invocation). setup asks one question ("Allow agents to commit and push without asking?"), default yes, stored as one boolean in the ship-kit config ... When false, the skill runs but stops before each commit/push to ask the user, and never pushes when no user can be asked (CI/headless). Enforcement lives in the skill, since disable-model-invocation is static frontmatter. Amend the CLAUDE.md rule on side-effecting skills to "must honour this setting" (release 1 first PR). setup and any release/tag command stay disable-model-invocation." | 5.4, 15, 16, 19.3, 22.1 | `tests/lib/agent-policy.test.mjs`; pressure tests for `ship` and `ci-watch` (21.5) |
+| R15 | "Review jobs use the workflow GITHUB_TOKEN, not the Claude GitHub App." | 6.3, 20.3 | `tests/workflows/review-yml.test.mjs` (seat step passes `github_token` from `secrets.GITHUB_TOKEN`) |
+| R16 | "No cross-account scratch repo for now: remove it from the plan; cross-owner behaviour stays UNVERIFIED with a note naming what would test it later." | 2 (F17), 21.4 | none |
 
 ---
 
@@ -86,6 +89,8 @@ them before the dependent release ships.
 | F12 | `extraKnownMarketplaces` in a repo's `.claude/settings.json` accepts a `github` source with a `ref`. | plugin-facts research note ("Pin via ref/sha") | UNVERIFIED for the settings key; settled by the fixture test in PR 2.5; fallback in 19.4 |
 | F13 | A prompt beginning `/ship-kit:<skill>` passed to `claude -p` or to the action's `prompt` input invokes that skill, with no `Skill` tool in the allowlist. | plugin-facts research note | UNVERIFIED; settled by the dogfood run in PR 2.4 |
 | F14 | Cross-plugin skill invocation by name (ship-kit naming a superpowers skill) works in practice and is not a documented contract. | ship-kit CLAUDE.md, "Unverified" | UNVERIFIED by design; 14.3 degrades when it fails |
+| F16 | A called workflow "is automatically granted access to `github.token` and `secrets.GITHUB_TOKEN`", with at most the caller's permissions. | docs.github.com, reusing workflow configurations | Verified |
+| F17 | End-to-end behaviour of a caller owned by a different account from ship-kit: explicit secrets (F2), cross-owner `uses:` of a public reusable workflow, and `job.workflow_*` (F1) resolving to ship-kit. | docs cover each piece separately | UNVERIFIED. Would be tested by a scratch adopting repo under another account, or by the first run of an adopting repo owned by a different account than ship-kit (the second adopting repo's step N1, 23.2 is one) |
 | F15 | Installing ship-kit auto-installs its declared dependency `superpowers` from `claude-plugins-official`, which must be allow-listed in `allowCrossMarketplaceDependenciesOn` (already set). Whether CI must add that marketplace explicitly for the dependency to resolve. | code.claude.com/docs/en/plugins/dependencies | First part verified; second UNVERIFIED, settled by the dogfood run in PR 2.4 (7.2 adds it explicitly regardless) |
 
 ---
@@ -122,8 +127,12 @@ the PR's base commit in both places (5.3, 9.2).
 ## 4. Component inventory
 
 Paths are relative to the plugin root. "dmi" marks
-`disable-model-invocation: true`. Seat skills are dmi so they cost nothing
-in a session's context listing (F8) and run only when named in a prompt.
+`disable-model-invocation: true`. Only `setup` and the seat skills are dmi:
+`setup` because it installs files and settings into a repo (and any future
+release or tag command would be dmi for the same reason), the seat skills so
+they cost nothing in a session's context listing (F8) and run only when
+named in a prompt. Skills that commit, push or merge are model-invocable and
+honour the agent commit-and-push setting (5.4).
 
 ### 4.1 Skills
 
@@ -131,9 +140,9 @@ in a session's context listing (F8) and run only when named in a prompt.
 |---|---|---|---|
 | `skills/setup/SKILL.md` | `/ship-kit:setup [install\|update\|check]` | yes | 2 |
 | `skills/develop/SKILL.md` | `/ship-kit:develop` | no | 3 |
-| `skills/ship/SKILL.md` | `/ship-kit:ship` | yes | 3 |
-| `skills/ci-watch/SKILL.md` | `/ship-kit:ci-watch <pr>` | yes | 6 |
-| `skills/merge/SKILL.md` | `/ship-kit:merge <pr>` | yes | 6 |
+| `skills/ship/SKILL.md` | `/ship-kit:ship` | no | 3 |
+| `skills/ci-watch/SKILL.md` | `/ship-kit:ci-watch <pr>` | no | 6 |
+| `skills/merge/SKILL.md` | `/ship-kit:merge <pr>` | no | 6 |
 | `skills/reviewing-design-documents/SKILL.md` + `pattern-method.md` | model | no | 1 |
 | `skills/planning-deployable-pr-sequences/SKILL.md` | model | no | 1 |
 | `skills/proving-tests-can-fail/SKILL.md` | model | no | 1 |
@@ -141,14 +150,19 @@ in a session's context listing (F8) and run only when named in a prompt.
 | `skills/mining-defect-shapes/SKILL.md` + `hunt-list-format.md` | model | no | 1 |
 | `skills/reviewing-for-correctness/SKILL.md` | seat prompt | yes | 2 |
 | `skills/hunting-defect-shapes/SKILL.md` | seat prompt | yes | 2 |
-| `skills/promoting-shadow-checks/SKILL.md` | `/ship-kit:promoting-shadow-checks` | yes | 2 |
-| `skills/measuring-coverage-baseline/SKILL.md` | `/ship-kit:measuring-coverage-baseline` | yes | 4 |
+| `skills/promoting-shadow-checks/SKILL.md` | model | no | 2 |
+| `skills/measuring-coverage-baseline/SKILL.md` | model | no | 4 |
 | `skills/resolving-review-findings/SKILL.md` | model | no | 5 |
 | `skills/reviewing-security/SKILL.md` | seat prompt | yes | 5 |
 | `skills/reviewing-test-integrity/SKILL.md` | seat prompt | yes | 5 |
 
 The command skills (`setup`, `develop`, `ship`, `ci-watch`, `merge`) keep
-the owner's imperative names; the naming rule is Owner decision 1.
+the owner's imperative names (R13). `ship`, `ci-watch`, `merge` and
+`develop` are also model-invocable (R14), so the PR 1.1 amendment scopes
+the gerund rule by role, not by frontmatter: it applies to every skill
+except a command skill, meaning one whose documented entry point is
+`/ship-kit:<name>`; the five command skills are listed by name in the rule
+and in the naming test.
 
 ### 4.2 Hooks
 
@@ -165,6 +179,7 @@ the owner's imperative names; the naming rule is Owner decision 1.
 | `scripts/lib/glob.mjs` | `*`, `**`, `?` path matching | 5, 12, 14 |
 | `scripts/lib/stamp.mjs` | managed-file stamps and hashes | 19.2 |
 | `scripts/lib/render.mjs` | `<<key>>` template rendering | 19.3 |
+| `scripts/lib/agent-policy.mjs` | read the commit-and-push setting at the merge base; decide ask or proceed | 5.4 |
 | `scripts/review/review-mode.mjs` | modes, schemas, severity, state marker | 8 |
 | `scripts/review/plan.mjs` | partition, scope, priors, materialize `.pr-review/` | 6.3, 8 |
 | `scripts/review/aggregate.mjs` | fail-closed verdict, comment, state | 6.3, 8 |
@@ -201,10 +216,10 @@ every script through its interpreter (`node ...`, `bash ...`) using
 
 | Path | Written to | Kind |
 |---|---|---|
-| `templates/callers/review.yml.tmpl` | `.github/workflows/ship-kit-<seat>.yml` | managed file |
-| `templates/callers/change-class.yml.tmpl` | `.github/workflows/ship-kit-change-class.yml` | managed file |
-| `templates/blocks/coverage-jobs.yml.tmpl` | inside the repo's test workflow | managed block |
-| `templates/blocks/claude-md-workflow.md.tmpl` | inside the repo's `CLAUDE.md` | managed block |
+| `templates/callers/review.yml` | `.github/workflows/ship-kit-<seat>.yml` | managed file |
+| `templates/callers/change-class.yml` | `.github/workflows/ship-kit-change-class.yml` | managed file |
+| `templates/blocks/coverage-jobs.yml` | inside the repo's test workflow | managed block |
+| `templates/blocks/claude-md-workflow.md` | inside the repo's `CLAUDE.md` | managed block |
 | `templates/files/preflight.mjs` | `.ship-kit/preflight.mjs` | managed file |
 | `templates/files/pre-push` | `.githooks/pre-push` | managed file |
 | `templates/files/config.json` | `.ship-kit/config.json` | user-owned, stamped |
@@ -213,7 +228,10 @@ every script through its interpreter (`node ...`, `bash ...`) using
 
 `templates/files/preflight.mjs` is itself a runnable module; its tests
 import it directly, so the inlined copy and the tested code are the same
-file.
+file. Every template keeps its real extension (`.yml`, `.md`, `.mjs`), so
+`scripts/check-template-secrets.mjs`, which scans `templates/` and
+`.github/workflows/` by extension, reads every template and every reusable
+workflow (20.5).
 
 ### 4.6 Repository files (not part of the plugin payload)
 
@@ -223,6 +241,7 @@ file.
 | `.github/workflows/patch-coverage.yml` | reusable coverage workflow (12) |
 | `.github/workflows/change-class.yml` | reusable change-class workflow (14.4) |
 | `.github/workflows/ci.yml` | ship-kit's own CI (21) |
+| `.github/workflows/secret-scan.yml` | gitleaks plus `scripts/check-template-secrets.mjs`; required check `gitleaks` (20.5) |
 | `.github/workflows/ship-kit-general.yml`, `ship-kit-adversarial.yml` | ship-kit's own dogfood callers (21.4) |
 | `schemas/config.schema.json` | the config schema, single source (5.2) |
 | `tests/` | all tests (21) |
@@ -308,6 +327,7 @@ halves with different lifetimes:
     "hub": [],
     "hubRequires": ["spec", "plan"]
   },
+  "agents": { "commitAndPush": true },
   "ship": { "maxIterations": 5 },
   "ciWatch": { "maxIterations": 3, "pollSeconds": 30 },
   "merge": { "method": "squash", "adminRitual": false }
@@ -323,7 +343,8 @@ auth secret (`render.auth`), check names (`render.checks`), override label
 (`review.override.label`), coverage command and threshold (the coverage
 command is the repo's own test job, 12.2; threshold `coverage.threshold`),
 preflight steps (`preflight.steps`), hub-file globs (`classify.hub`),
-repo-specific hunt list location (`review.huntLists`).
+repo-specific hunt list location (`review.huntLists`), and whether agents
+may commit and push without asking (`agents.commitAndPush`, 5.4).
 
 `maxSeats`, `targetLines` and `maxTurns` defaults are the working values of
 the first adopting repo, carried as starting points; nothing derives from
@@ -361,6 +382,35 @@ PR that fixes a broken config is reviewed in full mode and can pass.
 
 Local scripts read the config at the merge base too (15.3), so local and CI
 classify a change the same way.
+
+### 5.4 Agent commit-and-push setting
+
+`agents.commitAndPush` (boolean, default `true`) is the answer to setup's
+one question "Allow agents to commit and push without asking?" (19.3). It
+governs every ship-kit skill step that commits, pushes, merges or opens a
+PR: `ship` (15.2), `ci-watch` (16.1), `merge` (16.4),
+`promoting-shadow-checks` (10.3), `measuring-coverage-baseline` (12.4) and
+`mining-defect-shapes` (18.3). A merge counts because it publishes to the
+default branch, which is a push by another route.
+
+Enforcement lives in the skills, because `disable-model-invocation` is
+static frontmatter and cannot vary per repo. Before each such step a skill
+runs `node ${CLAUDE_PLUGIN_ROOT}/scripts/lib/agent-policy.mjs`, which reads
+the setting from the config at the merge base with the default branch (an
+agent's own branch cannot grant it permission) and prints `proceed` or
+`ask`:
+
+- `proceed`: the step runs.
+- `ask`: the skill stops before the step and asks the user, naming the
+  exact commit or push. It proceeds only on an explicit yes. No answer, an
+  unavailable question tool, or a run with `CI` or `GITHUB_ACTIONS` set
+  (CI or headless) is a no: the skill reports what it would have done and
+  stops without committing or pushing.
+
+`tests/lib/agent-policy.test.mjs` covers: true proceeds; false asks; false
+under `CI` never proceeds; a branch-local edit to `true` is ignored when
+the merge base says `false`; an absent or invalid config at the merge base
+counts as `false` (the cautious default when the setting cannot be read).
 
 ---
 
@@ -441,7 +491,7 @@ pull-requests write, issues read):
 2. Download the plan artifact; copy this seat's chunk to
    `.pr-review/diff.patch`, `stat.txt`, `prior.json`.
 3. Run `anthropics/claude-code-action` with:
-   - `github_token: ${{ github.token }}` (F6; see 20.3 and Owner decision 3)
+   - `github_token: ${{ secrets.GITHUB_TOKEN }}` (F6, F16, R15; see 20.3)
    - the auth secret from 6.2
    - `plugin_marketplaces` and `plugins` per 7
    - `prompt: /ship-kit:<skill for inputs.seat> .pr-review`
@@ -452,7 +502,7 @@ pull-requests write, issues read):
    `Task` is absent from the allowlist: a seat is already one shard and
    must not fan out, since headless CI orphans in-agent subagents. There is
    no broad `Bash` while a token is in the environment. `GH_TOKEN` is set
-   at step scope only.
+   at step scope only, as `${{ secrets.GITHUB_TOKEN }}`.
 4. Always write and upload a receipt `{seat, body}`; `body` is `null` when
    the action returned no structured output.
 
@@ -483,9 +533,10 @@ contain a single quote (`tests/review/review-mode.test.mjs` asserts it).
 
 ### 6.5 Caller template
 
-`templates/callers/review.yml.tmpl`. Placeholders use `<<key>>` so they
-never collide with `${{ }}` expressions. `render.mjs` refuses unknown keys
-and any unreplaced placeholder.
+`templates/callers/review.yml`. Placeholders use `<<key>>` so they never
+collide with `${{ }}` expressions. `render.mjs` refuses unknown keys and
+any unreplaced placeholder. Credentials appear only as `${{ secrets.NAME }}`
+(20.5).
 
 ```yaml
 # ship-kit-managed: <<stamp_json>>
@@ -770,7 +821,8 @@ seat ran complete and the PR does not carry
 `review.promotion.falsePositiveLabel`. The maintainer adds that label when
 judging a shadow finding false; the judgment stays human, the record
 stays mechanical. At `review.promotion.cleanRuns` (default 5, the owner's
-bar) the skill proposes a one-line config change to `required` as a PR.
+bar) the skill proposes a one-line config change to `required` as a PR,
+committing and pushing it under 5.4.
 The same skill promotes the coverage gate (12.4).
 
 ---
@@ -913,7 +965,7 @@ take the trusted coverage states on the last 20 merged PRs whose value is
 not `n/a`; the threshold is the 20th percentile by nearest rank (the value
 at position `ceil(0.2 * n)` in ascending order), floored to a whole
 percent. With fewer than 20 such PRs it reports how many exist and
-proposes nothing. The skill proposes a config PR setting `threshold`,
+proposes nothing. The skill proposes (under 5.4) a config PR setting `threshold`,
 recording `baseline: {prs: [...], percentile: 20, computed: <date>}`, and
 `mode: "required"`. The percentile model means about four in five recent
 PRs would have passed, so the gate starts at the repo's demonstrated
@@ -1068,6 +1120,8 @@ shadow and promotes like a seat (10.3).
 
 ### 15.1 Contract
 
+Model-invocable (R14). Its commit and push steps honour 5.4.
+
 Converge deterministic checks and every enabled seat **jointly**, then
 commit once, run full preflight on the commit, and push. It never amends
 (CLAUDE.md, Repo rules) and never accumulates "address review" commits:
@@ -1094,9 +1148,11 @@ With `N = ship.maxIterations`:
 4. Cold pass: a fresh adversarial run (and test-integrity when enabled)
    over the final tree with no priors and no memory of the loop. A finding
    re-enters step 2.
-5. `git add` the changed files by name, commit once, run
-   `node .ship-kit/preflight.mjs` (full) on the clean tree, push. The
-   pre-push hook verifies the receipt (13.3).
+5. Check 5.4, then `git add` the changed files by name and commit once;
+   run `node .ship-kit/preflight.mjs` (full) on the clean tree; check 5.4
+   again, then push. The pre-push hook verifies the receipt (13.3). When
+   5.4 says ask and no user answers yes, it stops with the converged
+   changes uncommitted (or committed but unpushed) and reports.
 
 The joint loop exists because running reviewers, then fixing, then
 testing leaves the last fix unreviewed; convergence is "clean and stable",
@@ -1127,7 +1183,8 @@ settled for `claude -p` in PR 3.4.
 
 ### 16.1 `/ship-kit:ci-watch <pr>`
 
-After push, up to `ciWatch.maxIterations`:
+Model-invocable (R14); each commit and push honours 5.4. After push, up
+to `ciWatch.maxIterations`:
 
 1. Wait with `bash ${CLAUDE_PLUGIN_ROOT}/scripts/watch/watch-pr-checks.sh <pr>`
    (under the Monitor tool when available).
@@ -1163,7 +1220,7 @@ The watcher reports every check; `/ship-kit:ci-watch` and
 
 ### 16.4 `/ship-kit:merge <pr>`
 
-User-invoked (dmi). It verifies every required context is green on the
+Model-invocable; the merge honours 5.4. It verifies every required context is green on the
 current head, then merges with `merge.method`. When `merge.adminRitual` is
 true (a repo whose protection requires approvals a solo maintainer cannot
 give), `scripts/merge/admin-merge.sh` lifts `enforce_admins`, merges with
@@ -1323,7 +1380,9 @@ covering the lines between. The config carries `shipKit.version` and
    names (`gh secret list`, names only), `core.hooksPath`, current
    required checks, whether `.claude/` is ignored (`git check-ignore`).
 3. **Ask** for every config key the detection could not settle (5.1's
-   per-repo list).
+   per-repo list), including the one question "Allow agents to commit and
+   push without asking?" (default yes), stored as `agents.commitAndPush`
+   (5.4).
 4. **Render** everything into a staging dir under the git dir: config,
    callers, preflight, pre-push, seed hunt lists, CLAUDE.md block, coverage
    block, `.claude/settings.json` merge, `.gitignore` negations.
@@ -1380,7 +1439,7 @@ it. It suits a scheduled CI job.
 
 ### 19.6 CLAUDE.md workflow block
 
-`templates/blocks/claude-md-workflow.md.tmpl`, inserted as a managed block:
+`templates/blocks/claude-md-workflow.md`, inserted as a managed block:
 start every change with `/ship-kit:develop`; test code follows the same
 design rules as production code; every change carries a test proving the
 behavior it claims, and a claimed guard is proven with a mutation; run
@@ -1411,21 +1470,37 @@ ship-kit commit (6.3).
 
 ### 20.3 Tokens
 
-Seats receive the workflow's `GITHUB_TOKEN` through `github_token`, scoped
+Seats receive the workflow's `GITHUB_TOKEN` (as `secrets.GITHUB_TOKEN`, F16) through `github_token`, scoped
 by the caller to contents read, pull-requests write, issues read, and
 cannot raise it (F3). No seat has a shell beyond `gh pr view`. Fork PRs get
 no secrets (F4), so their seats fail and the gate fails closed; a
 maintainer re-pushes the branch to review it. Passing `github_token` skips
 the action's app-token exchange (F6): comments post as
 `github-actions[bot]`, and a PR that edits a caller is still reviewed
-rather than skipped. That trade is Owner decision 3.
+rather than skipped (R15).
 
 ### 20.4 Local
 
 Hooks and scripts run as the user outside the sandbox (CLAUDE.md,
 Security). The one hook is scoped by `if` and only denies. No script sends
 data anywhere except `gh` calls to the repository's own GitHub API, and
-the README lists every hook and script with what it does.
+the README lists every hook and script with what it does. Agents commit,
+push and merge without asking unless a repo sets `agents.commitAndPush` to
+false (5.4).
+
+### 20.5 Secrets in ship-kit itself
+
+Per CLAUDE.md, Secrets: templates and reusable workflows reference a
+credential only as `${{ secrets.NAME }}` or `${{ inputs.NAME }}`, never
+with a default; the workflow token is written `${{ secrets.GITHUB_TOKEN }}`
+(F16) so it satisfies `scripts/check-template-secrets.mjs` as written;
+every secret `NAME` a template needs (`CLAUDE_CODE_OAUTH_TOKEN` or
+`ANTHROPIC_API_KEY`, under whatever name `render.auth.secret` gives) is
+documented in the README and in the caller's header comment; examples use
+obviously fake placeholders. `secret-scan.yml` runs gitleaks over full
+history and the template check on every PR and push to main, and its
+`gitleaks` check is required on ship-kit's main. Every PR in 22 that adds a
+template or reusable workflow must pass it.
 
 ---
 
@@ -1454,6 +1529,10 @@ the README lists every hook and script with what it does.
   `bin/`, no unexpected hook).
 - `actionlint` over `.github/workflows/` and every rendered caller from
   21.3's fixtures.
+- `secret-scan.yml`'s `gitleaks` job (gitleaks plus
+  `node --test scripts/*.test.mjs` plus `scripts/check-template-secrets.mjs`),
+  a required check on main (20.5). ship-kit's required checks on main are
+  `gitleaks`, the `ci.yml` job, and the two dogfood review gates (21.4).
 - An ASCII gate: any byte outside printable ASCII, tab or newline in a
   tracked text file fails (`tests/ascii.test.mjs`).
 - A skill-size gate: each SKILL.md under 500 lines; each model-invocable
@@ -1480,9 +1559,8 @@ ship-kit's own repo runs its general and adversarial callers:
   it proves a changed workflow runs end to end before release. This run
   settles F13 and F15.
 
-Before a release that changes a reusable workflow, the owner also runs it
-from a scratch adopting repo under a different owner account, which
-exercises explicit secrets (F2) and cross-repo `uses:` (Owner decision 4).
+Cross-owner behaviour is not tested before release (R16); it stays
+UNVERIFIED as F17, which names what would test it.
 
 ### 21.5 Skill pressure tests
 
@@ -1513,7 +1591,7 @@ While ship-kit is 0.x, a breaking change bumps the minor version.
 
 | PR | Content | Safe alone because | Tier | Wave |
 |---|---|---|---|---|
-| 1.1 | `ci.yml` (21.1, 21.2 gates), `scripts/lib/{glob,stamp}.mjs` with tests, README hook/script inventory section, CLAUDE.md: replace the `${CLAUDE_PLUGIN_ROOT}` rule with F8's verified behavior | no user-visible component | M | 1 |
+| 1.1 | `ci.yml` (21.1, 21.2 gates), `scripts/lib/{glob,stamp}.mjs` with tests, README hook/script inventory and secrets section; CLAUDE.md amendments: the gerund naming rule applies to every skill except the five named command skills (R13, scoped as in 4.1); the side-effect rule becomes "a skill that commits, pushes or merges must honour the repo's `agents.commitAndPush` setting; setup and any release or tag command stay `disable-model-invocation`" (R14); the `${CLAUDE_PLUGIN_ROOT}` rule replaced with F8's verified behavior | no user-visible component | M | 1 |
 | 1.2 | `reviewing-design-documents` + `pattern-method.md`, `review/hunt-lists/design-shared.md`, `planning-deployable-pr-sequences`, `proving-tests-can-fail`, with pressure tests | skills only, read-only | L | 2 |
 | 1.3 | `watching-pr-checks` + `scripts/watch/*` + fake-`gh` tests | read-only scripts | S | 2 |
 | 1.4 | `mining-defect-shapes` + `hunt-list-format.md` + `review/hunt-lists/code-shared.md` (METHOD only) + `scripts/mining/collect.mjs` + tests; version 0.1.0 | reads APIs, writes scratch only | L | 3 |
@@ -1525,9 +1603,9 @@ While ship-kit is 0.x, a breaking change bumps the minor version.
 | 2.1 | `schemas/config.schema.json`, `scripts/lib/{schema,config}.mjs`, tests | library, no consumer yet | M | 1 |
 | 2.2 | `scripts/review/{review-mode,plan,aggregate}.mjs` ported and generalized, suites ported | scripts not yet called by any workflow | M | 2 |
 | 2.3 | `reviewing-for-correctness`, `hunting-defect-shapes`, `review/contract/*` | dmi skills, invisible until named | L | 2 |
-| 2.4 | `.github/workflows/review.yml`, `templates/callers/review.yml.tmpl`, gate test, ship-kit's dogfood callers (canary only) | untagged; only ship-kit's canary calls it | L | 3 |
-| 2.5 | `skills/setup` + `scripts/setup/*` (install, check, update, settings merge, gitignore) + CLAUDE.md block template + fixture tests | writes only after a shown diff | M | 4 |
-| 2.6 | `promoting-shadow-checks` + `scripts/promote/shadow-record.mjs`; version 0.2.0 | read-only, proposes a PR | S | 4 |
+| 2.4 | `.github/workflows/review.yml`, `templates/callers/review.yml`, gate test, ship-kit's dogfood callers (canary only); passes `check-template-secrets` | untagged; only ship-kit's canary calls it | L | 3 |
+| 2.5 | `skills/setup` + `scripts/setup/*` (install, check, update, settings merge, gitignore, the commit-and-push question) + `scripts/lib/agent-policy.mjs` + CLAUDE.md block template + fixture tests | writes only after a shown diff | M | 4 |
+| 2.6 | `promoting-shadow-checks` + `scripts/promote/shadow-record.mjs`; version 0.2.0 | proposes a PR under 5.4 | S | 5 |
 
 After the 0.2.0 tag: ship-kit's own required callers move to the 0.2.0 SHA
 (one PR), then migration 23 begins.
@@ -1539,14 +1617,14 @@ After the 0.2.0 tag: ship-kit's own required callers move to the 0.2.0 SHA
 | 3.1 | `templates/files/{preflight.mjs,pre-push}`, receipt, verify-push, setup renders them | setup-installed only on update | M | 1 |
 | 3.2 | `hooks/hooks.json` + `deny-hook-bypass.mjs` + tests + live-match record (F10) | only denies | S | 1 |
 | 3.3 | `classify.mjs` + `/ship-kit:develop` | read-only | M | 1 |
-| 3.4 | `local-seats.mjs`, `plan.mjs --local`, `aggregate.mjs --local`, `/ship-kit:ship`, pressure test; version 0.3.0 | user-invoked | L | 2 |
+| 3.4 | `local-seats.mjs`, `plan.mjs --local`, `aggregate.mjs --local`, `/ship-kit:ship`, pressure tests incl. the ask path; version 0.3.0 | pushes only through the pre-push receipt and 5.4 | L | 2 |
 
 ### 22.4 Release 4 (0.4.0): coverage gate
 
 | PR | Content | Safe alone because | Tier | Wave |
 |---|---|---|---|---|
 | 4.1 | `lcov.mjs`, `patch-coverage.mjs`, tests incl. the absent-file case | library | M | 1 |
-| 4.2 | `patch-coverage.yml`, coverage block template, setup support (shadow) | untagged until release; installs shadow | M | 2 |
+| 4.2 | `patch-coverage.yml`, coverage block template, setup support (shadow); passes `check-template-secrets` | untagged until release; installs shadow | M | 2 |
 | 4.3 | `baseline.mjs`, `measuring-coverage-baseline`, promotion support; version 0.4.0 | proposes a PR | S | 3 |
 
 ### 22.5 Release 5 (0.5.0): extra seats, finding contract, override
@@ -1556,14 +1634,14 @@ After the 0.2.0 tag: ship-kit's own required callers move to the 0.2.0 SHA
 | 5.1 | full-mode `findings[]` with `failure_scenario` (additive schema; outputs unchanged), `resolving-review-findings` | additive | M | 1 |
 | 5.2 | `reviewing-security`, `reviewing-test-integrity`, setup offers their callers in shadow | dmi, shadow | L | 2 |
 | 5.3 | `override.mjs`, rebuttals, plan and aggregate support | inert without the label and comment | M | 2 |
-| 5.4 | `change-class.yml`, `change-class-check.mjs`, caller template; version 0.5.0 | optional, installs shadow | M | 3 |
+| 5.4 | `change-class.yml`, `change-class-check.mjs`, caller template; passes `check-template-secrets`; version 0.5.0 | optional, installs shadow | M | 3 |
 
 ### 22.6 Release 6 (1.0.0): `/ci-watch` and merge
 
 | PR | Content | Safe alone because | Tier | Wave |
 |---|---|---|---|---|
-| 6.1 | `/ship-kit:ci-watch` + pressure test | user-invoked | L | 1 |
-| 6.2 | `/ship-kit:merge` + `admin-merge.sh` + trap test against a fake `gh`; version 1.0.0 | user-invoked | M | 1 |
+| 6.1 | `/ship-kit:ci-watch` + pressure tests incl. the ask path | capped, never merges, pushes under 5.4 | L | 1 |
+| 6.2 | `/ship-kit:merge` + `admin-merge.sh` + trap test against a fake `gh`; version 1.0.0 | merges only green PRs, under 5.4 | M | 1 |
 
 ### 22.7 Why this order
 
@@ -1575,7 +1653,7 @@ because it is deterministic and cheaper to trust.
 ### 22.8 Per-release checklist
 
 CLAUDE.md's pre-release checklist, plus: every UNVERIFIED row in 2 that the
-release depends on is settled, and 21.4's cross-owner run passed.
+release depends on is settled, and `gitleaks` is green on the release commit.
 
 ---
 
@@ -1640,7 +1718,7 @@ building any mechanism ship-kit provides.
 | D16 time-order dependence | Overrides bind to a head SHA and read labels live (11.3); rebuttals avoid `issue_comment` (11.2); review base is chosen by ancestry, not comment order (8.2). |
 | D17 guard that admits a state | Gate states enumerated and tested (6.5); strict defaults for absent or invalid config (5.3); unknown severity is BLOCKING (8.3). |
 | D18 declared cost that is not | Costs stated are only relative (the change-class workflow is cheap; side-by-side doubles review for a bounded window). |
-| D19 standard departed silently | Departures from CLAUDE.md are surfaced: the command names (Owner decision 1), the plugin-root rule (PR 1.1). |
+| D19 standard departed silently | Each departure from CLAUDE.md is amended in PR 1.1 with its reason: the naming rule (R13), the side-effect rule (R14), the plugin-root rule (F8). |
 | D20 history in the specification | None; no changelog or version narrative. |
 
 ### 24.2 Against CLAUDE.md
@@ -1650,9 +1728,9 @@ building any mechanism ship-kit provides.
 | Skills under 500 lines; references one level deep (Skills) | 4.1, 21.2 size gate |
 | Always-loaded skills under ~200 words; others under ~500 (Skills) | no skill loads every turn; seat skills 10.1 |
 | Descriptions are triggering conditions only (Skills) | 21.2 description gate; authoring rule in each skill PR |
-| Gerund names (Skills) | model-invocable skills comply; command skills are Owner decision 1 |
+| Gerund names (Skills), as amended by PR 1.1 | every non-command skill complies; the five command skills are exempt by name (R13) |
 | Cross-reference by name, no `@` links (Skills) | 14.3 |
-| Side-effect skills are dmi (Skills) | setup, ship, ci-watch, merge, promotion, baseline (4.1) |
+| Side-effect skills honour `agents.commitAndPush`; setup and release/tag commands dmi (Skills), as amended by PR 1.1 | 4.1, 5.4 |
 | TDD for discipline skills; recipes for output-shaping (Skills) | 21.5 |
 | One excellent example (Skills) | one example per skill |
 | Commands are skills (Commands) | 4.1 |
@@ -1676,26 +1754,6 @@ building any mechanism ship-kit provides.
 | Discrete PRs, each safe alone (Repo rules) | 22 |
 | No push or tag without approval; stage by name; no amend; no `--no-verify` (Repo rules) | 15.1, 13.5, 22 |
 | ASCII only (Repo rules) | 21.2 ASCII gate |
+| No committed secrets; credentials only as `${{ secrets.NAME }}`/`${{ inputs.NAME }}`; every NAME documented; fake placeholders (Secrets) | 20.5 |
+| gitleaks and template check on every PR (Secrets) | 20.5, 21.2 |
 
----
-
-## 25. Owner decisions needed
-
-1. **Command names versus the gerund rule.** CLAUDE.md requires gerund
-   skill names; the approved scope names `/ship-kit:setup`, and the
-   practice uses `ship`, `develop`, `ci-watch`, `merge`. Recommendation:
-   amend the rule in PR 1.1 so it applies to model-invocable skills and
-   exempts user-invoked commands, keeping the imperative names.
-2. **User-only `ship` and `ci-watch`.** CLAUDE.md makes any skill that
-   commits or pushes `disable-model-invocation`, so an orchestrating agent
-   cannot start `/ship-kit:ship` or `/ship-kit:ci-watch` itself; a human
-   types the command. Keep that (the design's default), or amend the rule
-   to allow model invocation when the skill's last step is the push.
-3. **Seat GitHub identity.** Seats use the workflow's `GITHUB_TOKEN` (20.3):
-   PRs that edit a caller are still reviewed and comments post as
-   `github-actions[bot]`, but the Claude GitHub App's refusal to run a
-   workflow that differs from the default branch no longer applies. The
-   alternative keeps the app exchange and accepts that such PRs fail their
-   gate and need an admin merge.
-4. **A scratch adopting repo under another account** for the cross-owner
-   release test (21.4), since only the owner can create it.
