@@ -214,7 +214,8 @@ declares `superpowers` (claude-plugins-official) as a dependency.
   usable.
 - Run the same checks locally before pushing:
   `docker run --rm -v "$PWD:/repo" -w /repo zricethezav/gitleaks:v8.30.1 git . --config .gitleaks.toml --redact` and
-  `node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"`.
+  `node scripts/assert-test-globs.mjs "tests/**/*.test.mjs" "scripts/*.test.mjs" && node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"`.
+  The first command fails loudly if either glob matches zero files (`node --test` does not), so a moved or deleted test file cannot silently drop coverage while the suite still exits 0.
 
 ### Testing and validation
 

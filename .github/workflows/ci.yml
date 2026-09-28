@@ -46,7 +46,9 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Unit suites and repository gates
-        run: node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"
+        run: |
+          node scripts/assert-test-globs.mjs "tests/**/*.test.mjs" "scripts/*.test.mjs"
+          node --test "tests/**/*.test.mjs" "scripts/*.test.mjs"
 
       - name: actionlint
         run: actionlint .github/workflows/*.yml
