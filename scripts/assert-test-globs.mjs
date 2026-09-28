@@ -7,39 +7,32 @@
 //    convention puts it: `scripts/<name>.mjs` beside `scripts/<name>.test.mjs`
 //    (subdirectories mirror the same rule: `scripts/foo/x.mjs` beside
 //    `scripts/foo/x.test.mjs`), `scripts/lib/<name>.mjs` (any depth) under
-//    the matching path in `tests/lib/`. Deleting only one module's test still
-//    leaves both `node --test` glob arguments non-empty (another module's
-//    test still matches), so case 1 alone would not have caught it. Nor
-//    would checking `scripts/*.mjs` alone: a new module in a subdirectory,
-//    or with a `.js`/`.cjs` extension, is invisible to a one-level,
-//    `.mjs`-only glob.
-// 3. A paired test file exists at the right path but registers no test:
-//    `node --test` does not fail on a file with zero `test()`/`describe()`/
-//    `it()` calls, so a stub left at the expected path (or an existing test
-//    truncated to empty) satisfies plain file existence while exercising
-//    nothing. This is deliberately a cheap content check, not a coverage
-//    measurement: `node --experimental-test-coverage` was tried for this and
-//    does not work for it. Its coverage report only lists files V8 actually
-//    saw executed during the run; a module no test imports is silently
-//    omitted from the report rather than shown at 0%, so it never lowers the
-//    "all files" percentage the CI coverage floor checks. A module that
-//    still has other, real coverage elsewhere in the tree would keep the
-//    aggregate at or near 100% even while this one module's test was
-//    emptied. This case check is what actually closes that gap; the
-//    coverage floor (a separate CI step) instead catches a test that
-//    imports a module but exercises it only partially.
+//    the matching path in `tests/lib/`, for every `.mjs`/`.js`/`.cjs` module
+//    at any depth. This is the cheap check and runs first.
+// 3. A paired test exists but does not prove anything about its module. Each
+//    paired test is run alone under Node's test runner, with coverage
+//    restricted to that one module, and fails the check unless the run
+//    exits 0 with no failed or cancelled test, passes at least one test
+//    (skipped and todo tests do not count), and lists the module in its
+//    coverage report. The last condition is what proves the test loads the
+//    module: Node's coverage report omits a file no test loaded instead of
+//    showing it at 0%, so a commented-out, emptied or stub test that never
+//    imports its module reports no row for it.
 //
 // Run this before `node --test` with the same glob arguments so a moved,
-// renamed, deleted or emptied test file drops the required CI check to red
-// instead of quietly shrinking test coverage while `ci` stays green.
+// renamed, deleted, emptied or disconnected test drops the required CI check
+// to red instead of quietly shrinking test coverage while `ci` stays green.
 
-import { existsSync, globSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, globSync } from "node:fs";
+import { basename, join } from "node:path";
 
 const SOURCE_GLOB = "scripts/**/*.{mjs,js,cjs}";
 const LIB_ROOT = "scripts/lib/";
 const SOURCE_EXTENSION = /\.(mjs|js|cjs)$/;
 const TEST_SUFFIX = /\.test\.(mjs|js|cjs)$/;
-const TEST_REGISTRATION = /\b(test|describe|it)\s*\(/;
+const COVERAGE_START = "# start of coverage report";
+const COVERAGE_END = "# end of coverage report";
 
 /**
  * @param {string[]} patterns
@@ -68,48 +61,179 @@ export function expectedTestPath(source) {
 }
 
 /**
- * @param {string} content
- * @returns {boolean} whether the content registers at least one test
+ * @param {(pattern: string) => string[]} glob
+ * @returns {{ source: string, test: string }[]} every non-test module under
+ *   `scripts/**` with the test path the convention pairs it with
  */
-export function registersATest(content) {
-  return TEST_REGISTRATION.test(content);
+export function pairedModules(glob = globSync) {
+  return glob(SOURCE_GLOB)
+    .filter((source) => !TEST_SUFFIX.test(source))
+    .sort()
+    .map((source) => ({ source, test: expectedTestPath(source) }));
 }
 
 /**
  * @param {(pattern: string) => string[]} glob
  * @param {(path: string) => boolean} exists
- * @param {(path: string) => string} readFile
- * @returns {string[]} one message per source module missing its test or
- *   whose test registers nothing
+ * @returns {string[]} one message per source module whose test file is missing
  */
-export function missingTests(glob = globSync, exists = existsSync, readFile = (path) => readFileSync(path, "utf8")) {
+export function missingTests(glob = globSync, exists = existsSync) {
+  return pairedModules(glob)
+    .filter(({ test }) => !exists(test))
+    .map(({ source, test }) => `${source}: missing its test at ${test}`);
+}
+
+/**
+ * Reads the last value of a tap summary line such as `# pass 3`. The summary
+ * is printed after every test's own output, so the last occurrence is the
+ * runner's, not a line a test printed.
+ * @param {string} output
+ * @param {string} key
+ * @returns {number | null}
+ */
+function summaryCount(output, key) {
+  const matches = [...output.matchAll(new RegExp(`^# ${key} (\\d+)$`, "gm"))];
+  return matches.length === 0 ? null : Number(matches[matches.length - 1][1]);
+}
+
+/**
+ * @param {string} output
+ * @param {string} source
+ * @returns {boolean} whether the last coverage report in the output has a
+ *   measured row for the module (run with coverage restricted to it)
+ */
+function coverageListsModule(output, source) {
+  const start = output.lastIndexOf(COVERAGE_START);
+  if (start === -1) return false;
+  const end = output.indexOf(COVERAGE_END, start);
+  const report = output.slice(start, end === -1 ? undefined : end).split("\n");
+  const name = basename(source);
+  return report.some((line) => {
+    const cells = line.replace(/^#/, "").split("|").map((cell) => cell.trim());
+    return cells.length >= 2 && cells[0] === name && /^\d+(\.\d+)?$/.test(cells[1]);
+  });
+}
+
+/**
+ * When a test file registers no test at all, the runner reports the file
+ * itself as one passing test named after its path, at the top level. A file
+ * that registers any test gets no such entry.
+ * @param {string} output
+ * @param {string} test
+ * @returns {boolean}
+ */
+function reportsFileAsItsOnlyTest(output, test) {
+  const name = test.replace(/\\/g, "\\\\").replace(/#/g, "\\#");
+  return output.split("\n").includes(`ok 1 - ${name}`);
+}
+
+/**
+ * Parses the tap output of `node --test --experimental-test-coverage
+ * --test-reporter=tap` run on one test file with coverage restricted to one
+ * module. `passed` counts only tests the file registered and ran to a pass:
+ * skipped and todo tests are not in the runner's pass count, and the entry
+ * the runner adds for a file that registers nothing is subtracted.
+ * @param {string} output
+ * @param {{ source: string, test: string }} pair
+ * @returns {{ passed: number, failed: number, cancelled: number, covered: boolean }}
+ */
+export function parseTestRun(output, { source, test }) {
+  const pass = summaryCount(output, "pass") ?? 0;
+  return {
+    passed: reportsFileAsItsOnlyTest(output, test) ? pass - 1 : pass,
+    failed: summaryCount(output, "fail") ?? 0,
+    cancelled: summaryCount(output, "cancelled") ?? 0,
+    covered: coverageListsModule(output, source),
+  };
+}
+
+/**
+ * @param {{ source: string, test: string }} pair
+ * @param {{ status: number | null, output: string }} run
+ * @returns {string[]} why the test run does not prove the module is tested
+ */
+export function proofViolations({ source, test }, { status, output }) {
+  const { passed, failed, cancelled, covered } = parseTestRun(output, { source, test });
   const violations = [];
-  for (const source of glob(SOURCE_GLOB)) {
-    if (TEST_SUFFIX.test(source)) continue;
-    const expected = expectedTestPath(source);
-    if (!exists(expected)) {
-      violations.push(`${source}: missing its test at ${expected}`);
-    } else if (!registersATest(readFile(expected))) {
-      violations.push(`${expected}: registers no test(...)/describe(...)/it(...) call for ${source}`);
-    }
+  if (status !== 0 || failed > 0 || cancelled > 0) {
+    violations.push(`${test}: fails when run alone (exit ${status}, ${failed} failed, ${cancelled} cancelled)`);
+  }
+  if (passed === 0) {
+    violations.push(`${test}: passes no test when run alone, so it proves nothing about ${source}`);
+  }
+  if (!covered) {
+    violations.push(`${test}: never loads ${source} (the module is absent from the run's coverage report)`);
   }
   return violations;
 }
 
-function main(argv) {
+/**
+ * Removes the variables through which an enclosing test run would leak into
+ * a child process: NODE_TEST_CONTEXT makes a nested `node --test` behave as
+ * one of the parent's test files, and NODE_V8_COVERAGE would add the
+ * child's coverage to the parent's report.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function isolatedEnv(env = process.env) {
+  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, ...rest } = env;
+  return rest;
+}
+
+/**
+ * Runs one test file alone with coverage restricted to one module.
+ * @param {{ source: string, test: string }} pair
+ * @param {string} cwd
+ * @returns {{ status: number | null, output: string }}
+ */
+export function runPairedTest({ source, test }, cwd = process.cwd()) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--test",
+      "--experimental-test-coverage",
+      `--test-coverage-include=${source}`,
+      "--test-reporter=tap",
+      test,
+    ],
+    { cwd, env: isolatedEnv(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+}
+
+/**
+ * @param {{ source: string, test: string }[]} pairs modules whose test exists
+ * @param {(pair: { source: string, test: string }) => { status: number | null, output: string }} run
+ * @returns {string[]}
+ */
+export function unprovenModules(pairs, run = runPairedTest) {
+  return pairs.flatMap((pair) => proofViolations(pair, run(pair)));
+}
+
+/**
+ * @param {string[]} argv the test glob arguments `node --test` is given
+ * @param {string} cwd
+ * @param {(line: string) => void} report
+ * @returns {number} the exit code
+ */
+export function main(argv, cwd = process.cwd(), report = console.error) {
   if (argv.length === 0) {
-    console.error("usage: node scripts/assert-test-globs.mjs <glob...>");
+    report("usage: node scripts/assert-test-globs.mjs <glob...>");
     return 2;
   }
+  const glob = (pattern) => globSync(pattern, { cwd });
+  const exists = (path) => existsSync(join(cwd, path));
+  const pairs = pairedModules(glob);
   const problems = [
-    ...emptyGlobs(argv).map((pattern) => `test glob matched zero files: ${pattern}`),
-    ...missingTests(),
+    ...emptyGlobs(argv, glob).map((pattern) => `test glob matched zero files: ${pattern}`),
+    ...missingTests(glob, exists),
+    ...unprovenModules(
+      pairs.filter(({ test }) => exists(test)),
+      (pair) => runPairedTest(pair, cwd),
+    ),
   ];
-  if (problems.length > 0) {
-    for (const problem of problems) console.error(problem);
-    return 1;
-  }
-  return 0;
+  for (const problem of problems) report(problem);
+  return problems.length > 0 ? 1 : 0;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

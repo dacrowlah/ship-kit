@@ -34,7 +34,7 @@ None.
 |---|---|---|
 | `scripts/lib/` | Libraries imported by the scripts below and by tests; never run on their own. | None |
 | `scripts/check-template-secrets.mjs` | Maintainer check run in this repository's CI: fails when a workflow template assigns a literal value to a credential-shaped key. No skill runs it. | None |
-| `scripts/assert-test-globs.mjs` | Maintainer check run in this repository's CI before the test suite: fails loudly if a test glob matches zero files, if a `scripts/**` module has no paired test at its conventional path, or if that paired test registers no test. No skill runs it. | None |
+| `scripts/assert-test-globs.mjs` | Maintainer check run in this repository's CI before the test suite: fails loudly if a test glob matches zero files, if a `scripts/**` module has no paired test at its conventional path, or if that test, run alone, fails, passes no test or never loads its module. No skill runs it. | None |
 
 No script sends data anywhere except `gh` calls to your repository's own
 GitHub API, and each row above says whether its script makes any.
