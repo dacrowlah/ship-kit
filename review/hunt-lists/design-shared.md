@@ -4,7 +4,8 @@ The generic ways design documents and implementation plans go wrong. Design
 reviewers hunt every shape on every round, and the adversarial seat hunts
 them in design-doc mode. Ids are permanent: other lists, tests and review
 findings cite them, so a shape is never renumbered or re-titled, and a
-retired id is never reused.
+retired id is never reused. The format is defined in
+skills/mining-defect-shapes/hunt-list-format.md.
 
 ## Shapes
 
