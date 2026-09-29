@@ -25,6 +25,10 @@ const GIT_TIMEOUT_MS = 120_000;
 export const MAX_FILES = 10_000;
 const HASH_BATCH = 100;
 const REGULAR_MODES = new Set(["100644", "100755"]);
+// Commands that reach the remote. No credential is ever supplied, so a
+// remote that needs one fails with git's bare prompt error; say why.
+const REMOTE_COMMANDS = new Set(["ls-remote", "fetch"]);
+const PUBLIC_REMOTE_NOTE = "ship-kit pin resolution fetches without credentials, so the remote must be publicly readable";
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
@@ -215,7 +219,8 @@ function pinAt({ root, remote, chosen, version, git, work, maxFiles }) {
     try {
       return git(args, { cwd: work, gitDir: work });
     } catch (error) {
-      throw new PinError(`git ${args[0]} failed: ${error.message}`);
+      const why = REMOTE_COMMANDS.has(args[0]) ? ` (${PUBLIC_REMOTE_NOTE})` : "";
+      throw new PinError(`git ${args[0]} failed${why}: ${error.message}`);
     }
   };
   call(["init", "--bare", "--quiet", work]);

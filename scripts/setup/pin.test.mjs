@@ -277,7 +277,7 @@ test("ls-remote failure", (t) => {
   const dir = scratch(t);
   const pluginRoot = makePlugin(dir, "0.2.0", FILES);
   const { git, cwds } = recordingGit();
-  assertPinError(() => resolvePin({ pluginRoot, remote: join(dir, "no-such-remote"), git }), /^git ls-remote failed: git ls-remote exited/);
+  assertPinError(() => resolvePin({ pluginRoot, remote: join(dir, "no-such-remote"), git }), /^git ls-remote failed \(ship-kit pin resolution fetches without credentials, so the remote must be publicly readable\): git ls-remote exited/);
   assert.equal(cwds.size, 1);
   for (const cwd of cwds) assert.equal(existsSync(cwd), false);
 });
@@ -349,7 +349,7 @@ test("a listed commit that the fetched objects do not peel to is refused", (t) =
 test("a listed SHA the remote does not have fails the fetch", (t) => {
   const { remote, pluginRoot } = forgedCase(t);
   const forged = `${"1".repeat(40)}\trefs/tags/ship-kit--v0.2.0\n`;
-  assertPinError(() => resolvePin({ pluginRoot, remote, git: gitAnswering("ls-remote", () => forged) }), /^git fetch failed: /);
+  assertPinError(() => resolvePin({ pluginRoot, remote, git: gitAnswering("ls-remote", () => forged) }), /^git fetch failed \(ship-kit pin resolution fetches without credentials, so the remote must be publicly readable\): /);
 });
 
 test("hash-object output missing an id is refused", (t) => {
@@ -544,4 +544,18 @@ test("gitEnv drops every inherited GIT_* variable and isolates config", () => {
   assert.deepEqual(gitEnv(undefined, inherited), expected);
   assert.deepEqual(gitEnv("/tmp/work", inherited), { ...expected, GIT_DIR: "/tmp/work" });
   assert.equal(gitEnv(undefined).GIT_DIR, undefined);
+});
+
+test("a remote that needs credentials is refused with a message saying why, carrying git's stderr", (t) => {
+  const { remote, pluginRoot } = forgedCase(t);
+  const stderr = "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+  const denied = () => { throw new Error(`git exited 128: ${stderr}`); };
+  for (const subcommand of ["ls-remote", "fetch"]) {
+    assertPinError(
+      () => resolvePin({ pluginRoot, remote, git: gitAnswering(subcommand, denied) }),
+      new RegExp(`^git ${subcommand} failed \\(ship-kit pin resolution fetches without credentials, so the remote must be publicly readable\\): git exited 128: fatal: could not read Username for 'https://github\\.com': terminal prompts disabled$`),
+    );
+  }
+  // Local commands are not about the remote, so they carry no such note.
+  assertPinError(() => resolvePin({ pluginRoot, remote, git: gitAnswering("rev-parse", denied) }), /^git rev-parse failed: git exited 128: /);
 });
