@@ -84,10 +84,9 @@ Each binds the task named.
 38. A seat job that finds the fetched head differs from `HEAD_SHA` exits non-zero before extracting `pr/`, so its receipt is null.
 39. Comment posting happens after the aggregate outputs are written; a failed post exits 1, which the gate treats as a failure.
 40. The state marker is capped at 30,000 characters; a state that would exceed it is written with `complete: false` (never a review base), which can only cost a full review.
-41. Live checks that need a second GitHub account are skipped until the end of release 2 (owner ruling): F29's approved-PR case and the private-repo fork path run in Task 50, after every other task. The rc and release tags depend only on the single-account Tasks 13 and 40. A defect Task 50 finds is fixed by ordinary PRs and ships as 0.2.1 (a new rc, Task 40 again, a new tag), since `ship-kit--v0.2.0` cannot be moved.
+41. Live checks that need a second GitHub account are skipped until the end of release 2 (owner ruling): F29's approved-PR case, the private-repo fork path and, when the second adopting repo is owned by another account, the F17 cross-owner observation run in Task 50, after every other task. The rc and release tags depend only on the single-account Tasks 13 and 40. A defect Task 50 finds is fixed by ordinary PRs and ships as 0.2.1 (a new rc, Task 40 again, a new tag), since `ship-kit--v0.2.0` cannot be moved.
 42. Records and fixtures never hold a live marker token: every `skill_marker` token in `tests/skills/**`, `tests/live/**` and `tests/fixtures/**` is written as `<token>` (design 6.4 requires the token to appear nowhere else in the repository). `pressure.mjs check --dmi` prints its text with the token replaced, and `tests/skills/marker.test.mjs` fails on a live token in any other tracked file.
 43. No artifact holds raw model output that could carry a credential: the seat job never uploads the action's execution file; under the canary it runs the execution checks in the seat job and uploads only their results; `receipt.mjs` writes `body: null, withheld: true` when `anyCredential(body)` is true, and aggregate scores a withheld receipt `fail-coverage`.
-
 
 ## Where every decision input comes from
 
@@ -195,7 +194,7 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 | `scripts/lib/release-tags.mjs`, `tests/lib/release-tags.test.mjs`, `scripts/setup/pin.mjs` (+ test) | 11 | tag parsing, pin resolution |
 | `tests/live/extra-known-marketplaces.md`, design F12 row, design 22.8, 19.3 step 8 and the F21/F27/F29 status cells | 12 | F12 record; second-account checks moved after the tag |
 | `tests/live/ruleset-bypass.md`, design F29 row | 13, 50 | F29 record (single-account cases; approved-PR case) |
-| (repository secret) | 13 | canary auth |
+| (repository secret) | 14 | canary auth |
 | `schemas/config.schema.json`, `scripts/lib/config.mjs`, `tests/lib/config.test.mjs`, `tests/schemas/config-schema.test.mjs`, `scripts/setup/migrations/index.mjs` (+ test), `.ship-kit/config.json`, `.claude/settings.json`, design 5.1 | 15 | config |
 | `scripts/review/trust-state.mjs` (+ test) | 16 | `trustState` |
 | `scripts/review/author.mjs` (+ test) | 17 | author rule |
@@ -221,9 +220,9 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 | `README.md` | 37 | inventory, secrets, residual risk |
 | `.claude-plugin/plugin.json`, seat marker lines | 38 | version 0.2.0 |
 | `tests/live/private-repo-check.md`, design F21/F27 rows | 40, 50 | private-repo exit check (owner-only part; fork part) |
-
 | `.github/workflows/ship-kit-general.yml`, `ship-kit-adversarial.yml`, `.ship-kit/config.json` | 43 | dogfood callers |
 | `tests/live/dogfood-gates.md` | 44 | first dogfood observation |
+| `tests/live/cross-owner.md`, design F17 row | 50 | F17 cross-owner record, when the second adopting repo is cross-owner |
 
 ## Waves and dependency order
 
@@ -249,8 +248,7 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 
 Dependencies (task: needs): 2: 1. 13: 12. 15: 4, 12, 13. 16: 3, 7. 17: 3. 18: 7. 19: 2, 4, 7, 10. 20: 5, 6. 21: 3, 15. 22: 15. 23: 3, 7, 11, 15, 16, 17, 18. 24: 3, 7, 9, 15, 16. 25: 5, 12, 15, 20. 26: 3, 15, 16. 27: 3, 21, 24. 28: 25. 29: 6, 8, 20, 23, 24. 30: 2, 3, 15, 16, 22. 31: 2, 22, 26. 32: 15, 19, 29. 33: 14, 27, 32. 34: 11, 19, 25, 27. 35: 28, 34. 36: 2, 22, 35. 37: 1-36. 38: 37. 39: 38, 13. 40: 39. 41: 40, 33, 13. 42: 41. 43: 42. 44: 43. 45, 46: 44. 47: 45. 48: 46. 49: 47. 50: 48, 49.
 
-Every task that edits `docs/design/ship-kit-design.md` (12, 13, 15, 24, 27, 33, 40, 46, 50) sits on one dependency chain, 12 -> 13 -> 15 -> 24 -> 27 -> 33 -> 40 -> 46 -> 50 (46's record PR merges before 46 counts as finished), so no two are open at once; each rebases on `main` before merge.
-
+Every task that edits `docs/design/ship-kit-design.md` (12, 13, 15, 24, 27, 33, 40, 50) sits on one dependency chain, 12 -> 13 -> 15 -> 24 -> 27 -> 33 -> 40 -> 50, so no two are open at once; each rebases on `main` before merge. A design edit an implementation note asks for is made by the next task on this chain, never by the task carrying the note.
 
 ## Models
 
@@ -306,7 +304,6 @@ Every task that edits `docs/design/ship-kit-design.md` (12, 13, 15, 24, 27, 33, 
 | 48 | sonnet | same, second repository; owner approval |
 | 49 | sonnet | deletion PR; owner approval |
 | 50 | opus | live second-account checks after the tag; owner approval |
-
 
 ---
 
@@ -754,7 +751,6 @@ Spec: design 6.3 aggregate step 3; 22.9 (PR 2.4 note: seat prose in a fenced blo
 
 Implementation note: callers truncate before fencing, so a cut never removes a closing fence; out-of-hunk findings listed in the summary stay inside the fence.
 
-
 **Acceptance:** tests green.
 
 ---
@@ -846,7 +842,6 @@ Implementation note: the settings key is nested (`"ship-kit": {"source": {"sourc
 Implementation note: several design statements differ from this plan without an edit task (6.5 fragment indentation versus ruling 34, 6.3 seat step 4 receipt source versus ruling 13, 4.3 and 8.2 module placement versus ruling 3); fold each into the next design-editing task on the chain so the design states the current design.
 
 **Acceptance:** the record states one of the two verdicts with both runs as evidence; Tasks 15 and 25 read it; the design edits read as stated.
-
 
 ---
 
@@ -1058,7 +1053,6 @@ export function needsMaintainerText(headSha)
 | `scripts/review/author.mjs` | ignore `minApprover` | the `minApprover: "admin"` case |
 | `scripts/review/author.mjs` | compare `headRepo` case-sensitively | the `headRepo` differing-only-in-case case |
 
-
 **Acceptance:** tests green.
 
 ---
@@ -1122,7 +1116,6 @@ Implementation note: `bump-version.mjs` only rewrites an existing well-formed ma
 
 **Acceptance:** both skills pass their scenarios with valid GREEN checks; contract and schema agree; no tracked file but a SKILL.md holds a live token.
 
-
 ---
 
 ### Task 20: Caller template, gate fragment and gate tests
@@ -1163,7 +1156,6 @@ jobs:
 Implementation note: the test covers 63 combinations while design 6.5 says eighteen; state in the test that the 63 supersede the design's example.
 
 **Acceptance:** 63 gate combinations pass; both variants lint clean.
-
 
 ## Wave 3
 
@@ -1210,7 +1202,6 @@ Rules: the head SHA comes from `gh pr view <pr> --json headRefOid` and must be 4
 
 Implementation note: provenance through `actions/runs?check_suite_id=` must refuse when the listing returns zero runs (a check run from a non-Actions suite); add that case.
 Implementation note: `required-checks.mjs` reads the default branch's rules for any PR; a PR into another branch gets the wrong set, so release 6 reads the PR's base ref.
-
 
 **Acceptance:** tests green; an empty or unreadable set never yields exit 0.
 
@@ -1316,11 +1307,9 @@ Phases, stopping at the first recognized failure (`status.json` `{status, reason
 | `scripts/review/plan.mjs` | read a repo hunt list without the blob-type check | `a symlinked repo hunt list is not read` |
 | `scripts/review/plan.mjs` | set `complete: true` on each trusted state before `findReviewBase` | `an incomplete trusted design-doc state is never the review base` |
 
-
 Implementation note: this task is large (three phases, 30 tests); if review rounds stall, split preflight and author from the plan phase.
 Implementation note: the matrix `prompt` embeds the plan job's `$SHIP_KIT_ROOT`, but seats may run on runners with a different `RUNNER_TEMP` (self-hosted seats, hosted plan), so every seat would read a missing directory and score `fail-coverage`; keep only `index` (and `control`) in the matrix and build the prompt in the seat step from its own `runner.temp` (Task 29 wires it).
 Implementation note: `trustState` needs `defaultBranch`, which the env list does not supply; take it from the event's `repository.default_branch` via a new env variable or a live API read. Pass `--no-recurse-submodules` to the PR-head fetch, and `::add-mask::` the base64 header value, which GitHub does not mask.
-
 
 **Acceptance:** tests green; every decision input is from `TRUSTED_SHA`, `src/` or a live API read.
 
@@ -1462,7 +1451,6 @@ Spec: design 10.3; 22.9 (PR 2.6: clean runs, final head, full-mode marker; PR 2.
 | `scripts/promote/shadow-record.mjs` | take the oldest state for the final head | the newest-of-two case |
 
 Implementation note: `gh pr list --state merged` orders by creation, not merge time; sort by `mergedAt` before walking the streak.
-
 
 **Acceptance:** tests green.
 
@@ -1609,7 +1597,6 @@ Keep every `job.workflow_*` read in step `env:` or step `if:`; a job-level `if:`
 
 Implementation note: the action's `restoreConfigFromBase` overwrites the workspace `CLAUDE.md` and `.claude` from the current `origin/<base.ref>` tip, not `TRUSTED_SHA`; it is still default-branch content, but design 6.3 says "workspace root at TRUSTED_SHA", so note it in 6.3 on the design chain or accept it explicitly in the PR body.
 
-
 **Acceptance:** tests and actionlint green; `check-template-secrets` green.
 
 ---
@@ -1647,7 +1634,6 @@ Implementation note: the run-directory files ("a fixture clone description", "th
 
 ### Task 31: `promoting-shadow-checks`
 
-
 Spec: design 10.3, 5.4, 6.6, 21.5; 22.9 (PR 2.2/2.6: expired artifacts). Model: opus. Depends on: 2, 22, 26.
 
 **Files:** Create `skills/promoting-shadow-checks/SKILL.md`, `tests/skills/promoting-shadow-checks/{scenario,baseline,result}.md`.
@@ -1664,7 +1650,6 @@ Implementation note: the run-directory files ("a fixture record output file", "t
 Implementation note: "same wording as Task 30's step 8" but this task does not depend on Task 30 and can run beside it; quote the wording here or add the dependency.
 
 **Acceptance:** gates green; GREEN valid; every discriminating criterion passes.
-
 
 ## Wave 5
 
@@ -1782,7 +1767,6 @@ Spec: design 19.2, 19.3 step 8, 19.5, 16.3 (reader), 16.4, 6.6; 22.9 (PR 2.5: ru
 | File | Mutation | Test that must go red |
 |---|---|---|
 | `scripts/setup/cli.mjs` | pass `migrates: false` to `planUpdate` in `update` | the migrate-with-kept-caller case |
-
 | `scripts/setup/cli.mjs` | print a pin mismatch without exiting 1 | `check exits 1 on a pin mismatch` |
 | `scripts/setup/cli.mjs` | omit `integration_id` from the checks ruleset entries | `the checks ruleset binds every managed context to the GitHub Actions app` |
 
@@ -1965,14 +1949,11 @@ Spec: design 23.1 M1, 19.3, 9.1, 9.3. Model: opus. Depends on: 44. **Owner appro
 
 ### Task 46: Second adopting repo, N1 setup PR (owner approval required)
 
-Spec: design 23.2 N1, F17. Model: opus. Depends on: 44. **Owner approval required.**
+Spec: design 23.2 N1. Model: opus. Depends on: 44. **Owner approval required.**
 
 - [ ] **Step 1:** Answers: hosted runners, general `required`, adversarial `shadow`; move its hunt list from its design document into `.ship-kit/hunt-lists/code.md` in the list format.
 - [ ] **Step 2:** `/ship-kit:setup` as in Task 45; commit, push, open the PR; list the manual steps. Do not merge.
-- [ ] **Step 3:** If the repository is owned by a different account than ship-kit, its first run after merge is F17's first observation (explicit secrets, cross-owner `uses:`, `job.workflow_*` resolving to ship-kit): record it in a ship-kit PR as `tests/live/cross-owner.md` without naming the repository or account, and update F17's status cell.
-
-Implementation note: if the second adopting repo is owned by another account, the F17 observation is itself a second-account live check; confirm with the owner whether it moves into Task 50 under ruling 41 (it gates nothing, so moving it costs nothing).
-
+- [ ] **Step 3:** Record in the owner hand-off whether the repository is owned by a different account than ship-kit. If it is, its cross-owner observation (F17) is a second-account live check and runs in Task 50 (ruling 41); this task records nothing about F17 and edits nothing in ship-kit.
 
 ### Task 47: First adopting repo, M2 and M3 (owner approval required)
 
@@ -1986,7 +1967,8 @@ Spec: design 23.1 M2, M3. Model: sonnet. Depends on: 45 merged.
 
 Spec: design 23.2 N2, N3. Model: sonnet. Depends on: 46 merged.
 
-- [ ] **Step 1:** As Task 47 Steps 1 to 3, for the second adopting repo.
+- [ ] **Step 1:** As Task 47 Steps 1 to 3, for the second adopting repo. When it is cross-owner, F17 stays UNVERIFIED until Task 50 and nothing here reads `tests/live/cross-owner.md` or F17's cell: the switch rests only on each new context having reported green with provenance on the five observed PRs (Step 1) and on the read-back (Step 3), and a new context whose cross-owner call never reports stays missing, which blocks merges rather than admitting them.
+
 - [ ] **Step 2:** Open a PR deleting its old review workflow; do not merge.
 
 ### Task 49: First adopting repo, M4 cleanup PR (owner approval required)
@@ -1999,9 +1981,9 @@ Spec: design 23.1 M4. Model: sonnet. Depends on: 47.
 
 ### Task 50: Second-account live checks (owner approval required)
 
-Spec: design 22.8, 6.3 (author rule, reopen route), F21, F27, F29; rulings 15, 41. Model: opus. Depends on: 48, 49 (every other task finished). **Owner approval required** before Step 1: invites a second account the owner controls as a collaborator on ship-kit and on the scratch repository, and creates and deletes rulesets on ship-kit.
+Spec: design 22.8, 6.3 (author rule, reopen route), 23.2, F17, F21, F27, F29; rulings 15, 41. Model: opus. Depends on: 48, 49 (every other task finished). **Owner approval required** before Step 1: invites a second account the owner controls as a collaborator on ship-kit and on the scratch repository, and creates and deletes rulesets on ship-kit.
 
-**Files:** Modify `tests/live/ruleset-bypass.md` (approved-PR section), `tests/live/private-repo-check.md` (fork section), and the F21, F27 and F29 status cells.
+**Files:** Modify `tests/live/ruleset-bypass.md` (approved-PR section), `tests/live/private-repo-check.md` (fork section), and the F21, F27 and F29 status cells; when the second adopting repo is cross-owner (Task 46 Step 3), create `tests/live/cross-owner.md` and modify the F17 status cell.
 
 **Why safe alone:** the rulesets target only `refs/heads/f29-scratch/base` and are deleted in Step 2; the scratch repository is private; the records change no behaviour.
 
@@ -2009,18 +1991,21 @@ Spec: design 22.8, 6.3 (author rule, reopen route), F21, F27, F29; rulings 15, 4
 - [ ] **Step 2: F29 approved-PR case.** From an up-to-date `main`: push `main` to `refs/heads/f29-scratch/base`; create `f29-scratch/case-1` with one commit adding `tests/live/f29-scratch/case-1.txt`, pushed; push one more commit to `f29-scratch/base` so the case is behind; the owner opens its PR into `f29-scratch/base`. Create the three rulesets from the JSON recorded in `tests/live/ruleset-bypass.md` (Task 13 Step 3); post statuses a=success b=success on the case head; the reviewer approves (`GH_CONFIG_DIR=$SCRATCH/gh-reviewer gh pr review <n> --approve`). Read the state as the owner (`gh pr view <n> --json mergeStateStatus,mergeable,reviewDecision`), then attempt `gh pr merge <n> --merge --admin --match-head-commit <sha>`; record both verbatim. Expected: it merges. Clean up as in Task 13 Step 9 and read back only `main` and `release-tags`.
 - [ ] **Step 3: Private-repository fork path.** In `<scratch>`, bring the callers to the release: run Task 40 Step 2's install again with `--tag ship-kit--v0.2.0` (commit on a branch, PR, the owner merges). The reviewer forks the repository and opens a PR from the fork. Record: the run's status `needs-maintainer`, the text with the full head SHA. The owner comments `/ship-kit-review <full head sha>`, then closes and reopens the PR. Record: the new run's sender is the owner, seats ran, the gate is green (or red on findings, with the seats having run). If no workflow runs for the fork PR at all, record the settings that were needed; if none makes `pull_request_target` run for a fork of a private personal repository, record that and tell the owner.
 - [ ] **Step 4: Facts.** From the plan logs record the permission API's answer for the reviewer (F27 for a read-only collaborator on a private repository, ruling 15).
-- [ ] **Step 5: Record and PR** (in ship-kit): fill the second-account sections of `tests/live/ruleset-bypass.md` and `tests/live/private-repo-check.md` (the reviewer's login as `<reviewer>`, the owner as `<owner>`, the scratch repository as `<scratch>`), and set the F29 approved-PR part, F21's fork route and F27's read-only-collaborator part to Verified or to what was observed. Standard verification, commit, PR, CI. Subject: `Record the second-account live checks`.
-- [ ] **Step 6: Outcome.** A defect found here is fixed by ordinary PRs and released as 0.2.1 (Task 38's steps at 0.2.1, a new rc as in Task 39, Task 40 again, the tag as in Task 41), since `ship-kit--v0.2.0` cannot be moved. The owner decides whether the reviewer stays a collaborator and whether to delete the scratch repository.
+- [ ] **Step 5: F17 cross-owner observation** (only when Task 46 recorded that the second adopting repo is owned by a different account than ship-kit). From that repository's caller runs since its N1 PR merged, the first one is F17's first observation: record the explicit secrets reaching the call, the cross-owner `uses:` resolving, and `job.workflow_*` resolving to ship-kit, from the run's logs, without naming the repository or account.
+- [ ] **Step 6: Record and PR** (in ship-kit): write `tests/live/cross-owner.md` from Step 5 when it ran, and set F17's status cell to what was observed; fill the second-account sections of `tests/live/ruleset-bypass.md` and `tests/live/private-repo-check.md` (the reviewer's login as `<reviewer>`, the owner as `<owner>`, the scratch repository as `<scratch>`), and set the F29 approved-PR part, F21's fork route and F27's read-only-collaborator part to Verified or to what was observed. Standard verification, commit, PR, CI. Subject: `Record the second-account live checks`.
+- [ ] **Step 7: Outcome.** A defect found here is fixed by ordinary PRs and released as 0.2.1 (Task 38's steps at 0.2.1, a new rc as in Task 39, Task 40 again, the tag as in Task 41), since `ship-kit--v0.2.0` cannot be moved. The owner decides whether the reviewer stays a collaborator and whether to delete the scratch repository.
 
 Implementation note: the scratch PR into `f29-scratch/base` also triggers `ci`, secret-scan and the canary (ruling 32, `on: pull_request` on every branch), spending seat credits; add `branches: [main]` to the canary or accept the cost explicitly with the owner.
 
-**Acceptance:** the approved-PR case and the fork path recorded with GitHub's own messages; rulesets and scratch branches removed; the three status cells set.
+**Acceptance:** the approved-PR case and the fork path recorded with GitHub's own messages; rulesets and scratch branches removed; the three status cells set; for a cross-owner second adopting repo, the F17 record and cell.
 
 ---
 
 ## Self-review against the spec
 
+- Second-account, fork-PR and cross-owner steps: only in Task 50 (F29 approved-PR case, private-repo fork path, F17 cross-owner observation); Tasks 13 and 40 use the owner's account only, and Task 46 only records whether its repository is cross-owner.
 - 22.2 PR 2.1: Tasks 4, 15. PR 2.2: Tasks 7, 8, 16, 17, 18, 23, 24. PR 2.3: Tasks 10, 19. PR 2.4: Tasks 5, 6, 20, 29, 32, 33. PR 2.5: Tasks 11, 21, 22, 25, 27, 28, 34, 35, 36. PR 2.6: Tasks 26, 30, 31, 38. After the tag: Tasks 42 to 44; migration: Tasks 45 to 49; second-account live checks: Task 50 (ruling 41).
 - 22.8: canary on the release PR (Tasks 33, 38); private-repo check at an owner-approved rc (Tasks 39, 40; fork part in Task 50); F29 live test (Task 13; approved-PR case in Task 50); gitleaks and the CLAUDE.md checklist (Task 41); 22.8's text moved to match ruling 41 (Task 12).
 - 22.9 release-2 notes: PR 2.1 dir slash (15); PR 2.2 distinct heads (24); artifact expiry (16, 26, 30, 31, 37); PR 2.4 boot secrets and permissions (20, 25) and self-hosted warning (27); planted `.claude` files (32, plus ruling 12 in 8); PR 2.5 CLAUDE.md lines by feature (25), Dependabot (37), F12 live (12); R5/R6 (37); Actions policy fact (27); PR 2.6 clean-run rule and final head (26), full-mode marker (24); extract-tree refusals and renames (8); node-built header (29); execution-file receipt and raw body (24, withheld when credential-shaped, ruling 43); diff-hunk check and fenced prose (24, 9); deny-ancestor test on two layouts (29); rulesets without permission (35); `agents.identity` (ruling 8); approval body rule (17); convert-to-draft text (17).
-- UNVERIFIED facts release 2 depends on: F12 (12), F13, F15, F23, F25, F28 (33), F21 (40; fork route 50), F27 (33, 40; read-only collaborator 50), F29 (13; approved-PR case 50), F30 (27); F14 and F17 stay UNVERIFIED (F17 observed in 46 if the second repo is cross-owner).
+- UNVERIFIED facts release 2 depends on: F12 (12), F13, F15, F23, F25, F28 (33), F21 (40; fork route 50), F27 (33, 40; read-only collaborator 50), F29 (13; approved-PR case 50), F30 (27); F14 and F17 stay UNVERIFIED (F17 observed in 50 if the second repo is cross-owner).
+
