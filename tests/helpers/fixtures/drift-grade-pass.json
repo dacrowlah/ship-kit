@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Both criteria are met. SENTINEL-GRADER-8b2e","structured_output":{"criteria":[{"number":1,"pass":true},{"number":2,"pass":true}]},"modelUsage":{"claude-pin-1":{"outputTokens":20}}}

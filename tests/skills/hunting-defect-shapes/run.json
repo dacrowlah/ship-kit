@@ -1,0 +1,59 @@
+{
+  "prompt": "/ship-kit:hunting-defect-shapes <run>/review",
+  "files": [
+    {
+      "from": "tests/fixtures/review-dir/full/contract/output.md",
+      "to": "review/contract/output.md"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/contract/design-doc.md",
+      "to": "review/contract/design-doc.md"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/contract/untrusted-data.md",
+      "to": "review/contract/untrusted-data.md"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/hunt/code-shared.md",
+      "to": "review/hunt/code-shared.md"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/hunt/design-shared.md",
+      "to": "review/hunt/design-shared.md"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/diff.patch",
+      "to": "review/diff.patch"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/stat.txt",
+      "to": "review/stat.txt"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/pr.txt",
+      "to": "review/pr.txt"
+    },
+    {
+      "from": "tests/fixtures/review-dir/full/scope.txt",
+      "to": "review/scope.txt"
+    },
+    {
+      "from": "tests/fixtures/review-dir/pr/README.md",
+      "to": "pr/README.md"
+    },
+    {
+      "from": "tests/fixtures/review-dir/pr/docs/design/items.md",
+      "to": "pr/docs/design/items.md"
+    },
+    {
+      "from": "tests/fixtures/review-dir/pr/src/items.mjs",
+      "to": "pr/src/items.mjs"
+    },
+    {
+      "from": "tests/fixtures/review-dir/pr/test/items.spec.mjs",
+      "to": "pr/test/items.spec.mjs"
+    }
+  ],
+  "dmi": true,
+  "jsonSchema": "full"
+}

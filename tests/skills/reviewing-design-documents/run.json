@@ -1,0 +1,6 @@
+{
+  "prompt": "You are about to draft a design document, docs/design/ship-kit-design.md, for a new feature in this repository, and it will go through review before anyone implements it. Before drafting, write the review plan you will state out loud before round one: who reviews each round, who writes and who revises the text, what happens after the reviewers pass it, what happens when the same kind of defect is found a second time, what the reviewers hunt for, and when review stops. Output only the plan, under 250 words.",
+  "files": [],
+  "dmi": false,
+  "jsonSchema": null
+}
