@@ -110,10 +110,12 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
   `### Run 3` (and on, numbered in order). Each run holds the `check`
   output verbatim in one fenced block, whose first two lines are the
   `Shipped-text SHA-256:` and `Model:` lines `check` printed, and, outside
-  fences, one line per discriminating criterion, `<n>. PASS` or `<n>.
-  FAIL`, followed by its evidence. Every run of the shipped text that
-  `check` accepts is recorded there; a run it refuses (a login or harness
-  error, a run that never loaded the skill) is discarded and rerun.
+  fences, one line per discriminating criterion that is `<n>. PASS` or
+  `<n>. FAIL`, then optionally `.`, then a space and its evidence (text in
+  an HTML comment does not count). Every run of the shipped text that
+  `check` accepts is recorded there, each with its own output; a run it
+  refuses (a login or harness error, a run that never loaded the skill)
+  is discarded and rerun.
 - When a GREEN run fails a discriminating criterion, the skill is not
   done. Either close the loophole in a REFACTOR round, which changes the
   shipped text, and make three fresh GREEN runs of the new text, or stop
@@ -123,8 +125,11 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
   under another heading, such as `## Earlier GREEN runs`, and never
   count. The records gate fails a `## GREEN runs` section with fewer than
   three runs, a run whose hash is not the current shipped-text hash or
-  whose model is not the pin, and a discriminating criterion that a run
-  does not mark PASS exactly once.
+  whose model is not the pin, a run whose output repeats an earlier
+  run's, and a discriminating criterion that a run does not mark PASS
+  exactly once. It also fails a record holding a `check` output of the
+  current shipped text under the pin anywhere outside those runs, since
+  that is a run left out.
 - Every rationalization-table row quotes an excuse observed in a RED or
   GREEN run, found verbatim in `baseline.md` or `result.md`, never prompt
   text. A record puts each prompt it holds in a fenced block whose label,

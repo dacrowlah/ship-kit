@@ -134,8 +134,11 @@ function greenRunProblems({ outputs, verdicts }, { hash, model, criteria }) {
 /**
  * result.md's one `## GREEN runs` section holds at least MIN_GREEN_RUNS
  * runs, and every run in it is of the skill's current shipped text under
- * the pinned model and passes every discriminating criterion. Runs under
- * any other heading are history and never count.
+ * the pinned model, passes every discriminating criterion and records an
+ * output no earlier run recorded (whitespace aside). Runs under any other
+ * heading are history and never count, so a check output of the current
+ * shipped text under the pin anywhere else in the record, hidden in an
+ * HTML comment included, is a run left out and fails.
  * @param {string} root @returns {string[]}
  */
 export function checkGreenRuns(root) {
@@ -155,7 +158,7 @@ export function checkGreenRuns(root) {
       violations.push(`${where}: GREEN runs cannot be checked without one well-formed Discriminating criteria line`);
       continue;
     }
-    const { runs, problems } = greenRuns(result);
+    const { runs, elsewhere, problems } = greenRuns(result);
     violations.push(...problems.map((problem) => `${where}: ${problem}`));
     if (problems.length > 0) continue;
     if (runs.length < MIN_GREEN_RUNS) {
@@ -164,7 +167,20 @@ export function checkGreenRuns(root) {
       );
     }
     const expected = { hash: shippedTextHash(skill.dir), model, criteria: criteria[0].split(", ") };
-    runs.forEach((run, i) => violations.push(...greenRunProblems(run, expected).map((problem) => `${where}: Run ${i + 1}: ${problem}`)));
+    const firstRunWith = new Map();
+    runs.forEach((run, i) => {
+      violations.push(...greenRunProblems(run, expected).map((problem) => `${where}: Run ${i + 1}: ${problem}`));
+      if (run.outputs.length !== 1) return;
+      const output = collapse(run.outputs[0].join("\n")).trim();
+      if (firstRunWith.has(output)) {
+        violations.push(`${where}: Run ${i + 1}: its check output repeats Run ${firstRunWith.get(output)}'s; each run records its own output`);
+      } else firstRunWith.set(output, i + 1);
+    });
+    for (const [hashLine, modelLine] of elsewhere) {
+      if (HASH_LINE.exec(hashLine)?.[1] === expected.hash && MODEL_LINE.exec(modelLine ?? "")?.[1] === model) {
+        violations.push(`${where}: a check output of the shipped text under the pinned model sits outside the runs of ## GREEN runs; every such run is recorded there`);
+      }
+    }
   }
   return violations;
 }
@@ -540,6 +556,7 @@ test("the fixture passes every records gate", () => {
   assert.deepEqual(checkRationalizations(root), []);
   assert.deepEqual(checkModelLines(root), []);
   assert.deepEqual(checkRunSpecs(root), []);
+  assert.deepEqual(checkGreenRuns(root), []);
 });
 
 test("every result.md carries the current shipped-text hash", () => {
@@ -587,7 +604,8 @@ test("every result.md names its discriminating criteria", () => {
 
 /**
  * One `### Run <n>` entry: the check output in a fence whose first lines
- * are `hash` and `model`, then one verdict line per criterion.
+ * are `hash` and `model`, then text of that run's own, then one verdict
+ * line per criterion.
  * @param {number} n @param {{hash: string, model?: string, verdicts?: Record<string, string>}} options
  */
 function greenRun(n, { hash, model = "claude-opus-5-5", verdicts = { 1: "PASS", 2: "PASS" } }) {
@@ -602,6 +620,7 @@ function greenRun(n, { hash, model = "claude-opus-5-5", verdicts = { 1: "PASS", 
     `Shipped-text SHA-256: ${hash}`,
     `Model: ${model}`,
     "",
+    `Run ${n} said something of its own.`,
     "1. PASS inside the output does not count.",
     "````",
     "",
@@ -630,6 +649,8 @@ function withResult(body, criteria = "1, 2") {
 const passingRuns = (hash, count, over = {}) => Array.from({ length: count }, (_, i) => greenRun(i + 1, { hash, ...over }));
 
 const WHERE = "tests/skills/mining-x/result.md";
+/** A shipped-text hash no fixture skill has: runs of earlier text. */
+const OLD_HASH = "0".repeat(64);
 
 test("every result.md holds three passing GREEN runs of the shipped text under the pin", () => {
   assert.deepEqual(checkGreenRuns(REPO), []);
@@ -674,11 +695,11 @@ test("three GREEN runs under another model fail", () => {
 });
 
 test("only runs under the one ## GREEN runs section count", () => {
-  const earlier = (hash) => `${greenSection(passingRuns(hash, 3), "## Earlier GREEN runs")}\n${greenSection(passingRuns(hash, 2))}`;
+  const earlier = (hash) => `${greenSection(passingRuns(OLD_HASH, 3), "## Earlier GREEN runs")}\n${greenSection(passingRuns(hash, 2))}`;
   assert.deepEqual(checkGreenRuns(withResult(earlier)), [
     `${WHERE}: ## GREEN runs holds 2 runs; a skill needs at least 3, each passing every discriminating criterion`,
   ]);
-  assert.deepEqual(checkGreenRuns(withResult((hash) => greenSection(passingRuns(hash, 3), "## Earlier GREEN runs"))), [
+  assert.deepEqual(checkGreenRuns(withResult(() => greenSection(passingRuns(OLD_HASH, 3), "## Earlier GREEN runs"))), [
     `${WHERE}: no ## GREEN runs section`,
   ]);
   assert.deepEqual(checkGreenRuns(withResult((hash) => `\`\`\`\`\`\n${greenSection(passingRuns(hash, 3))}\`\`\`\`\`\n`)), [
@@ -688,9 +709,62 @@ test("only runs under the one ## GREEN runs section count", () => {
     `${WHERE}: more than one ## GREEN runs section`,
   ]);
   // A later level-1 or level-2 heading ends the section; its runs do not count.
-  assert.deepEqual(checkGreenRuns(withResult((hash) => `${greenSection(passingRuns(hash, 2))}\n## Notes\n\n${greenRun(3, { hash })}`)), [
+  assert.deepEqual(checkGreenRuns(withResult((hash) => `${greenSection(passingRuns(hash, 2))}\n## Notes\n\n${greenRun(3, { hash: OLD_HASH })}`)), [
     `${WHERE}: ## GREEN runs holds 2 runs; a skill needs at least 3, each passing every discriminating criterion`,
   ]);
+});
+
+test("a run whose check output repeats an earlier run's fails", () => {
+  const same = (n, hash) => greenRun(n, { hash }).replace(`Run ${n} said something of its own.`, "Run 1 said something of its own.");
+  assert.deepEqual(checkGreenRuns(withResult((hash) => greenSection([1, 2, 3].map((n) => same(n, hash))))), [
+    `${WHERE}: Run 2: its check output repeats Run 1's; each run records its own output`,
+    `${WHERE}: Run 3: its check output repeats Run 1's; each run records its own output`,
+  ]);
+  // Whitespace alone does not make an output a run of its own.
+  const spaced = (hash) => greenSection([greenRun(1, { hash }), same(2, hash).replace("Run 1 said", "Run  1\tsaid"), greenRun(3, { hash })]);
+  assert.deepEqual(checkGreenRuns(withResult(spaced)), [`${WHERE}: Run 2: its check output repeats Run 1's; each run records its own output`]);
+});
+
+test("a check output of the shipped text under the pin outside the runs fails", () => {
+  const left = `${WHERE}: a check output of the shipped text under the pinned model sits outside the runs of ## GREEN runs; every such run is recorded there`;
+  const discarded = (over) => (hash) =>
+    `${greenSection(passingRuns(hash, 3))}\n## Discarded runs\n\n${greenRun(4, { hash, verdicts: { 1: "PASS", 2: "FAIL" }, ...over })}`;
+  assert.deepEqual(checkGreenRuns(withResult(discarded({}))), [left]);
+  // A run of earlier text, or under another model, may sit anywhere.
+  assert.deepEqual(checkGreenRuns(withResult(discarded({ hash: OLD_HASH }))), []);
+  assert.deepEqual(checkGreenRuns(withResult(discarded({ model: "other-model" }))), []);
+  // In the section but before Run 1, or hidden in an HTML comment inside a run, it is left out too.
+  const preamble = (hash) => greenSection([`\`\`\`text\nShipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\n\`\`\`\n`, ...passingRuns(hash, 3)]);
+  assert.deepEqual(checkGreenRuns(withResult(preamble)), [left]);
+  const hidden = (hash) =>
+    greenSection([...passingRuns(hash, 3), `<!--\n\`\`\`text\nShipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\n\nA failing fourth run.\n\`\`\`\n-->\n`]);
+  assert.deepEqual(checkGreenRuns(withResult(hidden)), [left]);
+});
+
+test("a verdict line is exactly <n>. PASS or <n>. FAIL, then its evidence", () => {
+  const second = (line) => (hash) => greenSection([greenRun(1, { hash }), `${greenRun(2, { hash, verdicts: { 1: "PASS" } })}${line}\n`, greenRun(3, { hash })]);
+  const missing = [`${WHERE}: Run 2: expected one PASS or FAIL line for discriminating criterion 2, found 0`];
+  for (const line of ["2. PASS/FAIL (partial: held in part only)", "2. PASSED", "2. PASS-ish", "> 2. PASS. Quoted.", "Criterion 2. PASS", " 2. PASS"]) {
+    assert.deepEqual(checkGreenRuns(withResult(second(line))), missing, line);
+  }
+  for (const line of ["2. PASS", "2. PASS.", "2. PASS. Evidence.", "2. PASS (`check` exit 0)", "2. PASS (not discriminating). Evidence."]) {
+    assert.deepEqual(checkGreenRuns(withResult(second(line))), [], line);
+  }
+});
+
+test("a verdict line inside an HTML comment does not count", () => {
+  const second = (tail) => (hash) => greenSection([greenRun(1, { hash }), `${greenRun(2, { hash, verdicts: { 1: "PASS" } })}${tail}`, greenRun(3, { hash })]);
+  const missing = [`${WHERE}: Run 2: expected one PASS or FAIL line for discriminating criterion 2, found 0`];
+  assert.deepEqual(checkGreenRuns(withResult(second("Criterion 2 failed.\n<!--\n2. PASS. Hidden.\n-->\n"))), missing);
+  assert.deepEqual(checkGreenRuns(withResult(second("<!-- note --> Criterion 2 failed. <!--\n2. PASS\n--> 2. PASS\n"))), missing);
+  // Text after a comment closes is visible again.
+  assert.deepEqual(checkGreenRuns(withResult(second("<!-- note -->\n2. PASS. Visible.\n"))), []);
+});
+
+test("headings inside a run's fenced output neither open a run nor end the section", () => {
+  const nested = (hash) =>
+    greenSection(passingRuns(hash, 3).map((run, i) => run.replace("1. PASS inside the output does not count.", `### Run ${i + 4}\n## Notes`)));
+  assert.deepEqual(checkGreenRuns(withResult(nested)), []);
 });
 
 test("each run marks every discriminating criterion once, outside fences", () => {
