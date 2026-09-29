@@ -7,11 +7,15 @@ import { makeFakeGh, json } from "./fake-gh.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../../scripts/watch/watch-pr-checks.sh", import.meta.url));
 
-function run(args, queue) {
+// WATCH_SETTLE_SECONDS defaults to 0 here so tests that exercise the
+// settle-and-reconfirm loop do not actually sleep; the loop's shape (an
+// extra poll before concluding, another restart on a name change) is what
+// is under test, not the real wait.
+function run(args, queue, extraEnv = {}) {
   const gh = makeFakeGh(queue);
   const result = spawnSync("bash", [SCRIPT, ...args], {
     encoding: "utf8",
-    env: { ...process.env, PATH: `${gh.dir}:${process.env.PATH}` },
+    env: { ...process.env, PATH: `${gh.dir}:${process.env.PATH}`, WATCH_SETTLE_SECONDS: "0", ...extraEnv },
   });
   return { ...result, calls: existsSync(`${gh.dir}/calls.log`) ? gh.calls() : [] };
 }
@@ -34,7 +38,9 @@ test("pending then a failure prints the summary and a FAILED line", () => {
   ]);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "PR7 checks concluded: fail:1 pass:1\nFAILED: ci\n");
-  assert.equal(r.calls.length, 2);
+  // 1 pending poll, 1 poll that first sees the conclusion, 1 settle
+  // reconfirm poll that sees the same names again before it concludes.
+  assert.equal(r.calls.length, 3);
 });
 
 test("a cancelled check is reported as FAILED; a skipped one is not", () => {
@@ -67,7 +73,36 @@ test("pending checks reset the empty count", () => {
     json([{ name: "ci", bucket: "pass" }]),
   ]);
   assert.equal(r.status, 0);
+  // empty, pending (resets), empty, pass (first stable), settle reconfirm
+  // (queue exhausted, repeats the pass response) -> concludes.
+  assert.equal(r.calls.length, 5);
+});
+
+test("a check that registers after the first settle poll is waited for and included", () => {
+  const r = run(["7", "0", "3"], [
+    json([{ name: "ci", bucket: "pass" }]),
+    json([{ name: "ci", bucket: "pass" }, { name: "lint", bucket: "pending" }]),
+    json([{ name: "ci", bucket: "pass" }, { name: "lint", bucket: "pass" }]),
+  ]);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "PR7 checks concluded: pass:2\n");
+  // poll1: ci alone, stable -> settle. poll2: lint appears, pending ->
+  // restart. poll3: both pass, stable -> settle. poll4 (queue exhausted,
+  // repeats poll3's response): same names -> concludes.
   assert.equal(r.calls.length, 4);
+});
+
+test("a required check that never appears is reported FAILED at the alarm timeout", () => {
+  const r = run(["7", "0", "1", "--require", "ci"], [json([{ name: "lint", bucket: "pass" }])]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, "PR7 checks concluded: pass:1\nFAILED: ci (never appeared)\n");
+  assert.equal(r.calls.length, 2);
+});
+
+test("a required check that does appear concludes green like any other", () => {
+  const r = run(["7", "0", "1", "--require", "ci"], [json([{ name: "ci", bucket: "pass" }])]);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "PR7 checks concluded: pass:1\n");
 });
 
 for (const args of [[], ["abc"], ["7", "x"], ["7", "0", "-1"]]) {
@@ -77,3 +112,9 @@ for (const args of [[], ["abc"], ["7", "x"], ["7", "0", "-1"]]) {
     assert.equal(r.calls.length, 0);
   });
 }
+
+test("a bad --require without a value exits 2 without calling gh", () => {
+  const r = run(["7", "0", "1", "--require"], [json([])]);
+  assert.equal(r.status, 2);
+  assert.equal(r.calls.length, 0);
+});

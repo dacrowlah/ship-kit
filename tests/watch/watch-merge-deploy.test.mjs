@@ -8,11 +8,11 @@ import { makeFakeGh, json } from "./fake-gh.mjs";
 const SCRIPT = fileURLToPath(new URL("../../scripts/watch/watch-merge-deploy.sh", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
-function run(args, queue) {
+function run(args, queue, extraEnv = {}) {
   const gh = makeFakeGh(queue);
   const result = spawnSync("bash", [SCRIPT, ...args], {
     encoding: "utf8",
-    env: { ...process.env, PATH: `${gh.dir}:${process.env.PATH}` },
+    env: { ...process.env, PATH: `${gh.dir}:${process.env.PATH}`, ...extraEnv },
   });
   return { ...result, calls: existsSync(`${gh.dir}/calls.log`) ? gh.calls() : [] };
 }
@@ -46,7 +46,7 @@ test("completed runs print one summary line and FAILED lines for non-success", (
     `runs for ${SHA} concluded: CI:success Deploy:failure Docs:skipped Odd:?\n` +
       "FAILED: Deploy (failure)\nFAILED: Odd (?)\n",
   );
-  assert.deepEqual(r.calls[0], ["run", "list", "--commit", SHA, "--json", "name,status,conclusion"]);
+  assert.deepEqual(r.calls[0], ["run", "list", "--commit", SHA, "--limit", "100", "--json", "name,status,conclusion"]);
 });
 
 test("no runs for more than max-empty polls raises the alarm and exits 1", () => {
@@ -58,4 +58,27 @@ test("no runs for more than max-empty polls raises the alarm and exits 1", () =>
 
 test("a bad poll argument exits 2", () => {
   assert.equal(run([SHA, "x"], [json([])]).status, 2);
+});
+
+test("21 runs with one failure beyond the old default-20 page are never reported as green", () => {
+  const runs = Array.from({ length: 21 }, (_, i) => ({
+    name: `job-${i}`,
+    status: "completed",
+    conclusion: i === 20 ? "failure" : "success",
+  }));
+  const r = run([SHA, "0", "1"], [json(runs)]);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /FAILED: job-20 \(failure\)/);
+  assert.deepEqual(r.calls[0], ["run", "list", "--commit", SHA, "--limit", "100", "--json", "name,status,conclusion"]);
+});
+
+test("a run count exactly at the limit is reported FAILED, never green", () => {
+  const runs = Array.from({ length: 3 }, (_, i) => ({
+    name: `job-${i}`,
+    status: "completed",
+    conclusion: "success",
+  }));
+  const r = run([SHA, "0", "1"], [json(runs)], { WATCH_RUN_LIMIT: "3" });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /FAILED: too many runs to verify \(limit 3\); narrow or check manually/);
 });

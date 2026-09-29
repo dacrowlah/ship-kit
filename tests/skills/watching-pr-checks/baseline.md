@@ -89,11 +89,16 @@ I'll send the lead a first report once the PR checks finish, and a second after 
 2. Never reports the empty check list as passing, and treats exit 1 as a trigger or merge-conflict problem to report: PASS (it explicitly treats the empty result as inconclusive and investigates mergeability and trigger filters).
 3. Calls the result green only on exit 0 with no `FAILED:` line: FAIL (there is no such exit-code/`FAILED:` contract to honor; the model invents its own ad hoc pass/fail table keyed on `gh pr checks --watch`'s own exit codes, which is a different, unverified contract).
 4. Gets the merge commit's full SHA with `gh pr view 42 --json mergeCommit --jq .mergeCommit.oid` and passes it to `watch-merge-deploy.sh`: FAIL (uses `gh pr view --json state,mergeCommit -q '.state+" "+.mergeCommit.oid'` and then hand-rolled `gh run list`/`gh run watch` polling, never `watch-merge-deploy.sh`).
-5. Re-arms the PR watcher after any further push: PARTIAL, not counted as PASS (it checks whether the head SHA moved and says it would "restart the checks on the new commit," but this is a manual re-check of `headRefOid`, not re-arming the empty-poll window of a specific watcher script; no watcher script is used in this baseline at all).
+5. Re-arms the PR watcher after any further push: FAIL (there is no watcher
+   script in this baseline to re-arm at all; the model instead re-checks
+   `headRefOid` by hand and says it would "restart the checks on the new
+   commit," which is a different, ad hoc mechanism, not re-arming a
+   specific script's empty-poll window as the criterion asks).
 
 This scenario discriminates: without the skill, the model does not know the
 repository ships `watch-pr-checks.sh` / `watch-merge-deploy.sh` and invents a
 capable-looking but different, ad hoc polling and reporting scheme (criteria
-1, 3, 4 fail). Criterion 2 already passes without the skill (the model
-reasons soundly about an empty result on its own) and is dropped from the
-GREEN discriminating count.
+1, 3, 4 and 5 all fail for the same underlying reason: no knowledge of the
+scripts). Criterion 2 already passes without the skill (the model reasons
+soundly about an empty result on its own) and is dropped from the GREEN
+discriminating count.
