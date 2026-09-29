@@ -73,10 +73,9 @@ function readTrackedContents(root, tracked) {
 
 /**
  * @param {{ path: string, name: string, dirName: string, match: RegExpMatchArray, start: number }} candidate
- * @param {string} content
  * @returns {void} throws BumpVersionError when the marker is malformed or misnamed
  */
-function assertValidMarker(candidate, content, skillPath) {
+function assertValidMarker(candidate, skillPath) {
   const { match, dirName } = candidate;
   const strict = MARKER_STRICT.exec(match[0]);
   if (!strict) {
@@ -161,7 +160,7 @@ export function bumpVersion({ root, version, random = defaultRandom, listTracked
     if (candidate === null) continue;
 
     const dirName = basename(dirname(skillPath));
-    assertValidMarker({ ...candidate, dirName }, content, skillPath);
+    assertValidMarker({ ...candidate, dirName }, skillPath);
 
     const { match } = candidate;
     const [, name] = MARKER_STRICT.exec(match[0]);
