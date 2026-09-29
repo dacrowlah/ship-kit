@@ -107,6 +107,52 @@ for (const path of [".git./config", ".git /config", "a/b.", "a/b ", ".claude./x"
   });
 }
 
+for (const path of [
+  "d17/.claude::$INDEX_ALLOCATION/skills/SKILL.md",
+  "d25/.ignore::$DATA/x",
+  ".ignore::$DATA",
+  "a/b:c",
+  "C:x",
+]) {
+  test(`${path} is refused for a colon (NTFS stream syntax)`, () => {
+    const { out, result } = extract([blob(path)]);
+    assert.equal(reasonFor(result, path), "a component contains a colon");
+    assert.deepEqual(result.renamed, []);
+    assert.deepEqual(readdirSync(out), []);
+  });
+}
+
+for (const path of ["a<b", "a>b", 'a"b', "a|b", "d/q?", "d/*"]) {
+  test(`${JSON.stringify(path)} is refused for a character Windows forbids`, () => {
+    const { result } = extract([blob(path)]);
+    assert.equal(reasonFor(result, path), "a component contains a character Windows forbids");
+  });
+}
+
+for (const path of [
+  "CON", "con", "d/PRN", "aux.txt", "NUL", "nul.tar.gz", "NUL .txt", "COM0", "com9.log", "LPT1", "lpt0.x",
+  "COM\u00b9", "com\u00b2.log", "LPT\u00b3", "d/lpt\u00b9.txt", "CONIN$", "conout$.x",
+]) {
+  test(`${JSON.stringify(path)} is refused as a Windows device name`, () => {
+    const { out, result } = extract([blob(path)]);
+    assert.equal(reasonFor(result, path), "a component is a Windows device name");
+    assert.deepEqual(readdirSync(out), []);
+  });
+}
+
+test("names that only resemble a device name are written", () => {
+  for (const path of ["CONFIG", "console.log", "com10", "COM", "lpt", "nullable.ts", "auxiliary", "d/prn2", "x.con"]) {
+    assert.equal(refusalReason(path), null, path);
+  }
+});
+
+test("a component too long for the filesystem is refused, not a crash", () => {
+  const path = `d/${"a".repeat(300)}`;
+  const { result } = extract([blob(path), blob("ok")]);
+  assert.deepEqual(result.refused, [{ path, reason: "the filesystem refused the name" }]);
+  assert.deepEqual(result.written, ["ok"]);
+});
+
 test("a backslash, which is a separator on Windows, is refused", () => {
   const { result } = extract([blob("a\\..\\..\\x")]);
   assert.equal(reasonFor(result, "a\\..\\..\\x"), "a backslash");
@@ -304,7 +350,7 @@ for (const [name, raw] of [
   ["a bad mode", `10064 blob ${SHA}\ta\x00`],
   ["an extra field", `100644 blob x ${SHA}\ta\x00`],
 ]) {
-  test(`parseLsTree throws on ${name}`, () => {
+  test(`parseLsTree throws on ${name}`, { timeout: 5000 }, () => {
     assert.throws(() => parseLsTree(Buffer.from(raw)), /unparseable ls-tree/);
   });
 }
@@ -373,6 +419,51 @@ function fixtureRepo() {
 }
 
 const FIXTURE = fixtureRepo();
+
+// A commit git's plumbing accepts that holds names hostile on a Windows disk.
+const HOSTILE = [
+  "d17/.claude::$INDEX_ALLOCATION/skills/SKILL.md",
+  "d25/.ignore::$DATA",
+  "CON",
+  "aux.txt",
+  "com\u00b9.log",
+  "a<b",
+  "q?",
+  "NUL .txt",
+];
+function hostileRepo() {
+  const repo = tmp();
+  git(repo, ["init", "-q"]);
+  const sha = git(repo, ["hash-object", "-w", "--stdin"], "planted\n");
+  for (const path of [...HOSTILE, "ok.md"]) git(repo, ["update-index", "--add", "--cacheinfo", `100644,${sha},${path}`]);
+  git(repo, ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
+    "commit", "-q", "--no-verify", "-m", "hostile"]);
+  return { repo, commit: git(repo, ["rev-parse", "HEAD"]) };
+}
+
+test("a real commit with NTFS stream syntax, device names and forbidden characters writes only the ordinary file", () => {
+  const { repo, commit } = hostileRepo();
+  const dir = tmp();
+  const out = join(dir, "pr");
+  const scope = join(dir, "scope.txt");
+  const { io } = silentIo();
+  assert.equal(main(["--commit", commit, "--out", out, "--scope", scope], { git: gitRunner(repo) }, io), 0);
+  assert.deepEqual(readdirSync(out), ["ok.md"]);
+  const records = readFileSync(scope, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(records.filter((r) => r.type === "renamed"), []);
+  assert.deepEqual(records.filter((r) => r.type === "written"), [{ type: "written", path: "ok.md" }]);
+  const refused = Object.fromEntries(records.filter((r) => r.type === "refused").map((r) => [r.path, r.reason]));
+  assert.deepEqual(refused, {
+    "d17/.claude::$INDEX_ALLOCATION/skills/SKILL.md": "a component contains a colon",
+    "d25/.ignore::$DATA": "a component contains a colon",
+    "CON": "a component is a Windows device name",
+    "aux.txt": "a component is a Windows device name",
+    "com\u00b9.log": "a component is a Windows device name",
+    "a<b": "a component contains a character Windows forbids",
+    "q?": "a component contains a character Windows forbids",
+    "NUL .txt": "a component is a Windows device name",
+  });
+});
 
 function runMain(extraDeps = {}, { out, scope } = {}) {
   const dir = tmp();

@@ -10,8 +10,11 @@
 //
 // A path is refused when it is empty, absolute, not UTF-8, contains a
 // backslash, an empty, `.` or `..` component, a component equal to `.git`
-// (or its short name `git~<n>`), or a component ending in a dot or space;
-// all comparisons ignore case, because a macOS or Windows disk does. A
+// (or its short name `git~<n>`), a component ending in a dot or space, a
+// component holding a colon (NTFS stream syntax, so `.claude::$INDEX_ALLOCATION`
+// cannot create `.claude`) or one of `<>"|?*`, or a component that is a
+// Windows device name; all comparisons ignore case, because a macOS or
+// Windows disk does. A name the filesystem rejects is refused, not fatal. A
 // basename `.ignore` or `.rgignore` becomes `<name>.ship-kit-renamed`, so it
 // cannot hide files from Grep and Glob, and every component `.claude` becomes
 // `.claude.ship-kit-renamed`, so nothing written can load as a skill,
@@ -70,9 +73,7 @@ export function parseLsTree(buffer) {
   const entries = [];
   const decoder = new TextDecoder("utf-8");
   let start = 0;
-  while (start < buffer.length) {
-    const end = buffer.indexOf(0, start);
-    if (end === -1) throw new CallError("unparseable ls-tree output: a record has no NUL terminator");
+  for (let end = buffer.indexOf(0); end !== -1; end = buffer.indexOf(0, start)) {
     const record = buffer.subarray(start, end);
     const tab = record.indexOf(9);
     const header = tab === -1 ? null : record.subarray(0, tab).toString("latin1").match(/^([0-7]{6}) ([a-z]+) ([0-9a-f]{40})$/);
@@ -80,8 +81,13 @@ export function parseLsTree(buffer) {
     entries.push({ mode: header[1], type: header[2], sha: header[3], path: decoder.decode(record.subarray(tab + 1)) });
     start = end + 1;
   }
+  if (start !== buffer.length) throw new CallError("unparseable ls-tree output: a record has no NUL terminator");
   return entries;
 }
+
+// A Windows device name, alone or before the first dot, with optional spaces
+// before that dot; COM and LPT also take the superscript digits 1 to 3.
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3]) *(\.|$)/i;
 
 /** @param {string} path @returns {string | null} why the path is refused, or null */
 export function refusalReason(path) {
@@ -93,6 +99,9 @@ export function refusalReason(path) {
   if (components.some((c) => c === "" || c === "." || c === "..")) return "a component is empty, . or ..";
   if (components.some((c) => c.toLowerCase() === ".git" || /^git~[0-9]+$/i.test(c))) return "a component is .git";
   if (components.some((c) => c.endsWith(".") || c.endsWith(" "))) return "a component ends in a dot or space";
+  if (components.some((c) => c.includes(":"))) return "a component contains a colon";
+  if (components.some((c) => /[<>"|?*]/.test(c))) return "a component contains a character Windows forbids";
+  if (components.some((c) => WINDOWS_DEVICE.test(c))) return "a component is a Windows device name";
   return null;
 }
 
@@ -110,6 +119,7 @@ function supported({ mode, type }) {
 }
 
 const COLLISION_CODES = new Set(["EEXIST", "ENOTDIR", "EISDIR"]);
+const NAME_CODES = new Set(["ENAMETOOLONG", "EINVAL"]);
 
 /**
  * @param {{mode: string, type: string, sha: string, path: string}[]} entries
@@ -160,8 +170,9 @@ export function extractEntries(entries, { readBlob, out, maxEntries = MAX_ENTRIE
       mkdirSync(dirname(dest), { recursive: true });
       writeFileSync(dest, content, { flag: "wx", mode: 0o644 });
     } catch (error) {
-      if (!COLLISION_CODES.has(error.code)) throw error;
-      refuse(entry.path, "collides with an existing path");
+      if (COLLISION_CODES.has(error.code)) refuse(entry.path, "collides with an existing path");
+      else if (NAME_CODES.has(error.code)) refuse(entry.path, "the filesystem refused the name");
+      else throw error;
       continue;
     }
     result.written.push(to);
