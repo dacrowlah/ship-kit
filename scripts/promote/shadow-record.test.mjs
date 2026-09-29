@@ -52,6 +52,10 @@ class World {
     this.repoView = { nameWithOwner: SLUG, defaultBranchRef: { name: branch } };
     this.listing = null;
     this.listingText = null;
+    // Search answers: numbers the merge-time search leaves out, as a lagging index would.
+    this.searchLag = new Set();
+    this.searchText = null;
+    this.searchRows = null;
     this.run = this.run.bind(this);
   }
 
@@ -103,11 +107,34 @@ class World {
     const injected = this.failOn(args);
     if (injected) throw injected;
     if (args[0] === "repo") return JSON.stringify(this.repoView);
-    if (args[0] === "pr") return this.listingText ?? JSON.stringify(this.listing ?? this.prs.slice(0, Number(args[args.indexOf("--limit") + 1])));
+    if (args[0] === "pr") return args.includes("--search") ? this.search(args) : this.listPrs(args);
     if (args[0] === "api" && args[1] === "--include") return this.get(args[2]);
     if (args[0] === "api" && args[1] === "--paginate" && args[2] === "--slurp") return this.pages(args[3]);
     if (args[0] === "run" && args[1] === "download") return this.download(args);
     throw ghExit("", `fake gh: no answer for ${args.join(" ")}`);
+  }
+
+  /** gh pr list: the most recently created merged PRs, newest first, like gh. */
+  listPrs(args) {
+    if (this.listingText !== null) return this.listingText;
+    const limit = Number(args[args.indexOf("--limit") + 1]);
+    return JSON.stringify(this.listing ?? [...this.prs].reverse().slice(0, limit));
+  }
+
+  /** gh pr list --search merged:>=T: every merged PR at or after T, newest created first, cut at --limit. */
+  search(args) {
+    if (this.searchText !== null) return this.searchText;
+    if (this.searchRows !== null) return JSON.stringify(this.searchRows);
+    const query = args[args.indexOf("--search") + 1];
+    const since = Date.parse(/^merged:>=(.+)$/.exec(query)[1]);
+    assert.ok(Number.isFinite(since), query);
+    const limit = Number(args[args.indexOf("--limit") + 1]);
+    const rows = [...this.prs]
+      .reverse()
+      .filter((pr) => Date.parse(pr.mergedAt) >= since && !this.searchLag.has(pr.number))
+      .slice(0, limit)
+      .map(({ number }) => ({ number }));
+    return JSON.stringify(rows);
   }
 
   get(path) {
@@ -552,6 +579,109 @@ test("a count equal to --limit sets truncated; one less does not", () => {
   assert.equal(record(w, [SEAT, "--limit", "4"]).result.truncated, false);
   assert.equal(record(w, [SEAT, "--limit", "2"]).result.truncated, true);
   assert.equal(record(w).result.truncated, false);
+});
+
+// A repository where PR 1 was created first and merged late, so gh's
+// newest-created window at a small --limit leaves it out.
+function lateMergeLayout() {
+  const w = new World();
+  w.addPr(1, { mergedAt: "2026-09-20T00:00:00Z", labels: ["ship-kit-false-positive"] });
+  w.addPr(2, { mergedAt: "2026-09-05T00:00:00Z" });
+  w.addPr(3, { mergedAt: "2026-09-10T00:00:00Z" });
+  w.addPr(4, { mergedAt: "2026-09-25T00:00:00Z" });
+  return w;
+}
+
+const searchCalls = (w) => w.calls.filter((c) => c.includes("--search"));
+
+test("a PR created before the window and merged inside it is not silently skipped", () => {
+  const w = lateMergeLayout();
+  assert.deepEqual(JSON.parse(w.listPrs(["--limit", "2"])).map((p) => p.number), [4, 3], "gh's window leaves PR 1 out");
+  const r = record(w, [SEAT, "--limit", "2"]);
+  assertFailed(r, /missed pull request\(s\) merged since 2026-09-10T00:00:00Z: #1; .*raise --limit/);
+  assert.equal(w.commentsCalls().length, 0, "no comment is read from an incomplete window");
+});
+
+test("a larger window that still leaves a late merge out is refused too", () => {
+  assertFailed(record(lateMergeLayout(), [SEAT, "--limit", "3"]), /missed pull request\(s\) merged since 2026-09-05T00:00:00Z: #1/);
+});
+
+test("a window that holds every PR merged since its oldest merge is accepted and walked by merge time", () => {
+  for (const [limit, truncated] of [["4", true], ["5", false]]) {
+    const w = lateMergeLayout();
+    const r = record(w, [SEAT, "--limit", limit]);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(r.result.streak, streakOf(4), limit);
+    assert.deepEqual(r.result.stoppedAt, { pr: 1, reason: REASONS.falsePositive }, limit);
+    assert.equal(r.result.truncated, truncated, limit);
+  }
+});
+
+test("the second listing is one search for everything merged since the oldest listed merge, for one more entry than the window", () => {
+  const w = lateMergeLayout();
+  record(w, [SEAT, "--limit", "4"]);
+  assert.deepEqual(searchCalls(w), [
+    ["pr", "list", "-R", SLUG, "--base", BRANCH, "--state", "merged", "--search", "merged:>=2026-09-05T00:00:00Z", "--limit", "5", "--json", "number"],
+  ]);
+});
+
+test("a listing shorter than --limit is complete and needs no second listing", () => {
+  const w = lateMergeLayout();
+  record(w, [SEAT, "--limit", "5"]);
+  assert.deepEqual(searchCalls(w), []);
+});
+
+test("the search instant is the oldest merge in UTC, whole seconds", () => {
+  const w = new World();
+  w.addPr(1, { mergedAt: "2026-09-02T00:00:00.900+05:00" });
+  record(w, [SEAT, "--limit", "1"]);
+  assert.equal(searchCalls(w)[0][searchCalls(w)[0].indexOf("--search") + 1], "merged:>=2026-09-01T19:00:00Z");
+});
+
+test("a PR merged at the very instant the window starts, outside the window, is refused", () => {
+  const w = new World();
+  w.addPr(1, { mergedAt: "2026-09-10T00:00:00Z" });
+  w.addPr(2, { mergedAt: "2026-09-10T00:00:00Z" });
+  assertFailed(record(w, [SEAT, "--limit", "1"]), /missed pull request\(s\) merged since 2026-09-10T00:00:00Z: #1/);
+});
+
+test("a search index that lacks a listed PR is a disagreement, not a confirmation", () => {
+  const w = lateMergeLayout();
+  w.searchLag = new Set([3]);
+  assertFailed(record(w, [SEAT, "--limit", "4"]), /lacks listed pull request\(s\) #3; the search index may be behind/);
+});
+
+test("an unusable merge-time listing exits 1", () => {
+  const answers = [
+    ["not JSON", (w) => { w.searchText = "HTTP 502: Bad Gateway"; }, /not JSON/],
+    ["not an array", (w) => { w.searchRows = { number: 1 }; }, /is not an array/],
+    ["entry null", (w) => { w.searchRows = [null]; }, /without a valid number/],
+    ["entry an array", (w) => { w.searchRows = [[]]; }, /without a valid number/],
+    ["number zero", (w) => { w.searchRows = [{ number: 0 }]; }, /without a valid number/],
+    ["number a string", (w) => { w.searchRows = [{ number: "1" }]; }, /without a valid number/],
+    ["number missing", (w) => { w.searchRows = [{}]; }, /without a valid number/],
+    ["call fails", (w) => { w.failOn = (args) => (args.includes("--search") ? ghExit("", "HTTP 422") : null); }, /--search/],
+  ];
+  for (const [note, arrange, pattern] of answers) {
+    const w = lateMergeLayout();
+    arrange(w);
+    const r = record(w, [SEAT, "--limit", "4"]);
+    assertFailed(r, pattern);
+    assert.equal(w.commentsCalls().length, 0, note);
+  }
+});
+
+test("a PR whose label list fills gh's page of 100 may be hiding the false-positive label: exit 1", () => {
+  const names = (n) => Array.from({ length: n }, (_, i) => `label-${i}`);
+  const ok = new World();
+  ok.addPr(1, { labels: names(99) });
+  assert.deepEqual(record(ok).result.streak, streakOf(1));
+  for (const count of [100, 101]) {
+    const w = new World();
+    w.addPr(1, { labels: [...names(count - 1), "ship-kit-false-positive"] });
+    assertFailed(record(w), /lists \d+ labels, so its label list may be truncated/);
+    assert.equal(w.commentsCalls().length, 0);
+  }
 });
 
 test("101 comments are read in full: a state on page 2 is found", () => {

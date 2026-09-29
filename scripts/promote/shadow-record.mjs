@@ -13,7 +13,15 @@
 // requests newest merge first, and `stoppedAt` names the first pull request
 // that is not clean and why (null when the listing ran out first).
 // `truncated` is true when the listing holds as many pull requests as the
-// limit allows, so older ones exist that the streak never reached.
+// limit allows, so pull requests merged before the oldest one listed may
+// exist that the streak never reached.
+//
+// The listing is the newest merged pull requests by merge time. `gh pr list`
+// returns the most recently created ones, so when the listing is full a
+// second, search-based listing of everything merged since the oldest listed
+// merge must name exactly the same pull requests; any other answer is a
+// failed call, because a pull request created early and merged late would
+// otherwise vanish from an apparently unbroken streak.
 //
 // A pull request is clean when the newest trusted state of the seat for the
 // pull request's final head is complete, and either records no BLOCKING
@@ -25,10 +33,15 @@
 // state. Labels are read from the live listing, never from a payload. The
 // config is read from origin's default branch, never the working tree.
 //
+// A run of an empty pull request (one that changes no file) is a complete
+// pass, and its state records nothing that tells it from a reviewed one, so
+// it counts like any other clean run.
+//
 // Exit 0: the record was printed. Exit 1: a call failed, or answered in a
 // way that cannot be trusted; nothing is printed as a result. Exit 2: usage.
 // Exit 3: the config at origin's default branch is unreadable.
-// Network: only `gh` calls to the current repository's GitHub API.
+// Network: `gh` calls to the current repository's GitHub API, and the
+// `git ls-remote` and `git fetch` against origin that read the config.
 
 import { pathToFileURL } from "node:url";
 import { SEATS, readDefaultBranchConfig } from "../lib/config.mjs";
@@ -49,6 +62,10 @@ const USAGE = `usage: shadow-record.mjs <${SEATS.join("|")}> [--limit 1-${MAX_LI
 const SHA = /^[0-9a-f]{40}$/;
 const LIMIT = /^[1-9][0-9]{0,2}$/;
 const LIST_FIELDS = "number,headRefOid,labels,mergedAt";
+// `gh pr list --json labels` returns at most this many labels per pull request
+// and says nothing when there are more, so a full page may hide the
+// false-positive label.
+const LABEL_PAGE = 100;
 
 export class UsageError extends Error {}
 
@@ -127,23 +144,62 @@ function readPr(row, index) {
   if (!Array.isArray(labels) || !labels.every((l) => isPlainObject(l) && typeof l.name === "string")) {
     throw new CallError(`pull request ${number} has no valid labels`);
   }
+  if (labels.length >= LABEL_PAGE) throw new CallError(`pull request ${number} lists ${labels.length} labels, so its label list may be truncated`);
   const merged = typeof mergedAt === "string" ? Date.parse(mergedAt) : Number.NaN;
   if (!Number.isFinite(merged)) throw new CallError(`pull request ${number} has no valid merge time`);
   // GitHub keeps label names unique ignoring case, so two spellings name one label.
   return { number, head: headRefOid, labels: new Set(labels.map((l) => l.name.toLowerCase())), merged };
 }
 
+function listArgs(slug, branch) {
+  return ["pr", "list", "-R", slug, "--base", branch, "--state", "merged"];
+}
+
 /**
- * Merged pull requests into the default branch, newest merge first. `gh pr
- * list` orders by creation, so the order is rebuilt from the merge times.
+ * Refuses unless everything merged since the oldest merge in `prs` is `prs`.
+ * `gh pr list` returns the most recently created merged pull requests, so a
+ * pull request created before the window and merged inside it is missing
+ * from a full one. The search listing is asked for one more entry than the
+ * window holds: a pull request outside the window must then appear in it.
+ * The two listings come from different indexes, so one that is behind reads
+ * as a disagreement too.
+ */
+function assertWindowComplete(gh, { slug, branch, prs, limit }) {
+  const oldest = Math.min(...prs.map((pr) => pr.merged));
+  const since = new Date(Math.floor(oldest / 1000) * 1000).toISOString().replace(".000Z", "Z");
+  const args = [...listArgs(slug, branch), "--search", `merged:>=${since}`, "--limit", String(limit + 1), "--json", "number"];
+  const rows = parseJson(gh.cli(args), "the merge-time listing");
+  if (!Array.isArray(rows)) throw new CallError("the merge-time listing is not an array");
+  const found = new Set(
+    rows.map((row) => {
+      if (!isPlainObject(row) || !Number.isSafeInteger(row.number) || row.number < 1) throw new CallError("the merge-time listing has an entry without a valid number");
+      return row.number;
+    }),
+  );
+  const listed = new Set(prs.map((pr) => pr.number));
+  const missed = [...found].filter((number) => !listed.has(number));
+  if (missed.length > 0) {
+    throw new CallError(
+      `the listing missed pull request(s) merged since ${since}: ${missed.map((n) => `#${n}`).join(", ")}; gh lists the most recently created merged pull requests, so raise --limit`,
+    );
+  }
+  const absent = [...listed].filter((number) => !found.has(number));
+  if (absent.length > 0) {
+    throw new CallError(`the merge-time listing lacks listed pull request(s) ${absent.map((n) => `#${n}`).join(", ")}; the search index may be behind, so retry`);
+  }
+}
+
+/**
+ * Merged pull requests into the default branch, newest merge first. A full
+ * listing is checked against a merge-time search (assertWindowComplete).
  */
 function listMerged(gh, { slug, branch, limit }) {
-  const args = ["pr", "list", "-R", slug, "--base", branch, "--state", "merged", "--limit", String(limit), "--json", LIST_FIELDS];
-  const rows = parseJson(gh.cli(args), "the pull request listing");
+  const rows = parseJson(gh.cli([...listArgs(slug, branch), "--limit", String(limit), "--json", LIST_FIELDS]), "the pull request listing");
   if (!Array.isArray(rows)) throw new CallError("the pull request listing is not an array");
   if (rows.length > limit) throw new CallError(`the pull request listing holds ${rows.length} entries for --limit ${limit}`);
   const prs = rows.map(readPr);
   if (new Set(prs.map((pr) => pr.number)).size !== prs.length) throw new CallError("the pull request listing names a pull request twice");
+  if (prs.length >= limit) assertWindowComplete(gh, { slug, branch, prs, limit });
   return prs.sort((a, b) => b.merged - a.merged || b.number - a.number);
 }
 
