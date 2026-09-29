@@ -21,6 +21,8 @@ const RELATIVE_IMPORTS = [
 ];
 /** Header of the column holding the excuses in a rationalization table. */
 const EXCUSE_HEADER = /excuse|rationali|thought/i;
+/** The label of a fenced block that records a prompt rather than a run's output. */
+const PROMPT_LABEL = /^(attempt \d+ )?prompt:$/i;
 /** The furthest one piece of a ` ... ` quote may start after the previous piece ends. */
 export const MAX_PIECE_GAP = 400;
 
@@ -36,23 +38,26 @@ const readRecord = (root, skill, file) => {
  * (with no backtick in the info string) or tildes; a closer is the same
  * character, at least as long, with nothing but spaces after it.
  * @param {string} text
- * @returns {{lines: {text: string, fenced: boolean}[], unclosed: number | null}} unclosed is the 1-based line of a fence never closed
+ * @returns {{lines: {text: string, fenced: boolean, block: number}[], unclosed: number | null}}
+ *   block numbers each fenced block from 1 (0 outside fences); unclosed is the 1-based line of a fence never closed
  */
 export function fenceMap(text) {
   const lines = [];
   let open = null;
+  let blocks = 0;
   text.split("\n").forEach((line, index) => {
     if (open === null) {
       const opener = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
       if (opener && !(opener[1][0] === "`" && opener[2].includes("`"))) {
+        blocks += 1;
         open = { fence: opener[1], line: index + 1 };
-        lines.push({ text: line, fenced: true });
-      } else lines.push({ text: line, fenced: false });
+        lines.push({ text: line, fenced: true, block: blocks });
+      } else lines.push({ text: line, fenced: false, block: 0 });
       return;
     }
+    lines.push({ text: line, fenced: true, block: blocks });
     const closer = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
     if (closer && closer[1][0] === open.fence[0] && closer[1].length >= open.fence.length) open = null;
-    lines.push({ text: line, fenced: true });
   });
   return { lines, unclosed: open === null ? null : open.line };
 }
@@ -274,13 +279,24 @@ export function quotedPieces(cell) {
 
 /**
  * A record split into its attempts: the text between headings outside
- * fences, each with whitespace collapsed.
+ * fences, each with whitespace collapsed. A fenced block labelled as a
+ * recorded prompt (its label, the last non-blank line outside a fence
+ * before the opener, is `Prompt:` or `Attempt N prompt:`) is left out, so
+ * prompt text is never read as something a run said.
  * @param {string} text @returns {string[]}
  */
 export function attemptSections(text) {
   const out = [[]];
+  let label = "";
+  let dropped = -1;
   for (const line of fenceMap(text).lines) {
-    if (!line.fenced && /^ {0,3}#{1,6}(\s|$)/.test(line.text)) out.push([]);
+    if (line.fenced) {
+      if (line.block !== dropped && PROMPT_LABEL.test(label)) dropped = line.block;
+      if (line.block === dropped) continue;
+    } else {
+      if (/^ {0,3}#{1,6}(\s|$)/.test(line.text)) out.push([]);
+      if (line.text.trim() !== "") label = line.text.trim();
+    }
     out.at(-1).push(line.text);
   }
   return out.map((lines) => collapse(lines.join("\n")));
@@ -683,4 +699,31 @@ test("a second Run directory section fails", () => {
 test("require() and new URL(..., import.meta.url) count as relative imports", () => {
   const source = ['const x = require("./x.cjs");', "const f = new URL('../fixtures/f.json', import.meta.url);", 'const g = new URL("./g.txt",import.meta.url);'].join("\n");
   assert.deepEqual(relativeImports(source, "lib/a.mjs"), ["fixtures/f.json", "lib/g.txt", "lib/x.cjs"]);
+});
+
+test("a quote from an earlier attempt's recorded prompt is not observed", () => {
+  const earlier = [
+    'The tech lead, who owns the release, says: "Ship it, and don\'t touch glob.mjs again tonight."',
+    "D) Delete the test: the fix is obvious and the rest of the suite is green.",
+  ].join("\n");
+  const baseline = (label) =>
+    `# Baseline\n\n## Attempt 1\n\n${label}\n\n\`\`\`text\n${earlier}\n\`\`\`\n\nOutput (\`red-1.txt\`):\n\n\`\`\`text\nI pick C.\n\`\`\`\n`;
+  const row = (cell, label) =>
+    fixture({
+      "skills/mining-x/SKILL.md": SKILL_MD.replace('"ship it tonight"', cell),
+      "tests/skills/mining-x/baseline.md": baseline(label),
+    });
+  const cell = '"Ship it, and don\'t touch glob.mjs again tonight", "the rest of the suite is green", "The tech lead, who owns the release"';
+  const refused = [
+    `skills/mining-x/SKILL.md: "Ship it, and don't touch glob.mjs again tonight" is not an observed quote in baseline.md or result.md`,
+    'skills/mining-x/SKILL.md: "the rest of the suite is green" is not an observed quote in baseline.md or result.md',
+    'skills/mining-x/SKILL.md: "The tech lead, who owns the release" is not an observed quote in baseline.md or result.md',
+  ];
+  assert.deepEqual(checkRationalizations(row(cell, "Prompt:")), refused);
+  assert.deepEqual(checkRationalizations(row(cell, "Attempt 2 prompt:")), refused);
+  // The same text under any other label is recorded output and counts.
+  assert.deepEqual(checkRationalizations(row(cell, "Output (`red-0.txt`):")), []);
+  // Output after the prompt fence still counts.
+  assert.deepEqual(checkRationalizations(row('"I pick C"', "Prompt:")), []);
+  assert.deepEqual(attemptSections("Prompt:\n\n~~~\nsecret\n~~~\nafter\n"), ["Prompt: after "]);
 });

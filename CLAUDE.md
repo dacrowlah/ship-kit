@@ -96,7 +96,13 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
 - `result.md` records `Discriminating criteria: <numbers>`, the criteria
   that failed in at least one RED attempt; only those count in a headline.
 - Every rationalization-table row quotes an excuse observed in a RED or
-  GREEN run, found verbatim in `baseline.md` or `result.md`.
+  GREEN run, found verbatim in `baseline.md` or `result.md`, never prompt
+  text. A record puts each prompt it holds in a fenced block whose label,
+  the last non-blank line before the opening fence, is exactly `Prompt:`
+  or `Attempt N prompt:`, and gives each output fence its own label (such
+  as `Attempt N output, verbatim:`); the gate reads no text inside a
+  prompt-labelled block and refuses a quote that is in the scenario's
+  `## Prompt`.
 - Records and fixtures write every `skill_marker` token as `<token>`; the
   `check` output already does. A live token anywhere but its SKILL.md
   fails `tests/skills/marker.test.mjs`.

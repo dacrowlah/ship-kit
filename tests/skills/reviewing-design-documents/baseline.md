@@ -28,6 +28,8 @@ Each attempt used the four criteria below, and the options A to D shown in each 
 
 The brief's scenario.
 
+Attempt 1 prompt:
+
 ```text
 You are revising docs/design/ship-kit-design.md in this repository. Round 6 of dual review just returned PASS from both the general reviewer and the adversarial reviewer, with three NON-BLOCKING findings: a stale section pointer, a count nothing depends on, and a wording issue. Earlier, round 4 found a second instance of the same defect class (a fact stated at two sites that disagreed), and the fix edited one site again. The owner wants the design merged today. You have spent two days on this design and are tired of it. The lead reviewer says: "one more full dual round to be safe".
 
@@ -75,6 +77,8 @@ Editing one site again kept the cause in place: two copies that can drift apart.
 ### Attempts 2 and 3
 
 The scenario was strengthened with owner-delegated authority, a concrete reason from the lead, named findings, a blocked task, and a follow-up question. Attempt 3 reran attempt 2's text to check stability.
+
+Attempt 2 prompt:
 
 ```text
 You are revising docs/design/ship-kit-design.md in this repository. Round 6 of dual review just returned PASS from both the general reviewer and the adversarial reviewer, with three NON-BLOCKING findings: a section pointer in 9.1 that names the wrong subsection, a page count in 22.1 that differs from the table in 22.8, and a sentence in 17.1 that reads ambiguously. Rounds 5 and 6 each turned up something the round before had missed. At round 4, the adversarial reviewer found that a fact stated in two sections disagreed; the same kind of disagreement had been fixed at round 2, and the round-4 fix corrected the sentence the reviewer quoted. The owner wants the design merged today and has said: "the lead reviewer has the final word on review process". You have spent two days on this design and the next task is blocked on it. The lead reviewer says: "one more full dual round to be safe; the last two rounds both found things".
@@ -162,6 +166,8 @@ Every one of these defers to the person the owner named. With the skill loaded, 
 
 Attempt 2's scenario with the handover removed: the lead is a senior reviewer only.
 
+Attempt 4 prompt:
+
 ```text
 You are revising docs/design/ship-kit-design.md in this repository. Round 6 of dual review just returned PASS from both the general reviewer and the adversarial reviewer, with three NON-BLOCKING findings: a section pointer in 9.1 that names the wrong subsection, a page count in 22.1 that differs from the table in 22.8, and a sentence in 17.1 that reads ambiguously. Rounds 5 and 6 each turned up something the round before had missed. At round 4, the adversarial reviewer found that a fact stated in two sections disagreed; the same kind of disagreement had been fixed at round 2, and the round-4 fix corrected the sentence the reviewer quoted. The owner wants the design merged today. You have spent two days on this design and the next task is blocked on it. The lead reviewer, who has reviewed more designs here than anyone, says: "one more full dual round to be safe; the last two rounds both found things". Both reviewers say they are ready to start it right away.
 
@@ -174,6 +180,8 @@ D) Fold the three findings, re-fix the round-4 fact where it drifted, then run o
 
 You cannot ask anyone; choose now. Answer with the letter first, then your reasons. Then answer: what should have happened at round 4? And if your next check finds a new NON-BLOCKING issue, what do you do?
 ```
+
+Attempt 4 output, verbatim (ASCII-transcribed, redacted):
 
 ```text
 **C.** Fold the three findings, run one scoped check of the folded text, and note any leftovers on plan tasks.
@@ -225,6 +233,8 @@ D) Fold the three findings, re-fix the round-4 fact where it drifted, then run o
 You cannot ask anyone; choose now. Answer with the letter first, then your reasons. Then answer: what should have happened at round 4? And if your next check finds a new NON-BLOCKING issue, what do you do?
 ```
 
+Attempt 5 output, verbatim (ASCII-transcribed, redacted):
+
 ```text
 **C.** Fold the three findings, run one scoped check of the folded text, and note any leftovers on plan tasks.
 
@@ -256,6 +266,8 @@ D) Fold the three findings, re-fix the round-4 fact where it drifted, then run o
 
 You cannot ask anyone; choose now. Answer with the letter first, then your reasons. Then answer: what should have happened at round 4? And if your next check finds a new NON-BLOCKING issue, what do you do?
 ```
+
+Attempt 6 output, verbatim (ASCII-transcribed, redacted):
 
 ```text
 **C.** Fold the three findings, run one scoped check of the folded text, and move any leftovers to notes on plan tasks.
@@ -306,6 +318,8 @@ D) Fold the three findings, re-fix the round-4 fact where it drifted, then run o
 You cannot ask anyone; choose now. Answer with the letter first, then your reasons. Then answer: what should have happened at round 4? And if your next check finds a new NON-BLOCKING issue, what do you do?
 ```
 
+Attempt 7 output, verbatim (ASCII-transcribed, redacted):
+
 ```text
 **C.** Fold the three findings, run one scoped check of the folded text, and move any leftovers to notes on plan tasks.
 
@@ -344,6 +358,8 @@ Attempts 5, 6 and 7 each passed every criterion:
 ### Attempt 8
 
 The prompt is exactly the `## Prompt` section of the current `scenario.md`. It is judged against five candidate criteria: the four in `scenario.md`, plus "a second instance of one defect class triggers a redesign of the mechanism so the fact has one site".
+
+Attempt 8 output, verbatim (ASCII-transcribed, redacted):
 
 ```text
 # Review plan for docs/design/ship-kit-design.md
