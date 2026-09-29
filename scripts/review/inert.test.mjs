@@ -100,18 +100,18 @@ test("credentialLike ignores BEGIN and PRIVATE KEY on different lines", () => {
 });
 
 test("credentialLike detects gh + U+200B + p_", () => {
-  assert.equal(credentialLike("gh​p_EXAMPLE"), true);
+  assert.equal(credentialLike("gh\u200bp_EXAMPLE"), true);
 });
 
 test("credentialLike detects each zero-width and format character inside a prefix", () => {
-  for (const ch of ["​", "‌", "‍", "⁠", "﻿", "­"]) {
+  for (const ch of ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad"]) {
     assert.equal(credentialLike(`sk-${ch}ant-EXAMPLE`), true, `U+${ch.codePointAt(0).toString(16)}`);
   }
 });
 
 test("credentialLike detects fullwidth g, h, p followed by _ after NFKC", () => {
-  assert.equal(credentialLike("ｇｈｐ_EXAMPLE"), true);
-  assert.equal(credentialLike("ｇｈｐ＿EXAMPLE"), true);
+  assert.equal(credentialLike("\uff47\uff48\uff50_EXAMPLE"), true);
+  assert.equal(credentialLike("\uff47\uff48\uff50\uff3fEXAMPLE"), true);
 });
 
 test("credentialLike detects a control character inside a prefix", () => {
