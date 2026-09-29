@@ -1031,6 +1031,21 @@ diff, is full mode. With no dirs configured the mode never triggers.
   `tests/review/design-doc-mode.test.mjs` covers a forged marker from a
   bot comment with no matching run, a real run id with a different
   payload, and an edited comment, each untrusted.
+- A `pull_request_target` run of a PR into another branch runs that
+  branch's copy of the caller under the same bare path, so `trustState`
+  also binds the run to the PR the comment is on: the single-run read's
+  `pull_requests` lists exactly one PR, whose number is the one in the
+  comment's `issue_url`, in this repository and based on the default
+  branch, and the run's `head_sha` equals the state's `head`. GitHub fills
+  `pull_requests` when it is read, from the open PRs whose head is the
+  run's head branch, so a fork PR's run lists none and a merged or closed
+  PR's run lists none: states on those PRs are never trusted (a fork PR
+  gets a full review every round and no promotion credit). No run field
+  records which branch's caller ran, so the association is the only tie:
+  a second PR from the same head branch into a branch with an edited
+  caller, closed after its run posts, or this PR retargeted to the
+  default branch after such a run, is not caught. An OIDC proof of the
+  ref a run executed is planned for release 6.
 - `findReviewBase` picks, among trusted, complete states of this kind whose
   head is an ancestor of the current head, the newest by ancestry; comment
   order breaks ties only between states ancestry cannot order. An
