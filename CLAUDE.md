@@ -69,8 +69,8 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
   directory outside the repository holding only the files the scenario's
   `## Run directory` section lists, with `--setting-sources ""
   --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan
-  --no-session-persistence --output-format stream-json --verbose`. The run
-  directory holds every file the listed code imports.
+  --no-session-persistence --output-format stream-json --verbose --model
+  <id>`. The run directory holds every file the listed code imports.
 - GREEN loads the copy made by `node tests/helpers/pressure.mjs stage --out
   <dir>`, which deletes `dependencies` from the staged `plugin.json` only.
   Isolated runs have no superpowers, and a plugin whose dependency is
@@ -95,6 +95,13 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
   Other runs are discarded.
 - `result.md` records `Discriminating criteria: <numbers>`, the criteria
   that failed in at least one RED attempt; only those count in a headline.
+- Every RED and GREEN run passes `--model <id>`, where `<id>` is the one
+  line of `tests/skills/pinned-model.txt`. `node tests/helpers/pressure.mjs
+  baseline --stream <file>` accepts a RED run and `check` a GREEN run only
+  when the init message reports that model; both print `Model: <id>`, which
+  `baseline.md` and `result.md` each record once. The records gate fails a
+  record with no `Model:` line or one that is not the pinned model, and
+  `Discriminating criteria` counts only RED attempts under the pin.
 - Every rationalization-table row quotes an excuse observed in a RED or
   GREEN run, found verbatim in `baseline.md` or `result.md`, never prompt
   text. A record puts each prompt it holds in a fenced block whose label,
@@ -362,11 +369,21 @@ update the rule in this file in the same PR as the code it affects.
 | https://docs.github.com/en/code-security/secret-scanning/enabling-secret-scanning-features/enabling-push-protection-for-a-repository | Push protection setup and behavior |
 | https://github.com/gitleaks/gitleaks | gitleaks releases, default ruleset, config schema |
 
+Moving the pressure-test model is a reviewed change. The PR that edits
+`tests/skills/pinned-model.txt`, including one that follows a new default
+model, reruns every skill's pressure test, RED and GREEN, under the new
+pin and updates each record's `Model:` line and discriminating criteria;
+the records gate fails the PR until every record names the new pin. The
+same PR moves the seat default (`review.model` in the config schema and the
+design's 5.1 example), which is a user-visible change classified under
+"Versioning and releases".
+
 Re-check:
 
 - Before every release.
 - When a rule in this file conflicts with observed Claude Code behavior.
 - When `superpowers` or `claude-code-action` release a new major version.
+- When Claude Code's default model changes (the scheduled drift check reports a new model).
 
 ---
 
