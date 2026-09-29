@@ -1,31 +1,18 @@
-// Builds the `<<key>>` values map for `templates/callers/review.yml` from a
-// fixture shaped like `tests/fixtures/caller-values.json`, and renders it.
-// The derived values are computed the same way setup (Task 25) will: this
-// helper is the one place both this task's tests and a future setup
-// implementation can compare against.
+// Renders `templates/callers/review.yml` for a fixture shaped like
+// `tests/fixtures/caller-values.json`. There is no value-building logic
+// here: the fixture is turned into the arguments setup itself passes
+// (`callerArgs`) and rendering is `scripts/setup/render-files.mjs`, the one
+// source of caller values, so the tests in this directory judge exactly what
+// setup writes.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { render } from "../../scripts/lib/render.mjs";
-import { formatStamp, stampFile } from "../../scripts/lib/stamp.mjs";
+import { renderCallerFile } from "../../scripts/setup/render-files.mjs";
 
 const TEMPLATE_PATH = fileURLToPath(new URL("../../templates/callers/review.yml", import.meta.url));
 const GATE_SCRIPT_PATH = fileURLToPath(new URL("../../templates/blocks/gate-step.sh", import.meta.url));
-export const TEMPLATE_META_PATH = "callers/review.yml";
 
-const AUTH = {
-  oauth: { secret: "CLAUDE_CODE_OAUTH_TOKEN", secretInput: "claude_code_oauth_token", text: "OAuth token for Claude Code" },
-  "api-key": { secret: "ANTHROPIC_API_KEY", secretInput: "anthropic_api_key", text: "Anthropic API key" },
-};
-
-const BOOT_JOB = [
-  "  boot:",
-  "    uses: ./.github/workflows/boot.yml",
-  "    permissions:",
-  "      contents: read",
-  "    secrets: inherit",
-  "",
-].join("\n");
+const AUTH_SECRET = { oauth: "CLAUDE_CODE_OAUTH_TOKEN", "api-key": "ANTHROPIC_API_KEY" };
 
 /** @returns {string} */
 export function gateScriptText() {
@@ -38,71 +25,44 @@ export function templateText() {
 }
 
 /**
+ * The arguments of `callerValues` and `renderCallerFile` for a fixture: a
+ * config that names only what the fixture sets (everything else takes the
+ * schema's defaults), the pin it implies, the default branch and the gate
+ * fragment's text.
  * @param {{auth: "oauth"|"api-key", boot: string|null, seat: string, default_branch: string, ship_kit_sha: string, ship_kit_version: string}} fixture
- * @returns {Record<string, string>} the full `<<key>>` values map, everything except `stamp_json`
+ * @returns {{config: object, seat: string, pin: {tag: string, sha: string, version: string}, defaultBranch: string, gateScript: string}}
  */
-export function buildValues(fixture) {
-  const auth = AUTH[fixture.auth];
-  if (!auth) throw new Error(`unknown auth kind: ${fixture.auth}`);
-  const hasBoot = fixture.boot !== null && fixture.boot !== undefined;
-  if (hasBoot && fixture.boot !== "./.github/workflows/boot.yml") {
-    throw new Error(`unsupported boot path in fixture: ${fixture.boot}`);
-  }
+export function callerArgs(fixture) {
+  const pin = { tag: `ship-kit--v${fixture.ship_kit_version}`, sha: fixture.ship_kit_sha, version: fixture.ship_kit_version };
   return {
-    secret: auth.secret,
-    auth_text: auth.text,
+    config: {
+      schemaVersion: 1,
+      shipKit: { version: pin.version, sha: pin.sha },
+      render: {
+        auth: { kind: fixture.auth, secret: AUTH_SECRET[fixture.auth] },
+        bootWorkflow: fixture.boot ?? null,
+        seats: [fixture.seat],
+      },
+    },
     seat: fixture.seat,
-    default_branch: fixture.default_branch,
-    boot_job: hasBoot ? BOOT_JOB : "",
-    review_needs: hasBoot ? "    needs: [boot]" : "",
-    ship_kit_sha: fixture.ship_kit_sha,
-    ship_kit_version: fixture.ship_kit_version,
-    runners_json: JSON.stringify({ plan: ["ubuntu-latest"], seat: ["ubuntu-latest"], aggregate: ["ubuntu-latest"] }),
-    secret_input: auth.secretInput,
-    check_name: `ship-kit ${fixture.seat} review`,
-    gate_needs: hasBoot ? "boot, review" : "review",
-    gate_runner_json: JSON.stringify(["ubuntu-latest"]),
-    gate_script: gateScriptText(),
+    pin,
+    defaultBranch: fixture.default_branch,
+    gateScript: gateScriptText(),
   };
 }
 
 /**
- * The complete `<<key>>` values map for a fixture, with `stamp_json` set to
- * a valid stub stamp. A stub is enough wherever the rendered text is only
- * inspected (a stamp line never holds a `run:`); `renderCaller` replaces it
- * with the real stamp.
- * @param {{auth: "oauth"|"api-key", boot: string|null, seat: string, default_branch: string, ship_kit_sha: string, ship_kit_version: string}} fixture
- * @returns {Record<string, string>}
- */
-export function callerValues(fixture) {
-  const stubStamp = formatStamp({
-    template: TEMPLATE_META_PATH,
-    version: fixture.ship_kit_version,
-    sha: "0".repeat(40),
-    body: "0".repeat(64),
-  });
-  return { ...buildValues(fixture), stamp_json: stubStamp };
-}
-
-/**
- * Renders the caller for a fixture, with a correctly stamped first line: the
- * template is rendered once with a stub `stamp_json`, then `stampFile`
- * recomputes the real stamp over the rendered body, exactly as
- * `stampFile`'s own contract requires (it recomputes its stub internally, so
- * the stub used for the first pass never appears in the result).
- * @param {{auth: "oauth"|"api-key", boot: string|null, seat: string, default_branch: string, ship_kit_sha: string, ship_kit_version: string}} fixture
+ * Renders the caller for a fixture with its real stamp, through the same
+ * function setup uses.
+ * @param {Parameters<typeof callerArgs>[0]} fixture
  * @returns {string}
  */
 export function renderCaller(fixture) {
-  const stubRendered = render(templateText(), callerValues(fixture));
-  const firstNewline = stubRendered.indexOf("\n");
-  const body = stubRendered.slice(firstNewline + 1);
-  const meta = { template: TEMPLATE_META_PATH, version: fixture.ship_kit_version, sha: fixture.ship_kit_sha };
-  return stampFile(body, meta, "hash");
+  return renderCallerFile({ template: templateText(), ...callerArgs(fixture) });
 }
 
 /**
- * @param {string} path a fixture file path
+ * @param {string | URL} path a fixture file path
  * @returns {object}
  */
 export function loadFixture(path) {
