@@ -103,7 +103,9 @@ export function loadedBodyMatches(skillText, loaded, { pluginPath, skill }) {
     .split("${CLAUDE_PLUGIN_ROOT}")
     .join(pluginPath)
     .split("${CLAUDE_SKILL_DIR}")
-    .join(`${pluginPath}/skills/${skill}`);
+    .join(`${pluginPath}/skills/${skill}`)
+    .split("$ARGUMENTS")
+    .join("");
   return expected.trim() === loaded.replace(/\r\n/g, "\n").trim();
 }
 
@@ -210,6 +212,8 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
   if (posix.normalize(pluginPath) !== pluginPath || !CONTENT_HASH.test(basename(pluginPath))) {
     return { ok: false, reason: "the ship-kit plugin path is not a content-addressed stage" };
   }
+  const failedRead = stagedReadFailure(messages, pluginPath);
+  if (failedRead) return { ok: false, reason: `the run could not read the staged plugin: ${failedRead}` };
   const skillDir = `${pluginPath}/skills/${skill}`;
   const loadedBodies = [];
   for (const m of messages.slice(inits[0] + 1)) {
@@ -220,7 +224,7 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
       const [head, ...rest] = block.text.split("\n\n");
       const dir = head.slice(BASE_PREFIX.length);
       if (dir === skillDir) loadedBodies.push(rest.join("\n\n"));
-      else if (dir.endsWith(`/skills/${skill}`)) {
+      else if (dir.includes(`/skills/${skill}`)) {
         return { ok: false, reason: `the run loaded ${qualified} from another directory` };
       }
     }
@@ -241,6 +245,26 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
     return { ok: false, reason: `no Skill tool call invoked ${qualified} successfully` };
   }
   return { ok: true, text: redactToken(final.result, marker ?? undefined), pluginPath, loadedBodies };
+}
+
+/**
+ * The first Read, Grep or Glob call aimed at the staged plugin whose result
+ * is missing or an error, as "<tool> <path>", or null. A GREEN run that
+ * could not read the plugin's files never saw the text its hash covers.
+ * @param {Record<string, any>[]} messages @param {string} pluginPath
+ * @returns {string | null}
+ */
+function stagedReadFailure(messages, pluginPath) {
+  const blocks = messages.flatMap(contentOf).filter(isObject);
+  const under = (value) => typeof value === "string" && (value === pluginPath || value.startsWith(`${pluginPath}/`));
+  for (const call of blocks) {
+    if (call.type !== "tool_use" || !["Read", "Grep", "Glob"].includes(call.name)) continue;
+    const target = [call.input?.file_path, call.input?.path, call.input?.pattern].find(under);
+    if (target === undefined) continue;
+    const results = blocks.filter((b) => b.type === "tool_result" && b.tool_use_id === call.id);
+    if (results.length === 0 || results.some((r) => r.is_error === true)) return `${call.name} ${target}`;
+  }
+  return null;
 }
 
 /**

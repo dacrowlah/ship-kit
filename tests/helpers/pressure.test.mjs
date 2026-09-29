@@ -805,3 +805,95 @@ test("hash never reads outside the plugin root or the whole root", () => {
     rmSync(outside);
   }
 });
+
+// --- reads of the staged plugin must succeed --------------------------------
+
+/**
+ * Inserts a tool call and its result before the final result message.
+ * @returns {string}
+ */
+function withToolCall(text, { name, input, isError, parent = null, result = true }) {
+  const messages = parse(text);
+  const id = `toolu_probe_${name}`;
+  const call = {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id, name, input }] },
+    parent_tool_use_id: parent,
+  };
+  const reply = {
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: id, content: isError ? "Claude requested permissions to read from it, but you haven't granted it yet." : "ok", ...(isError ? { is_error: true } : {}) }],
+    },
+    parent_tool_use_id: parent,
+  };
+  messages.splice(messages.length - 1, 0, call, ...(result ? [reply] : []));
+  return join_(messages);
+}
+
+const UNDER = `${STAGED_PATH}/review/hunt-lists/design-shared.md`;
+
+test("a refused Read of a staged plugin file fails the run", () => {
+  const verdict = checkStream(withToolCall(INVOKED, { name: "Read", input: { file_path: UNDER }, isError: true }), {
+    skill: SKILL,
+    dmi: false,
+  });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /could not read the staged plugin: Read .*design-shared\.md/);
+});
+
+test("a failed Grep or Glob under the staged plugin fails the run, in dmi mode too", () => {
+  const grep = withToolCall(INVOKED, { name: "Grep", input: { pattern: "x", path: `${STAGED_PATH}/review` }, isError: true });
+  assert.equal(checkStream(grep, { skill: SKILL, dmi: false }).ok, false);
+  const glob = withToolCall(INVOKED, { name: "Glob", input: { pattern: `${STAGED_PATH}/review/**/*.md` }, isError: true });
+  assert.equal(checkStream(glob, { skill: SKILL, dmi: false }).ok, false);
+  const inRoot = withToolCall(INVOKED, { name: "Glob", input: { pattern: "*.md", path: STAGED_PATH }, isError: true });
+  assert.equal(checkStream(inRoot, { skill: SKILL, dmi: false }).ok, false);
+  const dmi = withResult(
+    withToolCall(INVOKED, { name: "Read", input: { file_path: UNDER }, isError: true }),
+    (m) => ({ ...m, structured_output: { skill_marker: MARKER } }),
+  );
+  assert.equal(checkStream(dmi, { skill: SKILL, dmi: true, marker: MARKER }).ok, false);
+});
+
+test("a staged plugin read with no result, or inside a subagent, still counts against the run", () => {
+  const unanswered = withToolCall(INVOKED, { name: "Read", input: { file_path: UNDER }, isError: false, result: false });
+  assert.match(checkStream(unanswered, { skill: SKILL, dmi: false }).reason, /could not read the staged plugin/);
+  const nested = withToolCall(INVOKED, { name: "Read", input: { file_path: UNDER }, isError: true, parent: "toolu_x" });
+  assert.equal(checkStream(nested, { skill: SKILL, dmi: false }).ok, false);
+});
+
+test("successful staged reads and failed reads elsewhere are accepted", () => {
+  const read = withToolCall(INVOKED, { name: "Read", input: { file_path: UNDER }, isError: false });
+  assert.equal(checkStream(read, { skill: SKILL, dmi: false }).ok, true);
+  const elsewhere = withToolCall(INVOKED, { name: "Read", input: { file_path: "/run/dir/missing.md" }, isError: true });
+  assert.equal(checkStream(elsewhere, { skill: SKILL, dmi: false }).ok, true);
+  const sibling = withToolCall(INVOKED, { name: "Read", input: { file_path: `${STAGED_PATH}x/a.md` }, isError: true });
+  assert.equal(checkStream(sibling, { skill: SKILL, dmi: false }).ok, true, "a sibling path sharing the prefix is not under it");
+});
+
+test("a loaded body shown before the init message does not count", () => {
+  const messages = parse(INVOKED);
+  const body = messages.find((m) => m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX));
+  messages.splice(messages.indexOf(body), 1);
+  const verdict = checkStream(join_([body, ...messages]), { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /no loaded skill body/);
+});
+
+test("a near-miss base directory for the skill is refused", () => {
+  const nearMiss = INVOKED.replace(`${BASE_PREFIX}${STAGED_PATH}/skills/${SKILL}\\n`, `${BASE_PREFIX}${STAGED_PATH}/skills/${SKILL}/\\n`);
+  assert.notEqual(nearMiss, INVOKED);
+  const messages = parse(nearMiss);
+  const body = parse(INVOKED).find((m) => m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX));
+  messages.splice(1, 0, body);
+  const verdict = checkStream(join_(messages), { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /from another directory/);
+});
+
+test("$ARGUMENTS in a model-invoked body is compared as empty", () => {
+  const plugin = "/p/" + "c".repeat(64);
+  assert.equal(loadedBodyMatches("---\nname: s\n---\nArgs: $ARGUMENTS.\n", "Args: .", { pluginPath: plugin, skill: "s" }), true);
+});
