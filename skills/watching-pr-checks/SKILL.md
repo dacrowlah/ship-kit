@@ -15,19 +15,36 @@ Monitor tool when it is available, otherwise as a foreground command.
 bash ${CLAUDE_PLUGIN_ROOT}/scripts/watch/watch-pr-checks.sh <pr> [poll-seconds] [max-empty-polls] [--require <name>]...
 ```
 
-Defaults: a poll every 30 seconds; the alarm after 20 consecutive polls with
-no checks. Once every known check is non-pending it waits once more (a
-settle interval) and re-polls, so a check that registers late is still
-waited for; it only concludes once two polls in a row see the same set of
-check names. Pass `--require <name>` (repeatable) to name a required check
-by its exact name when you know one should run: the watcher keeps polling
-until that name appears, and reports it as failed at the alarm timeout if
-it never does.
+Defaults: a poll every 30 seconds; the alarm after 20 consecutive polls that
+make no progress toward every required check being satisfied.
+
+Before polling, the script derives the base branch's required check names by
+itself (a repository ruleset's `required_status_checks` contexts, unioned
+with classic branch protection's contexts) and never concludes while one of
+them is missing or still pending, however many polls that takes -- this,
+not a timer, is what makes "concluded" a real guarantee. Add more names with
+`--require <name>` (repeatable); they are always included in addition to
+whatever was derived. A required check that never appears, or that is still
+pending when the alarm fires, is reported FAILED at that point, not left to
+hang.
+
+A check that is **not** required only gets a courtesy wait: once every
+required name is satisfied and nothing else is pending, the script waits one
+settle interval and polls once more, concluding only if the same check
+names still show up. A non-required check that first registers more than
+one settle interval after that point is **not** waited for and can be
+missing from the summary; name it with `--require` if it matters.
+
+If deriving the required set fails for a reason other than "this branch has
+no rules of this kind" (a 404), the script warns on stderr and exits nonzero
+unless you already passed at least one `--require` -- it never silently
+treats whatever happened to appear as the full picture.
 
 | Exit | Output | Meaning |
 |---|---|---|
-| 0 | `PR<n> checks concluded: <bucket>:<count> ...`, then one `FAILED: <name>` per failed or cancelled check | nothing is pending, and every `--require`d check appeared |
-| 1 | `PR<n>: no checks appeared after <k> polls ...`, or a summary with `FAILED: <name> (never appeared)` for a missing required check | no check registered, or a required check never showed up: the PR may have a merge conflict or the trigger did not fire; run `gh pr view <pr> --json mergeable,mergeStateStatus` and report it |
+| 0 | `PR<n> checks concluded: <bucket>:<count> ...`, then one `FAILED: <name>` per failed or cancelled check | nothing is pending, and every required check appeared and is no longer pending |
+| 1 | `PR<n>: no checks appeared after <k> polls ...`, or a summary with `FAILED: <name> (never appeared)` / `FAILED: <name> (still pending)` for a required check | no check registered, or a required check never showed up or never finished: the PR may have a merge conflict or the trigger did not fire; run `gh pr view <pr> --json mergeable,mergeStateStatus` and report it |
+| 1 | `WARNING: could not read required checks for <base>; pass --require` on stderr | the derivation itself failed (not a 404); rerun with `--require <name>` for every check that must pass |
 | 2 | a usage line on stderr | fix the arguments |
 
 Re-arm the watcher after every push: `gh pr checks` follows the newest
