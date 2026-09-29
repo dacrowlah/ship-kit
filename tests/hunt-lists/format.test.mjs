@@ -81,3 +81,23 @@ test("a list with no Shapes section, or two, fails", () => {
   assert.equal(checkHuntList("# T\n\nNo shapes.\n", { prefix: "D", shared: true }).length, 1);
   assert.equal(checkHuntList("# T\n\n## Shapes\n\n## Shapes\n", { prefix: "D", shared: true }).length, 1);
 });
+
+test("code-shared.md is a valid shared list with a METHOD section and no shapes yet", () => {
+  const text = read("review/hunt-lists/code-shared.md");
+  assert.deepEqual(checkHuntList(text, { prefix: "S", shared: true }), []);
+  assert.ok(text.split("\n").includes("## METHOD"), "code-shared.md needs a ## METHOD section");
+  assert.deepEqual(parseShapes(text), []);
+});
+
+test("both shared lists point at the format document", () => {
+  for (const rel of ["review/hunt-lists/design-shared.md", "review/hunt-lists/code-shared.md"]) {
+    assert.ok(read(rel).includes("skills/mining-defect-shapes/hunt-list-format.md"), rel);
+  }
+});
+
+test("the format document's example repo list passes the checker", () => {
+  const doc = read("skills/mining-defect-shapes/hunt-list-format.md");
+  const match = doc.match(/<!-- example:begin -->\n`{3}markdown\n([\s\S]*?)`{3}\n<!-- example:end -->/);
+  assert.ok(match, "hunt-list-format.md needs one example between the example markers");
+  assert.deepEqual(checkHuntList(match[1], { prefix: "R", shared: false }), []);
+});
