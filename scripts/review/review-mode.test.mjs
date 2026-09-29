@@ -207,6 +207,101 @@ test("findReviewBase: diverged states that ancestry cannot order fall back to co
   assert.equal(result, b);
 });
 
+function permutations(arr) {
+  if (arr.length <= 1) return [arr];
+  const result = [];
+  for (let i = 0; i < arr.length; i += 1) {
+    const rest = [...arr.slice(0, i), ...arr.slice(i + 1)];
+    for (const perm of permutations(rest)) {
+      result.push([arr[i], ...perm]);
+    }
+  }
+  return result;
+}
+
+test("findReviewBase: a candidate strictly dominated by another is never returned, even when an ancestry-incomparable state sits between the two in comment order (adversarial repro)", () => {
+  const zHead = "3".repeat(40);
+  const yHead = "2".repeat(40);
+  const xHead = "1".repeat(40);
+  // x is a proper ancestor of z; y is ancestry-incomparable to both x and
+  // z; every head here is (trivially, for this test) an ancestor of HEAD.
+  const isAncestor = (candidate, of) => {
+    if (candidate === xHead && of === zHead) return true;
+    if (of === HEAD) return true;
+    return false;
+  };
+  const z = state({ head: zHead, runId: 1 });
+  const y = state({ head: yHead, runId: 2 });
+  const x = state({ head: xHead, runId: 3 });
+  // Comment order z, y, x: an ordinary out-of-order CI completion, where the
+  // review triggered by an earlier push (z) finishes and posts before a
+  // review triggered by an unrelated, diverged push (y), which in turn
+  // posts before the review of an even earlier push (x) that happens to
+  // finish last. A left-to-right pairwise reduce that only ever compares
+  // the running "best" against the next candidate returns x here: once y
+  // (incomparable to z) displaces z as "best" via an index tie-break, the
+  // z-versus-x ancestry relationship -- which ancestry CAN decide -- is
+  // never re-examined, so x (strictly older than z) wins by mistake.
+  const result = findReviewBase([z, y, x], "general", { head: HEAD, isAncestor });
+  assert.notEqual(
+    result.head,
+    xHead,
+    "a candidate strictly dominated by another candidate must never be the review base",
+  );
+  // x is excluded because z is a direct, ancestry-provable descendant of
+  // it; only z and y remain undominated (maximal). Ancestry cannot order
+  // that pair (they are genuinely diverged), so -- exactly as the approved
+  // 2-candidate "diverged states" case resolves -- comment order breaks
+  // the tie and the later one (y, comment index 1) wins over z (index 0).
+  assert.equal(result.head, yHead);
+});
+
+test("findReviewBase: a unique ancestrally-maximal candidate wins under every ordering of 3 candidates with mixed comparable/incomparable relations", () => {
+  const topHead = "a".repeat(40);
+  const leftHead = "b".repeat(40);
+  const rightHead = "c".repeat(40);
+  // left and right are both dominated directly by top (an ordinary
+  // two-branches-merged-into-top shape); left and right are mutually
+  // incomparable.
+  const isAncestor = (candidate, of) => {
+    if (candidate === leftHead && of === topHead) return true;
+    if (candidate === rightHead && of === topHead) return true;
+    if (of === HEAD) return true;
+    return false;
+  };
+  const top = state({ head: topHead, runId: 1 });
+  const left = state({ head: leftHead, runId: 2 });
+  const right = state({ head: rightHead, runId: 3 });
+  for (const perm of permutations([top, left, right])) {
+    const result = findReviewBase(perm, "general", { head: HEAD, isAncestor });
+    assert.equal(result.head, topHead, `order [${perm.map((s) => s.head).join(",")}] must still pick the unique maximal`);
+  }
+});
+
+test("findReviewBase: a unique ancestrally-maximal candidate wins under every ordering of 4 candidates with mixed comparable/incomparable relations", () => {
+  const topHead = "d".repeat(40);
+  const midAHead = "e".repeat(40);
+  const midBHead = "f".repeat(40);
+  const oldestHead = "0".repeat(40);
+  // oldest -> midA -> top (a chain); midB -> top directly; midA and midB
+  // are mutually incomparable, and oldest is incomparable to midB.
+  const isAncestor = (candidate, of) => {
+    if (candidate === midAHead && of === topHead) return true;
+    if (candidate === midBHead && of === topHead) return true;
+    if (candidate === oldestHead && of === midAHead) return true;
+    if (of === HEAD) return true;
+    return false;
+  };
+  const top = state({ head: topHead, runId: 1 });
+  const midA = state({ head: midAHead, runId: 2 });
+  const midB = state({ head: midBHead, runId: 3 });
+  const oldest = state({ head: oldestHead, runId: 4 });
+  for (const perm of permutations([top, midA, midB, oldest])) {
+    const result = findReviewBase(perm, "general", { head: HEAD, isAncestor });
+    assert.equal(result.head, topHead, `order [${perm.map((s) => s.head).join(",")}] must still pick the unique maximal`);
+  }
+});
+
 test("markerLine: no marker line returns null", () => {
   assert.equal(markerLine("---\nname: x\n---\nbody text\n"), null);
 });

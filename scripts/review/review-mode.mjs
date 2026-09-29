@@ -153,18 +153,30 @@ export function findReviewBase(states, kind, { head, isAncestor }) {
 
   if (candidates.length === 0) return null;
 
-  let best = candidates[0];
-  for (let i = 1; i < candidates.length; i += 1) {
-    const cur = candidates[i];
-    if (safeIsAncestor(best.state.head, cur.state.head)) {
-      best = cur;
-    } else if (safeIsAncestor(cur.state.head, best.state.head)) {
-      // cur is an ancestor of (older than) best: keep best.
-    } else if (cur.index > best.index) {
-      best = cur;
-    }
-  }
-  return best.state;
+  // A candidate is dominated when some OTHER candidate is a strict
+  // descendant of it (this candidate's head is a proper ancestor of the
+  // other's). This is computed over every pair, not a left-to-right fold,
+  // so it cannot depend on the array's order: a genuinely older,
+  // ancestor-dominated candidate is excluded no matter where in comment
+  // order an ancestry-incomparable third state happens to fall between it
+  // and its descendant. Two candidates that share a head never dominate
+  // each other (their heads are equal, not one a proper ancestor of the
+  // other), so both stay eligible for the comment-order tie-break below.
+  const isDominated = (candidate) => candidates.some((other) => (
+    other !== candidate
+    && other.state.head !== candidate.state.head
+    && safeIsAncestor(candidate.state.head, other.state.head)
+  ));
+
+  const maximal = candidates.filter((candidate) => !isDominated(candidate));
+
+  // Ancestry cannot order any pair left in the maximal set (that is what
+  // "maximal" means here), so the tie is broken by comment order: the
+  // states array's own order, ascending by comment id. The later one wins.
+  // When the maximal set has exactly one member, this reduce cannot change
+  // the outcome, so the result does not depend on where that member sits
+  // in the input order.
+  return maximal.reduce((latest, cur) => (cur.index > latest.index ? cur : latest)).state;
 }
 
 const MARKER_PREFIX = "skill_marker:";
