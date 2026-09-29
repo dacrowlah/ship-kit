@@ -33,7 +33,6 @@ A pass proposes a change to one hunt list. `$SCRATCH` is the session scratchpad 
 | "the code no longer exists ... rewritten twice, and `git log --all -S` finds nothing" | The removing commit would be listed. Nothing listed: it never existed. |
 | "This goes up as a branch or PR for the maintainer to review" | Mining ends at the printed diff: no branch, commit, push or PR. |
 | "Match R5 to the style of R1-R4" | Use `hunt-list-format.md`'s format. |
-| "They asked for five shapes" | Propose what the evidence supports and list what was left out, and why; the owner decides. |
 
 ## Red flags
 
