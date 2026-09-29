@@ -89,9 +89,16 @@ function callerFor(name) {
   return MANAGED.get(name) ?? ".github/workflows/ci.yml";
 }
 
-/** A pull request entry of a workflow run's `pull_requests`. */
-function prEntry(baseRef, number = 7) {
-  return { number, base: { ref: baseRef, repo: { name: NAME } }, head: { ref: "feature", sha: SHA } };
+const repoUrl = (slug) => `https://api.github.com/repos/${slug}`;
+
+/** A pull request entry of a workflow run's `pull_requests`, as GitHub lists it. */
+function prEntry(baseRef, number = Number(PR), { repo = REPO, baseRepo = repo, headRepo = repo, headSha = SHA } = {}) {
+  const ref = (slug) => ({ id: 1, name: slug.split("/")[1], url: repoUrl(slug) });
+  return {
+    url: `${repoUrl(baseRepo)}/pulls/${number}`, number,
+    base: { ref: baseRef, sha: "b".repeat(40), repo: ref(baseRepo) },
+    head: { ref: "feature", sha: headSha, repo: ref(headRepo) },
+  };
 }
 
 /**
@@ -145,7 +152,7 @@ function world(spec = {}) {
       for (const listed of Array.isArray(answer) ? answer : []) {
         if (!listed || !Number.isSafeInteger(listed.id)) continue;
         put(getArgs(`${base}/actions/runs/${listed.id}`), runDetails[listed.id]
-          ?? http(200, { head_sha: SHA, pull_requests: [prEntry(branch)], ...listed }));
+          ?? http(200, { head_sha: SHA, pull_requests: [prEntry(branch, Number(PR), { repo })], ...listed }));
       }
     }
     put(getArgs(`${base}/actions/jobs/${run.id}`), jobs[run.id] ?? http(200, { id: run.id, run_id: suite + SUITE_TO_RUN, name: run.name }));
@@ -196,7 +203,7 @@ function states(results) {
 
 function judge(spec, contexts, managed = MANAGED) {
   const w = world(spec);
-  return { results: evaluate({ gh: w.gh, repo: REPO, sha: SHA, contexts, managed, defaultBranch: spec.branch ?? "main" }), calls: w.calls };
+  return { results: evaluate({ gh: w.gh, repo: REPO, sha: SHA, pr: Number(PR), contexts, managed, defaultBranch: spec.branch ?? "main" }), calls: w.calls };
 }
 
 function required(spec) {
@@ -205,8 +212,17 @@ function required(spec) {
 }
 
 const unreadable = (pattern) => (error) => error instanceof Unreadable && pattern.test(error.message);
-/** The refusal for a managed context whose evidence passes every check GitHub allows. */
-const unprovable = (context = GENERAL) => unreadable(new RegExp(`cannot prove that .*${JSON.stringify(context).replace(/[()]/g, "\\$&")}.* came from the default branch's caller`));
+/** A managed context proven through a run tied to this pull request into the default branch. */
+function proven(results, context = GENERAL, caller = GENERAL_CALLER) {
+  const result = results.find((r) => r.context === context);
+  assert.equal(result.state, "green", JSON.stringify(results));
+  assert.equal(result.reason, `provenance: pull_request_target run of ${caller} for PR #${PR} into "main"`);
+}
+
+/** A managed context left missing because no latest run of it is tied to this pull request. */
+function untied(results, context = GENERAL) {
+  assert.deepEqual(results.find((r) => r.context === context), { context, state: "missing", reason: "no check run of this name is tied to this pull request into the default branch" });
+}
 
 // --- managedChecks ---------------------------------------------------------
 
@@ -462,7 +478,7 @@ test("malformed check runs or statuses are unreadable", () => {
 test("evaluate refuses an empty or invalid context list", () => {
   const w = world();
   for (const contexts of [[], undefined, "ci", [""], [5]]) {
-    assert.throws(() => evaluate({ gh: w.gh, repo: REPO, sha: SHA, contexts, managed: MANAGED, defaultBranch: "main" }),
+    assert.throws(() => evaluate({ gh: w.gh, repo: REPO, pr: 7, sha: SHA, contexts, managed: MANAGED, defaultBranch: "main" }),
       unreadable(/no required checks found; refusing/));
   }
 });
@@ -470,13 +486,13 @@ test("evaluate refuses an empty or invalid context list", () => {
 test("evaluate refuses a head SHA that is not 40 lower-case hex", () => {
   const w = world();
   for (const sha of ["abc", SHA.toUpperCase(), `${SHA}0`, undefined]) {
-    assert.throws(() => evaluate({ gh: w.gh, repo: REPO, sha, contexts: ["ci"], managed: MANAGED, defaultBranch: "main" }), unreadable(/head SHA/));
+    assert.throws(() => evaluate({ gh: w.gh, repo: REPO, pr: 7, sha, contexts: ["ci"], managed: MANAGED, defaultBranch: "main" }), unreadable(/head SHA/));
   }
 });
 
 test("evaluate rejects a missing or bad managed map, or a bad default branch", () => {
   const w = world();
-  const call = (extra) => evaluate({ gh: w.gh, repo: REPO, sha: SHA, contexts: ["ci"], managed: MANAGED, defaultBranch: "main", ...extra });
+  const call = (extra) => evaluate({ gh: w.gh, repo: REPO, pr: 7, sha: SHA, contexts: ["ci"], managed: MANAGED, defaultBranch: "main", ...extra });
   assert.throws(() => call({ managed: null }), TypeError);
   assert.throws(() => call({ managed: {} }), TypeError);
   assert.throws(() => call({ managed: new Map([["x", ".github/workflows/other.yml"]]) }), TypeError);
@@ -484,18 +500,59 @@ test("evaluate rejects a missing or bad managed map, or a bad default branch", (
   assert.throws(() => call({ managed: new Map([["x", `${GENERAL_CALLER}x`]]) }), TypeError);
   assert.throws(() => call({ managed: new Map([["x", 5]]) }), TypeError);
   assert.throws(() => call({ defaultBranch: "" }), TypeError);
+  for (const pr of [undefined, 0, -7, 1.5, "7", null]) assert.throws(() => call({ pr }), TypeError, String(pr));
 });
 
 // --- evaluate: provenance -----------------------------------------------------
 
-test("a managed context whose check runs pass every check is still unprovable (exit 3): nothing ties a run to its base", () => {
+test("a managed context whose latest run is tied to this pull request into the default branch is green", () => {
+  const latest = [checkRun(10, GENERAL, { suite: 501 }), checkRun(1, "ci")];
+  const { results, calls } = judge({ latest }, [GENERAL, "ci"]);
+  proven(results);
+  assert.deepEqual(states(results), { [GENERAL]: "green", ci: "green" });
+  for (const path of [`repos/${REPO}/actions/runs/1000501`, `repos/${REPO}/actions/jobs/10`, `repos/${REPO}/contents/${GENERAL_CALLER}?ref=main`]) {
+    assert.ok(calls.some((a) => a.join(" ") === `api --include ${path}`), path);
+  }
+});
+
+test("a run whose pull request list is empty (a fork head, or a closed pull request) leaves the context missing, never green", () => {
   const latest = [checkRun(10, GENERAL, { suite: 501 })];
-  assert.throws(() => judge({ latest }, [GENERAL, "ci"]), unprovable());
-  const r = runMain({ rules: [rsc("ci", GENERAL, ADVERSARIAL)], latest: [...latest, checkRun(1, "ci"), checkRun(11, ADVERSARIAL, { suite: 502 })] });
-  assert.equal(r.code, 3, r.out + r.err);
-  assert.match(r.err, /cannot prove that "ship-kit adversarial review", "ship-kit general review" came from the default branch's caller/);
-  assert.match(r.err, /a human merges/);
-  assert.equal(r.out, "");
+  const runDetails = { 1000501: http(200, { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, head_sha: SHA, pull_requests: [] }) };
+  untied(judge({ latest, runDetails }, [GENERAL]).results);
+  const r = runMain({ rules: [rsc(GENERAL)], latest, runDetails });
+  assert.equal(r.code, 1, r.out + r.err);
+  assert.match(r.out, /^missing "ship-kit general review" -- no check run of this name is tied to this pull request/m);
+});
+
+test("a run tied only to another pull request into the default branch does not prove this one", () => {
+  const latest = [checkRun(10, GENERAL, { suite: 501 })];
+  const runDetails = { 1000501: http(200, { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, head_sha: SHA, pull_requests: [prEntry("main", 8)] }) };
+  untied(judge({ latest, runDetails }, [GENERAL]).results);
+});
+
+test("the listed pull request must be this repository's, from this repository, at this head", () => {
+  const latest = [checkRun(10, GENERAL, { suite: 501 })];
+  const detail = (entry) => ({ 1000501: http(200, { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, head_sha: SHA, pull_requests: [entry] }) });
+  // A base in another repository is no pull request into this default branch.
+  const elsewhere = judge({ latest, runDetails: detail(prEntry("main", 7, { baseRepo: "someone/widgets" })) }, [GENERAL]).results;
+  assert.deepEqual(states(elsewhere), { [GENERAL]: "forged" });
+  assert.match(elsewhere[0].reason, /another repository/);
+  // A head from a fork, or at another commit, is not this pull request's head.
+  untied(judge({ latest, runDetails: detail(prEntry("main", 7, { headRepo: "someone/widgets" })) }, [GENERAL]).results);
+  untied(judge({ latest, runDetails: detail(prEntry("main", 7, { headSha: "f".repeat(40) })) }, [GENERAL]).results);
+  untied(judge({ latest, runDetails: detail({ ...prEntry("main"), head: null }) }, [GENERAL]).results);
+  // Owner case differs: GitHub's names are case-insensitive.
+  proven(judge({ latest, runDetails: detail(prEntry("main", 7, { repo: REPO.toUpperCase() })) }, [GENERAL]).results);
+});
+
+test("green needs a tied run among the latest runs, and every latest run green", () => {
+  const tied = checkRun(10, GENERAL, { suite: 501 });
+  const other = (conclusion) => checkRun(11, GENERAL, { suite: 502, conclusion });
+  const otherRun = { 1000502: http(200, { id: 1000502, check_suite_id: 502, event: "pull_request_target", path: GENERAL_CALLER, head_sha: SHA, pull_requests: [prEntry("main", 8)] }) };
+  assert.deepEqual(states(judge({ latest: [tied, other("failure")], runDetails: otherRun }, [GENERAL]).results), { [GENERAL]: "failing" });
+  proven(judge({ latest: [tied, other("success")], runDetails: otherRun }, [GENERAL]).results);
+  // A tied run that filter=latest no longer lists does not count.
+  untied(judge({ latest: [other("success")], all: [tied, other("success")], runDetails: otherRun }, [GENERAL]).results);
 });
 
 test("a managed context that is failing or pending reports its state, with provenance checked", () => {
@@ -511,16 +568,18 @@ test("the caller path may carry @refs/heads/<default branch>; any other ref is f
   const latest = [checkRun(10, GENERAL, { suite: 501 })];
   const suites = { 501: [{ id: 77, check_suite_id: 501, event: "pull_request_target", path: `${GENERAL_CALLER}@refs/heads/main`, repository: { full_name: REPO } }] };
   const jobs = { 10: http(200, { id: 10, run_id: 77, name: GENERAL }) };
-  assert.throws(() => judge({ latest, suites, jobs }, [GENERAL]), unprovable());
+  const tied = judge({ latest, suites, jobs }, [GENERAL]).results;
+  assert.equal(tied[0].state, "green");
+  assert.match(tied[0].reason, /@refs\/heads\/main for PR #7/);
   const other = { 501: [{ ...suites[501][0], path: `${GENERAL_CALLER}@refs/heads/feature` }] };
   assert.deepEqual(states(judge({ latest, suites: other, jobs }, [GENERAL]).results), { [GENERAL]: "forged" });
 });
 
-test("a failed first attempt fixed by a full re-run is judged on latest: not failing, not forged", () => {
+test("a failed first attempt fixed by a full re-run is green on latest", () => {
   // Both attempts are jobs of one workflow run in one check suite.
   const attempt1 = checkRun(10, GENERAL, { suite: 501, conclusion: "failure" });
   const attempt2 = checkRun(11, GENERAL, { suite: 501 });
-  assert.throws(() => judge({ latest: [attempt2], all: [attempt1, attempt2] }, [GENERAL]), unprovable());
+  proven(judge({ latest: [attempt2], all: [attempt1, attempt2] }, [GENERAL]).results);
   const ci1 = checkRun(1, "ci", { conclusion: "failure" });
   const ci2 = checkRun(2, "ci");
   assert.deepEqual(states(judge({ latest: [ci2], all: [ci1, ci2] }, ["ci"]).results), { ci: "green" });
@@ -544,12 +603,10 @@ test("HOLE B: a pull_request_target run of the caller's path for a pull request 
 test("a run listing any pull request into another base is forged, even beside one into the default branch", () => {
   const latest = [checkRun(10, GENERAL, { suite: 501 })];
   const detail = (pullRequests) => ({ 1000501: http(200, { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, head_sha: SHA, pull_requests: pullRequests }) });
-  for (const pullRequests of [[prEntry("main"), prEntry("evil", 8)], [{ number: 8 }], [null]]) {
+  for (const pullRequests of [[prEntry("main"), prEntry("evil", 8)], [prEntry("evil")], [{ number: 8 }], [null]]) {
     const { results } = judge({ latest, runDetails: detail(pullRequests) }, [GENERAL]);
     assert.deepEqual(states(results), { [GENERAL]: "forged" }, JSON.stringify(pullRequests));
   }
-  // A fork head, or a closed pull request, lists none: still unprovable.
-  assert.throws(() => judge({ latest, runDetails: detail([]) }, [GENERAL]), unprovable());
 });
 
 test("a workflow run for another head, another id or without a pull_requests list is forged", () => {
@@ -608,7 +665,7 @@ test("a check run with no app or no check suite id is forged", () => {
     { ...checkRun(20, GENERAL), check_suite: { id: "501" } },
   ]) {
     const w = world({ latest: [run], routes: [] });
-    const results = evaluate({ gh: w.gh, repo: REPO, sha: SHA, contexts: [GENERAL], managed: MANAGED, defaultBranch: "main" });
+    const results = evaluate({ gh: w.gh, repo: REPO, pr: 7, sha: SHA, contexts: [GENERAL], managed: MANAGED, defaultBranch: "main" });
     assert.deepEqual(states(results), { [GENERAL]: "forged" }, JSON.stringify(run));
   }
 });
@@ -636,7 +693,7 @@ test("a managed check run seen only in the full listing still needs provenance",
   const stray = checkRun(30, GENERAL, { suite: 504 });
   const suites = { 504: [{ id: 68, check_suite_id: 504, event: "push", path: ".github/workflows/x.yml", repository: { full_name: REPO } }] };
   assert.deepEqual(states(judge({ latest: [], all: [stray], suites }, [GENERAL]).results), { [GENERAL]: "forged" });
-  assert.deepEqual(judge({ latest: [], all: [stray] }, [GENERAL]).results, [{ context: GENERAL, state: "missing", reason: "" }]);
+  untied(judge({ latest: [], all: [stray] }, [GENERAL]).results);
 });
 
 test("a managed check run on filter=latest but absent from filter=all is forged", () => {
@@ -664,7 +721,7 @@ test("provenance refuses a listed workflow run of another check suite or reposit
     assert.deepEqual(states(results), { [GENERAL]: "forged" }, JSON.stringify(run));
   }
   const upper = { ...base, repository: { full_name: REPO.toUpperCase() } };
-  assert.throws(() => judge({ latest: [checkRun(10, GENERAL, { suite: 501 })], suites: { 501: [upper] } }, [GENERAL]), unprovable());
+  proven(judge({ latest: [checkRun(10, GENERAL, { suite: 501 })], suites: { 501: [upper] } }, [GENERAL]).results);
 });
 
 test("provenance refuses a run whose event is not pull_request_target", () => {
@@ -702,7 +759,7 @@ test("a failed provenance lookup is unreadable, never green", () => {
 test("provenance lookups are shared: one runs listing and one run lookup per check suite, one caller lookup per seat", () => {
   const latest = [checkRun(10, GENERAL, { suite: 501 }), checkRun(11, GENERAL, { suite: 501 })];
   const w = world({ latest });
-  assert.throws(() => evaluate({ gh: w.gh, repo: REPO, sha: SHA, contexts: [GENERAL], managed: MANAGED, defaultBranch: "main" }), unprovable());
+  proven(evaluate({ gh: w.gh, repo: REPO, pr: 7, sha: SHA, contexts: [GENERAL], managed: MANAGED, defaultBranch: "main" }));
   const count = (text) => w.calls.filter((a) => a.join(" ").includes(text)).length;
   assert.equal(count("check_suite_id=501"), 1);
   assert.equal(count("actions/runs/1000501"), 1);
@@ -727,11 +784,18 @@ test("the coverage context is exempt from provenance", () => {
 // --- main -------------------------------------------------------------------
 
 test("main exits 0 when every required context is green, and prints one line per context", () => {
-  const latest = [checkRun(1, "ci"), checkRun(2, "gitleaks"), checkRun(3, COVERAGE)];
-  const r = runMain({ rules: [rsc("gitleaks", "ci", COVERAGE)], latest });
+  const latest = [checkRun(1, "ci"), checkRun(2, "gitleaks"), checkRun(3, COVERAGE), checkRun(10, GENERAL, { suite: 501 }), checkRun(11, ADVERSARIAL, { suite: 502 })];
+  const r = runMain({ rules: [rsc("gitleaks", "ci", COVERAGE, GENERAL, ADVERSARIAL)], latest });
   assert.equal(r.code, 0, r.err);
   assert.equal(r.err, "");
-  assert.equal(r.out, `green "ci"\ngreen "gitleaks"\ngreen "${COVERAGE}"\n3 of 3 required checks green on ${SHA}\n`);
+  const tie = (caller) => ` -- provenance: pull_request_target run of ${caller} for PR #7 into "main"`;
+  assert.equal(r.out, [
+    'green "ci"', 'green "gitleaks"',
+    `green "${ADVERSARIAL}"${tie(".github/workflows/ship-kit-adversarial.yml")}`,
+    `green "${GENERAL}"${tie(GENERAL_CALLER)}`,
+    `green "${COVERAGE}"`,
+    `5 of 5 required checks green on ${SHA}`, "",
+  ].join("\n"));
 });
 
 test("main exits 1 when any context is not green", () => {
@@ -750,8 +814,8 @@ test("a default branch named release/1.x is read through encoded paths", () => {
   const branch = "release/1.x";
   const latest = [checkRun(1, "ci"), checkRun(10, GENERAL, { suite: 501 })];
   const r = runMain({ branch, rules: [rsc("ci", GENERAL)], latest });
-  assert.equal(r.code, 3, r.err);
-  assert.match(r.err, /cannot prove/);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /for PR #7 into "release\/1\.x"/);
   const argv = r.calls.map((a) => a.join(" "));
   for (const expected of [
     `api --include repos/${REPO}/branches/release%2F1.x`,

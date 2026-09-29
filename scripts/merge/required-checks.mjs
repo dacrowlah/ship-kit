@@ -16,21 +16,30 @@
 //
 // Each context is green, failing, pending, missing or forged. A context
 // named in the default branch's `render.checks` (coverage excepted) is
-// forged when a commit status carries its name, or when any check run of
-// that name on the head, across all attempts, is not a job of a
-// pull_request_target run at its managed caller's path, for this head, with
-// no pull request into another base, while the default branch holds that
-// caller. Passing all of that still does not prove the run executed the
-// default branch's copy: pull_request_target runs the base branch's copy,
-// the run's path names no branch, and its pull request list is live (it
-// drops closed pull requests and follows a retargeted base). So such a
-// context is never green: one that would be green is refused as unprovable,
-// and a human merges.
+// forged when a commit status carries its name, when the default branch
+// does not hold its managed caller, or when any check run of that name on
+// the head, across all attempts, is not a job of a pull_request_target run
+// at that caller's path, for this head, whose pull requests all have the
+// default branch of this repository as base. It is green only when its
+// latest runs are all green and one of them is tied to the pull request
+// being judged: that run's pull requests list it by number, from this
+// repository, at this head, into the default branch. With no tied run it is
+// missing, which is how a fork head's run (listing no pull request) reads.
+//
+// Residual risk. pull_request_target runs the base branch's copy of the
+// caller, and GitHub records neither that branch nor that copy on the run;
+// its pull request list is the only tie, and it is live. A writer who opens
+// a second pull request from the same head into a branch holding an edited
+// caller gets a run the association does not tell apart from the genuine
+// one, and can close or retarget that pull request afterwards so that it no
+// longer shows. Forging this way needs write access, which already permits
+// merging. A proof of the run's ref (an OIDC token from the gate job) is
+// planned for release 6.
 //
 // Usage: node scripts/merge/required-checks.mjs <pr>
 // Exit 0: every required context is green. Exit 1: at least one is not.
-// Exit 2: usage. Exit 3: unreadable, no required checks at all, the config
-// unreadable, or a managed context unprovable.
+// Exit 2: usage. Exit 3: unreadable, no required checks at all, or the
+// config unreadable.
 // Network: `gh` calls to the current repository's GitHub API, and the
 // config fetch of the default branch from `origin`.
 
@@ -223,18 +232,19 @@ function memo(read) {
 
 /**
  * Judges each required context on `sha`.
- * @param {{gh: {get: Function, listKey: Function}, repo: string, sha: string, contexts: string[],
- *   managed: Map<string, string>, defaultBranch: string}} options
- *   `managed` maps each context with provenance to its caller path (`managedChecks`)
+ * @param {{gh: {get: Function, listKey: Function}, repo: string, pr: number, sha: string,
+ *   contexts: string[], managed: Map<string, string>, defaultBranch: string}} options
+ *   `pr` is the pull request whose head `sha` is judged; `managed` maps each
+ *   context with provenance to its caller path (`managedChecks`)
  * @returns {{context: string, state: string, reason: string}[]} in `contexts` order
- * @throws {Unreadable} on an empty context list, a bad SHA, a failed read,
- *   or a managed context that would be green but cannot be proven
+ * @throws {Unreadable} on an empty context list, a bad SHA or a failed read
  */
-export function evaluate({ gh, repo, sha, contexts, managed, defaultBranch }) {
+export function evaluate({ gh, repo, pr, sha, contexts, managed, defaultBranch }) {
   const { owner, name, slug } = repoSlug(repo);
   if (!Array.isArray(contexts) || contexts.length === 0 || !contexts.every(isName)) throw new Unreadable(NO_CHECKS);
   if (typeof sha !== "string" || !SHA.test(sha)) throw new Unreadable(`head SHA ${JSON.stringify(sha)} is not 40 lower-case hex`);
   if (!isName(defaultBranch)) throw new TypeError("defaultBranch must be a non-empty string");
+  if (!Number.isSafeInteger(pr) || pr < 1) throw new TypeError("pr must be a pull request number");
   if (!(managed instanceof Map)) throw new TypeError("managed must be a Map");
   const kinds = new Map();
   for (const [context, path] of managed) {
@@ -289,48 +299,67 @@ export function evaluate({ gh, repo, sha, contexts, managed, defaultBranch }) {
     return { run };
   }
 
-  /** @returns {string | null} why the run's own record rules out the default branch's caller, or null */
-  function baseError(run) {
-    const detail = runDetail(run.id);
-    if (!isPlainObject(detail) || detail.id !== run.id || !Array.isArray(detail.pull_requests)) {
-      return `workflow run ${run.id} lookup returned no run with a pull request list`;
-    }
-    if (detail.head_sha !== sha) return `workflow run ${run.id} ran for ${JSON.stringify(detail.head_sha)}, not the head`;
-    for (const pr of detail.pull_requests) {
-      const base = isPlainObject(pr) && isPlainObject(pr.base) ? pr.base.ref : undefined;
-      if (base !== defaultBranch) {
-        return `workflow run ${run.id} ran for a pull request into ${JSON.stringify(base)}, not the default branch`;
-      }
-    }
-    return null;
+  const repoApi = `/repos/${owner}/${name}`.toLowerCase();
+  /** True for a pull request entry's `repo` object naming this repository. */
+  function inThisRepo(entryRepo) {
+    return isPlainObject(entryRepo) && typeof entryRepo.url === "string" && entryRepo.url.toLowerCase().endsWith(repoApi);
   }
 
-  /** @returns {string | null} why `checkRun` is not from the managed caller, or null */
-  function provenanceError(checkRun, context, kind) {
+  /**
+   * The run's own record: forged unless it ran for this head and every pull
+   * request it lists goes into this repository's default branch; tied when
+   * one of them is the pull request being judged, from this repository, at
+   * this head.
+   * @returns {{forged: string} | {tied: boolean}}
+   */
+  function association(run) {
+    const detail = runDetail(run.id);
+    if (!isPlainObject(detail) || detail.id !== run.id || !Array.isArray(detail.pull_requests)) {
+      return { forged: `workflow run ${run.id} lookup returned no run with a pull request list` };
+    }
+    if (detail.head_sha !== sha) return { forged: `workflow run ${run.id} ran for ${JSON.stringify(detail.head_sha)}, not the head` };
+    let tied = false;
+    for (const entry of detail.pull_requests) {
+      const base = isPlainObject(entry) && isPlainObject(entry.base) ? entry.base : {};
+      if (base.ref !== defaultBranch) {
+        return { forged: `workflow run ${run.id} ran for a pull request into ${JSON.stringify(base.ref)}, not the default branch` };
+      }
+      if (!inThisRepo(base.repo)) return { forged: `workflow run ${run.id} ran for a pull request into another repository` };
+      const head = isPlainObject(entry.head) ? entry.head : {};
+      if (entry.number === pr && head.sha === sha && inThisRepo(head.repo)) tied = true;
+    }
+    return { tied };
+  }
+
+  /**
+   * @returns {{forged: string} | {tied: boolean, path: string}} whether
+   *   `checkRun` is from the managed caller, and tied to this pull request
+   */
+  function provenanceOf(checkRun, context, kind) {
+    const forged = (reason) => ({ forged: reason });
     const app = isPlainObject(checkRun.app) ? checkRun.app.slug : undefined;
-    if (app !== ACTIONS_APP) return `check run ${checkRun.id} is from app ${JSON.stringify(app)}, not ${ACTIONS_APP}`;
+    if (app !== ACTIONS_APP) return forged(`check run ${checkRun.id} is from app ${JSON.stringify(app)}, not ${ACTIONS_APP}`);
     const suiteId = isPlainObject(checkRun.check_suite) ? checkRun.check_suite.id : undefined;
-    if (!Number.isSafeInteger(suiteId) || suiteId < 1) return `check run ${checkRun.id} has no check suite id`;
+    if (!Number.isSafeInteger(suiteId) || suiteId < 1) return forged(`check run ${checkRun.id} has no check suite id`);
     const { run, error } = workflowRunOf(suiteId);
-    if (error) return error;
-    if (run.event !== CALLER_EVENT) return `check run ${checkRun.id} comes from a ${JSON.stringify(run.event)} run, not ${CALLER_EVENT}`;
+    if (error) return forged(error);
+    if (run.event !== CALLER_EVENT) return forged(`check run ${checkRun.id} comes from a ${JSON.stringify(run.event)} run, not ${CALLER_EVENT}`);
     if (!callerPathMatches(run.path, kind, defaultBranch)) {
-      return `check run ${checkRun.id} comes from ${JSON.stringify(run.path)}, not the managed caller`;
+      return forged(`check run ${checkRun.id} comes from ${JSON.stringify(run.path)}, not the managed caller`);
     }
     // A workflow token can post a check run through the Checks API, and
     // which Actions check suite it is filed under is not documented; only
     // a job of the caller's run is the caller's check. A job's id is its
     // check run's id.
     const job = reading(`job lookup for check run ${checkRun.id}`, () => gh.get(api`repos/${owner}/${name}/actions/jobs/${checkRun.id}`));
-    if (job.status === 404) return `check run ${checkRun.id} is not a job of any workflow run`;
+    if (job.status === 404) return forged(`check run ${checkRun.id} is not a job of any workflow run`);
     if (job.status !== 200) throw new Unreadable(`job lookup for check run ${checkRun.id} returned HTTP ${job.status}`);
     if (!isPlainObject(job.json) || job.json.id !== checkRun.id || job.json.run_id !== run.id || job.json.name !== context) {
-      return `check run ${checkRun.id} is not the job ${JSON.stringify(context)} of workflow run ${run.id}`;
+      return forged(`check run ${checkRun.id} is not the job ${JSON.stringify(context)} of workflow run ${run.id}`);
     }
-    return baseError(run);
+    const tie = association(run);
+    return "forged" in tie ? tie : { tied: tie.tied, path: run.path };
   }
-
-  const unproven = [];
 
   function judge(context) {
     const runs = latest.filter((r) => r.name === context);
@@ -347,22 +376,20 @@ export function evaluate({ gh, repo, sha, contexts, managed, defaultBranch }) {
     if (unseen) return forged(`check run ${unseen.id} is missing from the filter=all listing`);
     const missingCaller = callerMissing(kind);
     if (missingCaller) return forged(missingCaller);
+    const latestIds = new Set(runs.map((r) => r.id));
+    let tiedPath = null;
     for (const checkRun of history) {
-      const error = provenanceError(checkRun, context, kind);
-      if (error) return forged(error);
+      const verdict = provenanceOf(checkRun, context, kind);
+      if ("forged" in verdict) return forged(verdict.forged);
+      if (verdict.tied && latestIds.has(checkRun.id)) tiedPath ??= verdict.path;
     }
-    if (state === "green") unproven.push(context);
-    return { context, state, reason: "" };
+    if (tiedPath === null) {
+      return { context, state: "missing", reason: "no check run of this name is tied to this pull request into the default branch" };
+    }
+    return { context, state, reason: `provenance: ${CALLER_EVENT} run of ${tiedPath} for PR #${pr} into ${JSON.stringify(defaultBranch)}` };
   }
 
-  const results = contexts.map(judge);
-  if (unproven.length > 0) {
-    throw new Unreadable(
-      `cannot prove that ${unproven.map((c) => JSON.stringify(c)).join(", ")} came from the default branch's caller: ` +
-        `GitHub records no field that ties a ${CALLER_EVENT} run to the base branch whose workflow copy it ran, so a human merges`,
-    );
-  }
-  return results;
+  return contexts.map(judge);
 }
 
 function parseJson(text, what) {
@@ -439,7 +466,7 @@ export function main(argv, deps = defaultDeps(), io = { out: process.stdout, err
     const found = inputs(argv[0], deps);
     sha = found.sha;
     const contexts = readRequired({ gh: deps.gh, repo: found.slug, branch: found.branch });
-    results = evaluate({ gh: deps.gh, repo: found.slug, sha, contexts, managed: found.managed, defaultBranch: found.branch });
+    results = evaluate({ gh: deps.gh, repo: found.slug, pr: Number(argv[0]), sha, contexts, managed: found.managed, defaultBranch: found.branch });
   } catch (error) {
     io.err.write(`required-checks: refusing: ${messageOf(error)}\n`);
     return 3;
