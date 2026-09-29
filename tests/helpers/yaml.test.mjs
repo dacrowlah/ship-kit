@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, globSync, readFileSync } from "node:fs";
 import test from "node:test";
-import { parseYaml, YamlSubsetError } from "./yaml.mjs";
+import { findKeyOccurrences, parseYaml, YamlSubsetError } from "./yaml.mjs";
 
 test("comments are ignored", () => {
   const text = ["# a leading comment", "foo: bar # a trailing comment", "# a trailing comment line"].join("\n");
@@ -154,9 +154,33 @@ function hasYq() {
   return result.status === 0;
 }
 
-const yamlFixtures = [...globSync(".github/workflows/*.yml"), ...globSync("tests/fixtures/**/*.yml")].filter((path) =>
-  existsSync(path),
-);
+const yamlFixtures = [
+  ...globSync(".github/workflows/*.yml"),
+  ...globSync("templates/**/*.yml"),
+  ...globSync("templates/**/*.yaml"),
+  ...globSync("tests/fixtures/**/*.yml"),
+].filter((path) => existsSync(path));
+
+/**
+ * Recursively collects the value of every key named in `keyNames`, from any
+ * plain-object node at any depth of a value tree such as `yq -o=json`'s
+ * output (used as the oracle `findKeyOccurrences` is checked against).
+ * @param {unknown} value
+ * @param {Set<string>} keyNames
+ * @param {unknown[]} sink
+ * @returns {unknown[]}
+ */
+function collectKeysDeep(value, keyNames, sink = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectKeysDeep(item, keyNames, sink);
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      if (keyNames.has(key)) sink.push(child);
+      collectKeysDeep(child, keyNames, sink);
+    }
+  }
+  return sink;
+}
 
 if (!hasYq()) {
   if (process.env.CI) {
@@ -174,6 +198,19 @@ if (!hasYq()) {
       assert.equal(yqResult.status, 0, `yq failed on ${path}: ${yqResult.stderr}`);
       const expected = JSON.parse(yqResult.stdout);
       assert.deepEqual(parseYaml(text), expected);
+    });
+
+    test(`findKeyOccurrences' run/script values match yq's on every workflow: ${path}`, () => {
+      const text = readFileSync(path, "utf8");
+      const yqResult = spawnSync("yq", ["-o=json", path], { encoding: "utf8" });
+      assert.equal(yqResult.status, 0, `yq failed on ${path}: ${yqResult.stderr}`);
+      const expected = JSON.parse(yqResult.stdout);
+      const keyNames = new Set(["run", "script"]);
+      const fromYq = collectKeysDeep(expected, keyNames).sort();
+      const fromWalk = findKeyOccurrences(text, ["run", "script"])
+        .map((occurrence) => occurrence.value)
+        .sort();
+      assert.deepEqual(fromWalk, fromYq);
     });
   }
 }

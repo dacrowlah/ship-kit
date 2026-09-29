@@ -381,9 +381,6 @@ function parseScalarOrFlow(rawValue, lineNo) {
     if (inner === "") return [];
     return splitFlowItems(inner).map((item) => parseScalar(item, lineNo));
   }
-  if (rawValue.startsWith("{")) {
-    throw new YamlSubsetError(`flow mappings are not supported at line ${lineNo}`);
-  }
   return parseScalar(rawValue, lineNo);
 }
 
@@ -438,7 +435,7 @@ function consumeBlockScalar(rawLines, start, keyIndent, chomp) {
  * @param {number} startIdx raw index to resume scanning from for the first entry's value
  * @returns {{ value: Record<string, unknown>, next: number }}
  */
-function consumeMapping(rawLines, indent, firstKey, firstRawValue, firstLineNo, startIdx) {
+function consumeMapping(rawLines, indent, firstKey, firstRawValue, firstLineNo, startIdx, ctx = null) {
   const result = {};
   const seen = new Set();
   let key = firstKey;
@@ -453,11 +450,11 @@ function consumeMapping(rawLines, indent, firstKey, firstRawValue, firstLineNo, 
       if (idx < rawLines.length) {
         const child = lineInfo(rawLines, idx);
         if (child.indent > indent) {
-          const parsed = parseNode(rawLines, idx, child.indent);
+          const parsed = parseNode(rawLines, idx, child.indent, ctx);
           result[key] = parsed.value;
           afterIdx = nextSignificant(rawLines, parsed.next);
         } else if (child.indent === indent && isSeqItem(child.content)) {
-          const parsed = consumeSequence(rawLines, indent, child.content, child.lineNo, nextSignificant(rawLines, idx + 1));
+          const parsed = consumeSequence(rawLines, indent, child.content, child.lineNo, nextSignificant(rawLines, idx + 1), ctx);
           result[key] = parsed.value;
           afterIdx = nextSignificant(rawLines, parsed.next);
         } else {
@@ -476,9 +473,12 @@ function consumeMapping(rawLines, indent, firstKey, firstRawValue, firstLineNo, 
       result[key] = parseScalarOrFlow(rawValue, lineNo);
       afterIdx = idx;
     }
+    if (ctx && ctx.keySet.has(key)) ctx.sink.push({ key, value: result[key], line: lineNo });
     if (afterIdx >= rawLines.length) return { value: result, next: afterIdx };
     const peek = lineInfo(rawLines, afterIdx);
-    if (peek.indent !== indent || isSeqItem(peek.content)) return { value: result, next: afterIdx };
+    if (peek.indent !== indent || isSeqItem(peek.content) || (indent === 0 && isDocumentSeparator(peek.content))) {
+      return { value: result, next: afterIdx };
+    }
     ({ key, rawValue } = splitMappingLine(peek.content, peek.lineNo));
     lineNo = peek.lineNo;
     idx = nextSignificant(rawLines, afterIdx + 1);
@@ -505,7 +505,7 @@ function stripDash(content) {
  * @param {number} startIdx
  * @returns {{ value: unknown[], next: number }}
  */
-function consumeSequence(rawLines, indent, initialContent, initialLineNo, startIdx) {
+function consumeSequence(rawLines, indent, initialContent, initialLineNo, startIdx, ctx = null) {
   const items = [];
   let content = initialContent;
   let lineNo = initialLineNo;
@@ -517,7 +517,7 @@ function consumeSequence(rawLines, indent, initialContent, initialLineNo, startI
       if (idx < rawLines.length) {
         const child = lineInfo(rawLines, idx);
         if (child.indent > indent) {
-          const parsed = parseNode(rawLines, idx, child.indent);
+          const parsed = parseNode(rawLines, idx, child.indent, ctx);
           items.push(parsed.value);
           afterIdx = nextSignificant(rawLines, parsed.next);
         } else {
@@ -531,12 +531,12 @@ function consumeSequence(rawLines, indent, initialContent, initialLineNo, startI
     } else {
       const contentIndent = indent + 1 + leadingSpaces;
       if (isSeqItem(itemContent)) {
-        const parsed = consumeSequence(rawLines, contentIndent, itemContent, lineNo, idx);
+        const parsed = consumeSequence(rawLines, contentIndent, itemContent, lineNo, idx, ctx);
         items.push(parsed.value);
         afterIdx = nextSignificant(rawLines, parsed.next);
       } else if (looksLikeMappingKey(itemContent)) {
         const { key, rawValue } = splitMappingLine(itemContent, lineNo);
-        const parsed = consumeMapping(rawLines, contentIndent, key, rawValue, lineNo, idx);
+        const parsed = consumeMapping(rawLines, contentIndent, key, rawValue, lineNo, idx, ctx);
         items.push(parsed.value);
         afterIdx = nextSignificant(rawLines, parsed.next);
       } else {
@@ -546,7 +546,9 @@ function consumeSequence(rawLines, indent, initialContent, initialLineNo, startI
     }
     if (afterIdx >= rawLines.length) return { value: items, next: afterIdx };
     const peek = lineInfo(rawLines, afterIdx);
-    if (peek.indent !== indent || !isSeqItem(peek.content)) return { value: items, next: afterIdx };
+    if (peek.indent !== indent || !isSeqItem(peek.content) || (indent === 0 && isDocumentSeparator(peek.content))) {
+      return { value: items, next: afterIdx };
+    }
     content = peek.content;
     lineNo = peek.lineNo;
     idx = nextSignificant(rawLines, afterIdx + 1);
@@ -559,16 +561,16 @@ function consumeSequence(rawLines, indent, initialContent, initialLineNo, startI
  * @param {number} indent
  * @returns {{ value: unknown, next: number }}
  */
-function parseNode(rawLines, i, indent) {
+function parseNode(rawLines, i, indent, ctx = null) {
   const info = lineInfo(rawLines, i);
   if (isSeqItem(info.content)) {
     const startIdx = nextSignificant(rawLines, i + 1);
-    return consumeSequence(rawLines, indent, info.content, info.lineNo, startIdx);
+    return consumeSequence(rawLines, indent, info.content, info.lineNo, startIdx, ctx);
   }
   if (looksLikeMappingKey(info.content)) {
     const { key, rawValue } = splitMappingLine(info.content, info.lineNo);
     const startIdx = nextSignificant(rawLines, i + 1);
-    return consumeMapping(rawLines, indent, key, rawValue, info.lineNo, startIdx);
+    return consumeMapping(rawLines, indent, key, rawValue, info.lineNo, startIdx, ctx);
   }
   return { value: parseScalarOrFlow(info.content, info.lineNo), next: nextSignificant(rawLines, i + 1) };
 }
@@ -582,10 +584,16 @@ function isDocumentSeparator(content) {
 }
 
 /**
+ * Parses one document, optionally recording every occurrence of a key in
+ * `ctx.keySet` (at any depth, in any mapping) into `ctx.sink`. Shared by
+ * `parseYaml` (no `ctx`, returns the parsed value) and `findKeyOccurrences`
+ * (returns only the recorded occurrences), so both see exactly the same
+ * refusals for anything outside the supported subset.
  * @param {string} text
+ * @param {{ keySet: Set<string>, sink: { key: string, value: unknown, line: number }[] } | null} ctx
  * @returns {unknown} the parsed value; `null` for an empty document
  */
-export function parseYaml(text) {
+function parseDocument(text, ctx) {
   const rawLines = splitLines(text);
   let i = nextSignificant(rawLines, 0);
   if (i >= rawLines.length) return null;
@@ -595,7 +603,7 @@ export function parseYaml(text) {
     if (i >= rawLines.length) return null;
     info = lineInfo(rawLines, i);
   }
-  const { value, next } = parseNode(rawLines, i, info.indent);
+  const { value, next } = parseNode(rawLines, i, info.indent, ctx);
   const after = nextSignificant(rawLines, next);
   if (after < rawLines.length) {
     const trailing = lineInfo(rawLines, after);
@@ -605,4 +613,33 @@ export function parseYaml(text) {
     throw new YamlSubsetError(`unexpected content at line ${trailing.lineNo}`);
   }
   return value;
+}
+
+/**
+ * @param {string} text
+ * @returns {unknown} the parsed value; `null` for an empty document
+ */
+export function parseYaml(text) {
+  return parseDocument(text, null);
+}
+
+/**
+ * Walks the whole parsed document and returns every occurrence of any key
+ * named in `keyNames`, at any depth in any mapping (including a mapping
+ * that begins inline inside a sequence item), each with the value the
+ * reader parsed for it and the line its key appeared on. Refuses (throws
+ * `YamlSubsetError`) exactly where `parseYaml` would: an anchor, alias, tag,
+ * folded scalar, non-empty flow mapping, second document, duplicate key or
+ * tab in indentation anywhere in the file, even far from any occurrence of
+ * `keyNames` -- a construct this reader cannot represent might be hiding a
+ * matching key's real value, so the whole document is refused rather than
+ * silently walked around.
+ * @param {string} text
+ * @param {string[]} keyNames
+ * @returns {{ key: string, value: unknown, line: number }[]}
+ */
+export function findKeyOccurrences(text, keyNames) {
+  const ctx = { keySet: new Set(keyNames), sink: [] };
+  parseDocument(text, ctx);
+  return ctx.sink;
 }
