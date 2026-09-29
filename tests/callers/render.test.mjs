@@ -86,6 +86,43 @@ test("with a boot workflow: boot job present, review needs: [boot], gate needs: 
   assert.deepEqual(doc.jobs.gate.needs, ["boot", "review"]);
 });
 
+const GATE_ENV = {
+  ALL_SUCCEEDED:
+    "${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}",
+  STATUS: "${{ needs.review.outputs.status }}",
+  ENFORCED: "${{ needs.review.outputs.enforced }}",
+};
+
+// Design 6.5's first gate property ("A dependency that failed, was
+// cancelled or was skipped fails the gate, because GitHub counts a skipped
+// job as a success and the gate must not inherit that") lives entirely in
+// the rendered caller: the `if: always()` that keeps the gate job from
+// itself being skipped, and the exact `ALL_SUCCEEDED` expression. Neither
+// is exercised by `tests/callers/gate.test.mjs`, which injects
+// `ALL_SUCCEEDED`/`STATUS`/`ENFORCED` directly, so these structural
+// assertions are what pins that half of the property, over both fixtures.
+test("the gate job: if: always(), exactly one step, no job-level permissions, and the exact design 6.5 env values", () => {
+  for (const fixture of [NO_BOOT, BOOT]) {
+    const doc = parseYaml(renderCaller(fixture));
+    assert.equal(doc.jobs.gate.if, "always()");
+    assert.equal(doc.jobs.gate.steps.length, 1);
+    assert.equal(doc.jobs.gate.permissions, undefined, "the gate job must have no job-level permissions of its own, so it inherits the top-level permissions: {}");
+    assert.deepEqual(doc.jobs.gate.steps[0].env, GATE_ENV);
+  }
+});
+
+test("no rendered caller job other than review/boot carries a uses:, and the gate has no steps beyond the one required step", () => {
+  for (const fixture of [NO_BOOT, BOOT]) {
+    const doc = parseYaml(renderCaller(fixture));
+    assert.deepEqual(Object.keys(doc.jobs.gate.steps[0]).sort(), ["env", "name", "run"]);
+    for (const [name, job] of Object.entries(doc.jobs)) {
+      if (name === "gate") continue;
+      assert.ok(["review", "boot"].includes(name), `unexpected job: ${name}`);
+      assert.ok(typeof job.uses === "string", `job ${name} is expected to be a uses: call`);
+    }
+  }
+});
+
 test("the stamp line is first and readManagedFile reads the rendered file as current (unmodified)", () => {
   for (const fixture of [NO_BOOT, BOOT]) {
     const rendered = renderCaller(fixture);

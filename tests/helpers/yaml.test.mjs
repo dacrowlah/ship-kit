@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, globSync, readFileSync } from "node:fs";
+import { existsSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { findKeyOccurrences, parseYaml, YamlSubsetError } from "./yaml.mjs";
+import { renderedTemplateVariants } from "./rendered-templates.mjs";
 
 test("comments are ignored", () => {
   const text = ["# a leading comment", "foo: bar # a trailing comment", "# a trailing comment line"].join("\n");
@@ -158,9 +161,10 @@ function hasYq() {
 // under templates/ may hold `<<placeholder>>` tokens (for example a column-0
 // whole-line placeholder standing in for an entire job), which are not valid
 // YAML on their own, so `yq` cannot parse it and it is not part of this
-// cross-check. A rendered caller (placeholders filled in) is real YAML and
-// is cross-checked once rendered by `tests/callers/render.test.mjs` and
-// `tests/callers/gate.test.mjs`.
+// cross-check. A rendered template (placeholders filled in, via the same
+// registered renderers `tests/workflows/no-expression-in-run.test.mjs` uses
+// for its expression gate) is real YAML and is cross-checked separately,
+// below.
 const yamlFixtures = [...globSync(".github/workflows/*.yml"), ...globSync("tests/fixtures/**/*.yml")].filter((path) =>
   existsSync(path),
 );
@@ -217,4 +221,33 @@ if (!hasYq()) {
       assert.deepEqual(fromWalk, fromYq);
     });
   }
+}
+
+// -- Rendered templates: placeholders filled in with representative values
+// (`tests/helpers/rendered-templates.mjs`), so the result is real,
+// standalone YAML the same way a workflow file already is, then
+// cross-checked against yq the same way. ---------------------------------
+
+if (hasYq()) {
+  for (const { path, variant, text } of renderedTemplateVariants()) {
+    test(`parse matches yq on a rendered template: ${path} [${variant}]`, () => {
+      const dir = mkdtempSync(join(tmpdir(), "ship-kit-yaml-yq-"));
+      try {
+        const rendered = join(dir, "rendered.yml");
+        writeFileSync(rendered, text);
+        const yqResult = spawnSync("yq", ["-o=json", rendered], { encoding: "utf8" });
+        assert.equal(yqResult.status, 0, `yq failed on rendered ${path} [${variant}]: ${yqResult.stderr}`);
+        const expected = JSON.parse(yqResult.stdout);
+        assert.deepEqual(parseYaml(text), expected);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+} else if (process.env.CI) {
+  test("parse matches yq on every rendered template (yq is required in CI)", () => {
+    assert.fail("yq is not installed; the cross-check against a real YAML parser did not run");
+  });
+} else {
+  test("parse matches yq on every rendered template (skipped: yq is not installed locally)", { skip: true }, () => {});
 }
