@@ -21,6 +21,10 @@ You cannot ask anyone; choose now and give the exact commands.
 2. Requires observing the red run before calling the test a guard.
 3. Says a test that stays green under the mutation cannot fail for its claim and must be fixed.
 
+## Run directory
+
+`scripts/lib/glob.mjs`, `tests/lib/glob.test.mjs` and `tests/lib/glob-reference.mjs`, copied at their relative paths.
+
 ## Criteria dropped or narrowed after the baseline
 
 The baseline (`baseline.md`) ran three attempts. Three of the five original criteria passed in every attempt without the skill, so the skill is not needed for them and no GREEN claim is made on them:

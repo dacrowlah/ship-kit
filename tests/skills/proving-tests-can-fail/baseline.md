@@ -2,7 +2,7 @@
 
 CLI: `claude --version` printed `2.1.284 (Claude Code)`.
 
-Run directory: a fresh `mktemp -d` holding only `scripts/lib/glob.mjs` and `tests/lib/glob.test.mjs`, copied at their relative paths. No plugin was loaded.
+Run directory: a fresh `mktemp -d` holding only `scripts/lib/glob.mjs` and `tests/lib/glob.test.mjs`, copied at their relative paths. No plugin was loaded. The run directory `scenario.md` now specifies also holds `tests/lib/glob-reference.mjs`, which `glob.test.mjs` imports; it was added after these attempts, so reruns match the repository, and the recorded GREEN runs use it. Without it, some runs remarked that the suite could not be green there; none of the criteria depends on that file.
 
 Command, per attempt (`N` is the attempt number; the prompt file holds that attempt's prompt, extracted from `scenario.md` as it stood then):
 
