@@ -78,6 +78,26 @@ test("get reads an empty 204 body as null", () => {
   assert.deepEqual(gh.get("x"), { status: 204, json: null });
 });
 
+test("get refuses an empty 200 body", () => {
+  const { gh } = ghWith([{ args: ["api", "--include", "x"], stdout: included(200, "", "OK") }]);
+  assert.throws(() => gh.get("x"), (e) => e instanceof CallError && /HTTP 200 body is not JSON/.test(e.message));
+});
+
+test("send refuses a whitespace-only 201 body", () => {
+  const { gh } = ghWith([{ args: ["api", "--include", "--method", "POST", "--input", "-", "x"], stdout: included(201, "  \n", "Created") }]);
+  assert.throws(() => gh.send("POST", "x", {}), (e) => e instanceof CallError && /HTTP 201 body is not JSON/.test(e.message));
+});
+
+test("get refuses a non-empty 204 body that is not JSON", () => {
+  const { gh } = ghWith([{ args: ["api", "--include", "x"], stdout: included(204, "junk", "No Content") }]);
+  assert.throws(() => gh.get("x"), CallError);
+});
+
+test("get reads an empty error body as null", () => {
+  const { gh } = ghWith([{ args: ["api", "--include", "x"], stdout: included(404, "", "Not Found"), code: 1 }]);
+  assert.deepEqual(gh.get("x"), { status: 404, json: null });
+});
+
 test("get refuses a 2xx status with a non-zero exit", () => {
   const { gh } = ghWith([{ args: ["api", "--include", "x"], stdout: included(200, {}), code: 1 }]);
   assert.throws(() => gh.get("x"), /exited 1/);
@@ -88,7 +108,10 @@ test("get reads a status line with LF-only headers", () => {
   assert.deepEqual(gh.get("x"), { status: 200, json: [1] });
 });
 
-for (const bad of ["", "-X", "--method=DELETE", "a b", "a\nb", "a\tb", "a\u007fb", "caf\u00e9", 5, null, undefined, ["x"]]) {
+for (const bad of [
+  "", "-X", "--method=DELETE", "a b", "a\nb", "a\tb", "a\u007fb", "caf\u00e9", 5, null, undefined, ["x"],
+  "https://evil.example/x", "repos/o/r/contents/a?ref=https://evil.example/", "repos/o/r#frag",
+]) {
   test(`get refuses the path ${JSON.stringify(bad)} before running gh`, () => {
     let ran = false;
     const gh = makeGh({ run: () => { ran = true; return ""; } });
@@ -197,10 +220,6 @@ for (const [name, pages] of [
   ["a page that is null", [null]],
   ["a page without the key", [{ total_count: 1, other: [1] }]],
   ["a page whose key is not an array", [{ total_count: 1, runs: { a: 1 } }]],
-  ["a missing total_count", [{ runs: [1] }]],
-  ["a negative total_count", [{ total_count: -1, runs: [] }]],
-  ["a fractional total_count", [{ total_count: 1.5, runs: [1] }]],
-  ["a string total_count", [{ total_count: "1", runs: [1] }]],
   ["no pages at all", []],
 ]) {
   test(`listKey refuses ${name}`, () => {
@@ -208,6 +227,28 @@ for (const [name, pages] of [
     assert.throws(() => gh.listKey("p", "runs"), CallError);
   });
 }
+
+for (const [name, pages] of [
+  ["a missing total_count", [{ runs: [1] }]],
+  ["a negative total_count", [{ total_count: -1, runs: [] }]],
+  ["a fractional total_count", [{ total_count: 1.5, runs: [1] }]],
+  ["a string total_count", [{ total_count: "1", runs: [1] }]],
+  ["a later page with a different total_count", [{ total_count: 2, runs: [1] }, { total_count: 5, runs: [2] }]],
+  ["a later page without a total_count", [{ total_count: 2, runs: [1] }, { runs: [2] }]],
+]) {
+  test(`listKey refuses ${name}`, () => {
+    const { gh } = ghWith([{ args: ["api", "--paginate", "--slurp", "p?per_page=100"], stdout: JSON.stringify(pages) }]);
+    assert.throws(() => gh.listKey("p", "runs"), (e) => e instanceof CallError && /total_count/.test(e.message) && !/truncated/.test(e.message));
+  });
+}
+
+test("listKey refuses a later page of the wrong shape as CallError", () => {
+  const { gh } = ghWith([{
+    args: ["api", "--paginate", "--slurp", "p?per_page=100"],
+    stdout: JSON.stringify([{ total_count: 101, runs: items(100) }, { total_count: 101, other: [1] }]),
+  }]);
+  assert.throws(() => gh.listKey("p", "runs"), (e) => e instanceof CallError && /page 2 /.test(e.message));
+});
 
 test("listKey refuses a non-zero exit", () => {
   const { gh } = ghWith([{
@@ -255,6 +296,13 @@ test("send returns a 422 without throwing", () => {
   }]);
   assert.equal(gh.send("PUT", "p", {}).status, 422);
 });
+
+for (const [name, body] of [["a function", () => 1], ["a symbol", Symbol("s")]]) {
+  test(`send refuses a body that does not serialise (${name})`, () => {
+    const gh = makeGh({ run: () => assert.fail("must not run") });
+    assert.throws(() => gh.send("POST", "p", body), TypeError);
+  });
+}
 
 for (const method of ["get", "POST ", "-X", "OPTIONS", "", 1]) {
   test(`send refuses the method ${JSON.stringify(method)}`, () => {
@@ -337,6 +385,12 @@ for (const [name, error] of [
     assert.throws(() => gh.cli(["pr", "list"]), CallError);
   });
 }
+
+test("a kill by signal after a complete response still throws", () => {
+  const error = Object.assign(new Error("killed"), { status: null, signal: "SIGKILL", stdout: included(404, { message: "Not Found" }) });
+  const gh = makeGh({ run: () => { throw error; } });
+  assert.throws(() => gh.get("x"), (e) => e instanceof CallError && /killed by SIGKILL/.test(e.message));
+});
 
 test("a buffer overflow is named as such", () => {
   const gh = makeGh({ run: () => { throw Object.assign(new Error("x"), { code: "ENOBUFS" }); } });

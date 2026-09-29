@@ -9,9 +9,15 @@
 //   so a caller can tell a 404 ("absent") from a 403 ("unreadable");
 // - `list` and `listKey` read every page or throw: a failed page, a page of
 //   the wrong shape or (for object endpoints) a collected count that differs
-//   from `total_count` is a `CallError`, never a silently shorter list;
+//   from `total_count` is a `CallError`, never a silently shorter list.
+//   An array endpoint carries no count, so `list` cannot see a listing the
+//   API itself stops at a hard cap (for example a pull request's files or
+//   commits); a caller of such an endpoint reconciles the length against
+//   the parent object's count;
+// - a 2xx response must carry a JSON body, except an empty 204;
 // - every `gh` process is bounded by a timeout and an output limit, and a
-//   request body travels on stdin, never in argv.
+//   request body travels on stdin, never in argv. `cli` names its full
+//   argv in errors, so its arguments must never carry a secret.
 
 import { execFileSync } from "node:child_process";
 
@@ -21,7 +27,9 @@ const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const NAME = /^[A-Za-z0-9._-]{1,100}$/;
 // A path handed to gh: printable ASCII without spaces, not starting with "-"
-// (which gh would read as a flag). Values are expected to be seg()-encoded.
+// (which gh would read as a flag), without "://" (which gh would read as a
+// full URL to another host) and without "#" (a fragment gh drops). Values
+// are expected to be seg()-encoded, which never produces any of these.
 const PATH = /^[!-~]+$/;
 const PER_PAGE = /[?&]per_page=/i;
 const STATUS_LINE = /^HTTP\/\d+(?:\.\d+)? ([1-5]\d\d)(?: [^\r\n]*)?\r?\n/;
@@ -84,7 +92,7 @@ export function api(strings, ...values) {
 }
 
 function checkPath(path) {
-  if (typeof path !== "string" || !PATH.test(path) || path.startsWith("-")) {
+  if (typeof path !== "string" || !PATH.test(path) || path.startsWith("-") || path.includes("://") || path.includes("#")) {
     throw new TypeError(`not an API path: ${JSON.stringify(path) ?? String(path)}`);
   }
   return path;
@@ -164,8 +172,10 @@ export function makeGh({ run = execFileSync, timeoutMs = 60000 } = {}) {
     const { status, body } = splitIncluded(stdout, command);
     const ok = status >= 200 && status < 300;
     if (ok && code !== 0) throw new CallError(`${command}: HTTP ${status} but gh exited ${code}${stderrOf(error)}`);
-    if (body.trim() === "") return { status, json: null };
-    if (ok) return { status, json: parseJson(body, command, `the HTTP ${status} body`) };
+    if (ok) {
+      if (status === 204 && body.trim() === "") return { status, json: null };
+      return { status, json: parseJson(body, command, `the HTTP ${status} body`) };
+    }
     try {
       return { status, json: JSON.parse(body) };
     } catch {
@@ -213,6 +223,11 @@ export function makeGh({ run = execFileSync, timeoutMs = 60000 } = {}) {
       });
       const total = all[0].total_count;
       if (!Number.isSafeInteger(total) || total < 0) throw new CallError(`${command}: page 1 has no valid total_count`);
+      all.forEach((page, i) => {
+        if (page.total_count !== total) {
+          throw new CallError(`${command}: page ${i + 1} total_count ${JSON.stringify(page.total_count)} differs from page 1's ${total}`);
+        }
+      });
       if (out.length !== total) {
         throw new CallError(`${command}: listing truncated or inconsistent: collected ${out.length} of ${total} ${key}`);
       }
@@ -223,7 +238,9 @@ export function makeGh({ run = execFileSync, timeoutMs = 60000 } = {}) {
       if (typeof method !== "string" || !METHODS.has(method)) throw new TypeError(`unsupported method: ${JSON.stringify(method)}`);
       checkPath(path);
       if (body === undefined) return included(["api", "--include", "--method", method, path]);
-      return included(["api", "--include", "--method", method, "--input", "-", path], JSON.stringify(body));
+      const input = JSON.stringify(body);
+      if (typeof input !== "string") throw new TypeError("send body must serialise to JSON");
+      return included(["api", "--include", "--method", method, "--input", "-", path], input);
     },
 
     cli(args) {
