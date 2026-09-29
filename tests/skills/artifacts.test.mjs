@@ -16,7 +16,13 @@ const RELATIVE_IMPORTS = [
   /\bfrom\s*(["'])(\.\.?\/[^"']+)\1/g,
   /\bimport\s*\(\s*(["'])(\.\.?\/[^"']+)\1\s*\)/g,
   /^\s*import\s*(["'])(\.\.?\/[^"']+)\1/gm,
+  /\brequire\s*\(\s*(["'])(\.\.?\/[^"']+)\1\s*\)/g,
+  /\bnew\s+URL\s*\(\s*(["'])(\.\.?\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)/g,
 ];
+/** Header of the column holding the excuses in a rationalization table. */
+const EXCUSE_HEADER = /excuse|rationali|thought/i;
+/** The furthest one piece of a ` ... ` quote may start after the previous piece ends. */
+export const MAX_PIECE_GAP = 400;
 
 /** @param {string} root @param {string} skill @param {string} file @returns {string | null} */
 const readRecord = (root, skill, file) => {
@@ -24,31 +30,64 @@ const readRecord = (root, skill, file) => {
   return existsSync(path) ? readFileSync(path, "utf8").replace(/\r\n/g, "\n") : null;
 };
 
-/** Lines of a Markdown text that sit outside fenced code blocks. @param {string} text @returns {string[]} */
-export function linesOutsideFences(text) {
-  const out = [];
-  let fence = null;
-  for (const line of text.split("\n")) {
-    const open = line.match(/^\s*(`{3,}|~{3,})/);
-    if (fence === null && open) fence = open[1];
-    else if (fence !== null && line.trim().startsWith(fence) && line.trim().replace(/[`~]/g, "") === "") fence = null;
-    else if (fence === null) out.push(line);
-  }
-  return out;
+/**
+ * Marks each line as inside or outside a fenced code block, following
+ * CommonMark: an opener is up to three spaces, then three or more backticks
+ * (with no backtick in the info string) or tildes; a closer is the same
+ * character, at least as long, with nothing but spaces after it.
+ * @param {string} text
+ * @returns {{lines: {text: string, fenced: boolean}[], unclosed: number | null}} unclosed is the 1-based line of a fence never closed
+ */
+export function fenceMap(text) {
+  const lines = [];
+  let open = null;
+  text.split("\n").forEach((line, index) => {
+    if (open === null) {
+      const opener = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (opener && !(opener[1][0] === "`" && opener[2].includes("`"))) {
+        open = { fence: opener[1], line: index + 1 };
+        lines.push({ text: line, fenced: true });
+      } else lines.push({ text: line, fenced: false });
+      return;
+    }
+    const closer = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+    if (closer && closer[1][0] === open.fence[0] && closer[1].length >= open.fence.length) open = null;
+    lines.push({ text: line, fenced: true });
+  });
+  return { lines, unclosed: open === null ? null : open.line };
 }
 
+/** Lines of a Markdown text that sit outside fenced code blocks. @param {string} text @returns {string[]} */
+export function linesOutsideFences(text) {
+  return fenceMap(text).lines.filter((l) => !l.fenced).map((l) => l.text);
+}
+
+/** @param {string} where @param {string} text @returns {string[]} a violation when a fence is never closed */
+const unclosedFence = (where, text) => {
+  const line = fenceMap(text).unclosed;
+  return line === null ? [] : [`${where}: code fence opened at line ${line} is never closed`];
+};
+
 /**
- * The body of a `## <heading>` section: the lines up to the next `## ` or
- * `# ` heading, outside fences. Null when the section is absent.
- * @param {string} text @param {string} heading @returns {string[] | null}
+ * The bodies of every `## <heading>` section: the lines up to the next
+ * `## ` or `# ` heading, outside fences.
+ * @param {string} text @param {string} heading @returns {string[][]}
  */
-export function section(text, heading) {
+export function sections(text, heading) {
   const lines = linesOutsideFences(text);
-  const start = lines.indexOf(`## ${heading}`);
-  if (start === -1) return null;
-  const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => /^#{1,2} /.test(line));
-  return end === -1 ? rest : rest.slice(0, end);
+  const found = [];
+  lines.forEach((line, start) => {
+    if (line !== `## ${heading}`) return;
+    const rest = lines.slice(start + 1);
+    const end = rest.findIndex((l) => /^#{1,2} /.test(l));
+    found.push(end === -1 ? rest : rest.slice(0, end));
+  });
+  return found;
+}
+
+/** The first `## <heading>` section's body, or null. @param {string} text @param {string} heading */
+export function section(text, heading) {
+  return sections(text, heading)[0] ?? null;
 }
 
 /** Every skill carries its pressure-test record (design 21.5). @returns {string[]} */
@@ -77,6 +116,11 @@ export function checkRecordHeaders(root) {
     const where = `tests/skills/${skill.name}/result.md`;
     const result = readRecord(root, skill.name, "result.md");
     if (result === null) continue;
+    const fence = unclosedFence(where, result);
+    if (fence.length > 0) {
+      violations.push(...fence);
+      continue;
+    }
     const lines = linesOutsideFences(result);
     const hashes = lines.flatMap((line) => HASH_LINE.exec(line)?.slice(1) ?? []);
     if (hashes.length !== 1) violations.push(`${where}: expected one Shipped-text SHA-256 line, found ${hashes.length}`);
@@ -112,7 +156,9 @@ const isRepoFile = (root, rel) => {
 };
 
 /**
- * Relative import specifiers of a module, resolved against its directory.
+ * Relative module and file specifiers of a module (static, dynamic and
+ * side-effect imports, `require`, `new URL(<rel>, import.meta.url)`),
+ * resolved against its directory.
  * @param {string} text module source @param {string} rel the module's repo path
  * @returns {string[]} repo-relative paths, possibly escaping the repo
  */
@@ -125,7 +171,7 @@ export function relativeImports(text, rel) {
 }
 
 /**
- * scenario.md has a `## Run directory` section that says `None.` or lists
+ * scenario.md has one `## Run directory` section that says `None.` or lists
  * backticked repository files, and every relative import of a listed code
  * file is listed too.
  * @param {string} root @returns {string[]}
@@ -136,12 +182,17 @@ export function checkRunDirectories(root) {
     const where = `tests/skills/${skill.name}/scenario.md`;
     const scenario = readRecord(root, skill.name, "scenario.md");
     if (scenario === null) continue;
-    const body = section(scenario, "Run directory");
-    if (body === null) {
-      violations.push(`${where}: no ## Run directory section`);
+    const fence = unclosedFence(where, scenario);
+    if (fence.length > 0) {
+      violations.push(...fence);
       continue;
     }
-    const text = body.join("\n").trim();
+    const found = sections(scenario, "Run directory");
+    if (found.length !== 1) {
+      violations.push(found.length === 0 ? `${where}: no ## Run directory section` : `${where}: more than one ## Run directory section`);
+      continue;
+    }
+    const text = found[0].join("\n").trim();
     const listed = [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
     if (text === "None.") continue;
     if (listed.length === 0) {
@@ -168,25 +219,40 @@ const markdownUnder = (dir) =>
     return entry.isFile() && entry.name.endsWith(".md") ? [path] : [];
   });
 
-/** @param {string} line @returns {string[]} the cells of a Markdown table row */
-const cells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+/** @param {string} line @returns {string[]} the cells of a Markdown table row, leading and trailing pipes optional */
+const cells = (line) =>
+  line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/(?<!\\)\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((c) => c.trim());
+
+/** @param {string} line @returns {boolean} a table delimiter row such as `|---|:--:|` or `--- | ---` */
+const isDelimiterRow = (line) => line.includes("-") && cells(line).every((c) => /^:?-+:?$/.test(c));
+
+/** @param {string} cell @returns {string} the header text without emphasis or code marks */
+const plainHeader = (cell) => cell.replace(/[*_`]/g, "").trim();
 
 /**
- * The first cell of every data row in a rationalization table (one whose
- * header's first cell is Excuse or Rationalization).
+ * The excuse cell of every data row in a rationalization table: a table
+ * (a header row with a pipe, then a delimiter row) whose header names an
+ * excuse, rationalization or thought column. Fenced tables count, since
+ * the model reads them too. A table runs until a blank line or a heading.
  * @param {string} text @returns {string[]}
  */
 export function rationalizationCells(text) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
   const rows = [];
-  let inTable = false;
-  for (const line of linesOutsideFences(text.replace(/\r\n/g, "\n"))) {
-    if (!line.trim().startsWith("|")) {
-      inTable = false;
-      continue;
+  for (let i = 0; i + 1 < lines.length; i += 1) {
+    if (!lines[i].includes("|") || !isDelimiterRow(lines[i + 1])) continue;
+    const column = cells(lines[i]).findIndex((c) => EXCUSE_HEADER.test(plainHeader(c)));
+    if (column === -1) continue;
+    let j = i + 2;
+    for (; j < lines.length && lines[j].trim() !== "" && !/^\s{0,3}#/.test(lines[j]) && !/^\s{0,3}(`{3,}|~{3,})/.test(lines[j]); j += 1) {
+      rows.push(cells(lines[j])[column] ?? "");
     }
-    const first = cells(line)[0];
-    if (!inTable && /^(excuses?|rationalizations?)$/i.test(first)) inTable = true;
-    else if (inTable && !/^:?-+:?$/.test(first)) rows.push(first);
+    i = j - 1;
   }
   return rows;
 }
@@ -195,34 +261,85 @@ export function rationalizationCells(text) {
 const collapse = (text) => text.replace(/\s+/g, " ");
 
 /**
- * The fragments a rationalization cell claims were observed: every quoted
- * string, split at ` ... `, trailing `.,;:!?` trimmed. Empty when the cell
- * quotes nothing.
- * @param {string} cell @returns {string[]}
+ * The quotes a rationalization cell claims were observed: one entry per
+ * quoted string, each split at ` ... ` into pieces with whitespace collapsed
+ * and trailing `.,;:!?` trimmed. Empty when the cell quotes nothing.
+ * @param {string} cell @returns {string[][]}
  */
-export function quotedFragments(cell) {
-  return [...cell.matchAll(/"([^"]*)"/g)].flatMap((m) =>
+export function quotedPieces(cell) {
+  return [...cell.matchAll(/"([^"]*)"/g)].map((m) =>
     m[1].split(" ... ").map((part) => collapse(part).trim().replace(/[.,;:!?]+$/, "").trim()),
   );
 }
 
 /**
+ * A record split into its attempts: the text between headings outside
+ * fences, each with whitespace collapsed.
+ * @param {string} text @returns {string[]}
+ */
+export function attemptSections(text) {
+  const out = [[]];
+  for (const line of fenceMap(text).lines) {
+    if (!line.fenced && /^ {0,3}#{1,6}(\s|$)/.test(line.text)) out.push([]);
+    out.at(-1).push(line.text);
+  }
+  return out.map((lines) => collapse(lines.join("\n")));
+}
+
+/**
+ * True when the pieces occur in `text` in order, each starting at most
+ * MAX_PIECE_GAP characters after the previous one ends.
+ * @param {string} text @param {string[]} pieces @param {number} [from] @param {boolean} [first]
+ */
+export function piecesInOrder(text, pieces, from = 0, first = true) {
+  if (pieces.length === 0) return true;
+  const [piece, ...rest] = pieces;
+  for (let at = text.indexOf(piece, from); at !== -1; at = text.indexOf(piece, at + 1)) {
+    if (!first && at - from > MAX_PIECE_GAP) return false;
+    if (piecesInOrder(text, rest, at + piece.length, false)) return true;
+  }
+  return false;
+}
+
+/**
  * Every rationalization row quotes only excuses observed in a RED or GREEN
- * run: each fragment appears verbatim in baseline.md or result.md.
+ * run: no piece is prompt text (scenario.md's `## Prompt`, options
+ * included, compared case-insensitively), and all the pieces of one quote
+ * occur in order, close together, within one attempt of baseline.md or
+ * result.md.
  * @param {string} root @returns {string[]}
  */
 export function checkRationalizations(root) {
   const violations = [];
   for (const skill of listSkills(root)) {
-    const observed = ["baseline.md", "result.md"].map((file) => collapse(readRecord(root, skill.name, file) ?? ""));
+    const records = ["baseline.md", "result.md"].map((file) => [file, readRecord(root, skill.name, file) ?? ""]);
+    const broken = records.flatMap(([file, text]) => unclosedFence(`tests/skills/${skill.name}/${file}`, text));
+    if (broken.length > 0) {
+      violations.push(...broken);
+      continue;
+    }
+    const attempts = records.flatMap(([, text]) => attemptSections(text));
+    const prompt = collapse((section(readRecord(root, skill.name, "scenario.md") ?? "", "Prompt") ?? []).join("\n")).toLowerCase();
     for (const file of markdownUnder(skill.dir)) {
       const where = `skills/${skill.name}/${file.slice(skill.dir.length + 1)}`;
-      for (const cell of rationalizationCells(readFileSync(file, "utf8"))) {
-        const fragments = quotedFragments(cell);
-        if (fragments.length === 0) violations.push(`${where}: rationalization row quotes nothing: ${cell}`);
-        for (const fragment of fragments) {
-          if (fragment === "" || !observed.some((text) => text.includes(fragment))) {
-            violations.push(`${where}: "${fragment}" is not an observed quote in baseline.md or result.md`);
+      const text = readFileSync(file, "utf8");
+      const rows = rationalizationCells(text);
+      if (rows.length === 0 && linesOutsideFences(text).some((l) => /^#{1,6}\s.*rationali/i.test(l))) {
+        violations.push(`${where}: the Rationalizations section has no table rows`);
+      }
+      for (const cell of rows) {
+        const quotes = quotedPieces(cell);
+        if (quotes.length === 0) violations.push(`${where}: rationalization row quotes nothing: ${cell}`);
+        if (quotes.some((pieces) => pieces.includes(""))) {
+          violations.push(`${where}: empty quoted string in rationalization row: ${cell}`);
+          continue;
+        }
+        for (const pieces of quotes) {
+          const fromPrompt = pieces.filter((piece) => prompt.includes(piece.toLowerCase()));
+          for (const piece of fromPrompt) violations.push(`${where}: "${piece}" is prompt text in scenario.md, not an observed excuse`);
+          if (fromPrompt.length > 0) continue;
+          if (!attempts.some((attempt) => piecesInOrder(attempt, pieces))) {
+            violations.push(`${where}: "${pieces.join(" ... ")}" is not an observed quote in baseline.md or result.md`);
           }
         }
       }
@@ -396,9 +513,9 @@ test("every rationalization row is an observed quote", () => {
   assert.deepEqual(checkRationalizations(REPO), []);
   const row = (cell, extra = {}) =>
     fixture({ "skills/mining-x/SKILL.md": SKILL_MD.replace('"ship it tonight"', cell), ...extra });
-  // Found only in scenario.md: not observed.
+  // Found only in scenario.md: prompt text, not observed.
   assert.deepEqual(checkRationalizations(row('"Do the thing."')), [
-    'skills/mining-x/SKILL.md: "Do the thing" is not an observed quote in baseline.md or result.md',
+    'skills/mining-x/SKILL.md: "Do the thing" is prompt text in scenario.md, not an observed excuse',
   ]);
   // Found in baseline.md: observed.
   assert.deepEqual(checkRationalizations(row('"I will ship it tonight."')), []);
@@ -406,7 +523,7 @@ test("every rationalization row is an observed quote", () => {
   assert.deepEqual(checkRationalizations(row('"it is fine ... trust me"')), []);
   // A ` ... ` split row with one fragment missing.
   assert.deepEqual(checkRationalizations(row('"it is fine ... do not worry"')), [
-    'skills/mining-x/SKILL.md: "do not worry" is not an observed quote in baseline.md or result.md',
+    'skills/mining-x/SKILL.md: "it is fine ... do not worry" is not an observed quote in baseline.md or result.md',
   ]);
   // Several quoted strings in one cell: each is checked.
   assert.deepEqual(checkRationalizations(row('"ship it tonight", "trust me", "never said"')), [
@@ -433,7 +550,7 @@ test("every rationalization row is an observed quote", () => {
   ]);
 });
 
-test("tables that are not rationalization tables, and fenced tables, are not checked", () => {
+test("tables that are not rationalization tables are not checked; fenced ones and unpiped rows are", () => {
   const text = [
     "| Exit | Meaning |",
     "|---|---|",
@@ -451,6 +568,119 @@ test("tables that are not rationalization tables, and fenced tables, are not che
     "Not a row.",
     '| "after" | x |',
   ].join("\n");
-  assert.deepEqual(rationalizationCells(text), ['"real"']);
-  assert.deepEqual(quotedFragments('"a ... b.", "c!?"'), ["a", "b", "c"]);
+  assert.deepEqual(rationalizationCells(text), ['"fenced"', '"real"', "Not a row.", '"after"']);
+  assert.deepEqual(quotedPieces('"a ... b.", "c!?"'), [["a", "b"], ["c"]]);
+});
+
+test("a quote that is prompt text fails even when a record copies the prompt", () => {
+  const prompt = SCENARIO.replace("Do the thing.", "Do the thing.\n\nA) Ship it tonight anyway.\nB) Wait.");
+  const baseline = `${BASELINE}Prompt: Do the thing. A) Ship it tonight anyway.\n`;
+  const row = (cell) =>
+    fixture({
+      "skills/mining-x/SKILL.md": SKILL_MD.replace('"ship it tonight"', cell),
+      "tests/skills/mining-x/scenario.md": prompt,
+      "tests/skills/mining-x/baseline.md": baseline,
+    });
+  assert.deepEqual(checkRationalizations(row('"Do the thing."')), [
+    'skills/mining-x/SKILL.md: "Do the thing" is prompt text in scenario.md, not an observed excuse',
+  ]);
+  assert.deepEqual(checkRationalizations(row('"do THE   thing"')), [
+    'skills/mining-x/SKILL.md: "do THE thing" is prompt text in scenario.md, not an observed excuse',
+  ]);
+  assert.deepEqual(checkRationalizations(row('"it is fine ... Ship it tonight anyway"')), [
+    'skills/mining-x/SKILL.md: "Ship it tonight anyway" is prompt text in scenario.md, not an observed excuse',
+  ]);
+  assert.deepEqual(checkRationalizations(row('"I will ship it tonight"')), []);
+});
+
+test("the pieces of a split quote must appear in order, in one attempt of one record, close together", () => {
+  const records = (baseline, result = "Shipped-text SHA-256: x\n") => ({
+    "tests/skills/mining-x/baseline.md": baseline,
+    "tests/skills/mining-x/result.md": result,
+  });
+  const row = (cell, extra) => fixture({ "skills/mining-x/SKILL.md": SKILL_MD.replace('"ship it tonight"', cell), ...extra });
+  const attempts = "## Attempt 1\n\nI'd accept that the table covers it.\n\n## Attempt 3\n\nskip it and ship as-is.\n";
+  assert.deepEqual(checkRationalizations(row('"I\'d accept that ... skip it and ship as-is"', records(attempts))), [
+    `skills/mining-x/SKILL.md: "I'd accept that ... skip it and ship as-is" is not an observed quote in baseline.md or result.md`,
+  ]);
+  assert.deepEqual(
+    checkRationalizations(row('"alpha said ... beta said"', records("## A\n\nalpha said\n", "## A\n\nbeta said\n"))),
+    ['skills/mining-x/SKILL.md: "alpha said ... beta said" is not an observed quote in baseline.md or result.md'],
+  );
+  assert.deepEqual(checkRationalizations(row('"beta said ... alpha said"', records("alpha said, then beta said\n"))), [
+    'skills/mining-x/SKILL.md: "beta said ... alpha said" is not an observed quote in baseline.md or result.md',
+  ]);
+  const far = `alpha said ${"x".repeat(401)} beta said\n`;
+  assert.deepEqual(checkRationalizations(row('"alpha said ... beta said"', records(far))), [
+    'skills/mining-x/SKILL.md: "alpha said ... beta said" is not an observed quote in baseline.md or result.md',
+  ]);
+  const near = `alpha said ${"x".repeat(398)} beta said\n`;
+  assert.deepEqual(checkRationalizations(row('"alpha said ... beta said"', records(near))), []);
+  // A later occurrence of the first piece can start the match.
+  assert.deepEqual(checkRationalizations(row('"alpha said ... beta said"', records(`alpha said ${"x".repeat(500)} alpha said, beta said\n`))), []);
+  // A heading inside a fenced block does not split an attempt.
+  assert.deepEqual(checkRationalizations(row('"alpha said ... beta said"', records("```\nalpha said\n## Inner\nbeta said\n```\n"))), []);
+  // A single quote that crosses an attempt heading is not observed either.
+  assert.deepEqual(checkRationalizations(row('"alpha said beta said"', records("alpha said\n## B\nbeta said\n"))), [
+    'skills/mining-x/SKILL.md: "alpha said beta said" is not an observed quote in baseline.md or result.md',
+  ]);
+});
+
+test("an empty quoted string or piece fails", () => {
+  const row = (cell) => fixture({ "skills/mining-x/SKILL.md": SKILL_MD.replace('"ship it tonight"', cell) });
+  assert.deepEqual(checkRationalizations(row('"", "ship it tonight"')), [
+    'skills/mining-x/SKILL.md: empty quoted string in rationalization row: "", "ship it tonight"',
+  ]);
+  assert.deepEqual(checkRationalizations(row('" ... trust me"')), [
+    'skills/mining-x/SKILL.md: empty quoted string in rationalization row: " ... trust me"',
+  ]);
+});
+
+test("rationalization tables are found by any excuse-column header, with or without pipes, fenced or not", () => {
+  const table = (header, sep = "|---|---|", row = '| "never said" | No. |') =>
+    fixture({ "skills/mining-x/SKILL.md": SKILL_MD.replace("| Excuse | Reality |\n|---|---|\n| \"ship it tonight\" | No. |", `${header}\n${sep}\n${row}`) });
+  const unobserved = ['skills/mining-x/SKILL.md: "never said" is not an observed quote in baseline.md or result.md'];
+  assert.deepEqual(checkRationalizations(table("| **Excuse** | Reality |")), unobserved);
+  assert.deepEqual(checkRationalizations(table("| _Rationalization_ | Reality |")), unobserved);
+  assert.deepEqual(checkRationalizations(table("| Thought | Reality |")), unobserved);
+  assert.deepEqual(checkRationalizations(table("| Excuse (heard) | Reality |")), unobserved);
+  assert.deepEqual(checkRationalizations(table("| Reality | Excuse |", "|---|---|", '| No. | "never said" |')), unobserved);
+  assert.deepEqual(checkRationalizations(table("Excuse | Reality", "--- | ---", '"never said" | No.')), unobserved);
+  const fenced = fixture({
+    "skills/mining-x/SKILL.md": `${SKILL_MD}\n\`\`\`\n| Excuse | Reality |\n|---|---|\n| "never said" | No. |\n\`\`\`\n`,
+  });
+  assert.deepEqual(checkRationalizations(fenced), unobserved);
+  // A row that is not piped still belongs to the table until a blank line or heading.
+  assert.deepEqual(checkRationalizations(table("| Excuse | Reality |", "|---|---|", '| "ship it tonight" | No. |\nnever quoted')), [
+    "skills/mining-x/SKILL.md: rationalization row quotes nothing: never quoted",
+  ]);
+  const empty = fixture({ "skills/mining-x/SKILL.md": "---\nname: mining-x\ndescription: Use when testing.\n---\n\n## Rationalizations\n\nNone yet.\n" });
+  assert.deepEqual(checkRationalizations(empty), [
+    "skills/mining-x/SKILL.md: the Rationalizations section has no table rows",
+  ]);
+});
+
+test("an unclosed code fence in a record fails instead of hiding what follows", () => {
+  const hash = shippedTextHash(join(fixture(), "skills", "mining-x"));
+  const result = fixture({
+    "tests/skills/mining-x/result.md": `Shipped-text SHA-256: ${hash}\nDiscriminating criteria: 1\n\n\`\`\`text\nopen\n`,
+  });
+  assert.deepEqual(checkRecordHeaders(result), ["tests/skills/mining-x/result.md: code fence opened at line 4 is never closed"]);
+  const scenario = fixture({ "tests/skills/mining-x/scenario.md": `${SCENARIO}\n~~~~\n## Run directory\n\n\`gone.mjs\`\n` });
+  assert.deepEqual(checkRunDirectories(scenario), [`tests/skills/mining-x/scenario.md: code fence opened at line ${SCENARIO.split("\n").length + 1} is never closed`]);
+  const baseline = fixture({ "tests/skills/mining-x/baseline.md": `${BASELINE}\`\`\`\n` });
+  assert.deepEqual(checkRationalizations(baseline), ["tests/skills/mining-x/baseline.md: code fence opened at line 2 is never closed"]);
+  // An info string holding a backtick does not open a fence; a shorter closer does not close one.
+  assert.deepEqual(fenceMap("```not-closed`\ntext").unclosed, null);
+  assert.deepEqual(fenceMap("````\n```\n````\nafter").lines.map((l) => l.fenced), [true, true, true, false]);
+});
+
+test("a second Run directory section fails", () => {
+  const root = fixture({ "tests/skills/mining-x/scenario.md": `${SCENARIO}\n## Run directory\n\n\`lib/gone.mjs\`\n` });
+  assert.deepEqual(checkRunDirectories(root), ["tests/skills/mining-x/scenario.md: more than one ## Run directory section"]);
+});
+
+test("require() and new URL(..., import.meta.url) count as relative imports", () => {
+  const source = ['const x = require("./x.cjs");', "const f = new URL('../fixtures/f.json', import.meta.url);", 'const g = new URL("./g.txt",import.meta.url);'].join("\n");
+  assert.deepEqual(relativeImports(source, "lib/a.mjs"), ["fixtures/f.json", "lib/g.txt", "lib/x.cjs"]);
 });

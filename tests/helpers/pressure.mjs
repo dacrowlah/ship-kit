@@ -21,6 +21,7 @@ const MARKER_VALUE = /^[a-z0-9][a-z0-9-]*@[^\s:]+:([0-9a-f]{16})$/;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]*$/;
 const BASE_PREFIX = "Base directory for this skill: ";
 const CONTENT_HASH = /^[0-9a-f]{64}$/;
+const ARGUMENTS_SUFFIX = "\n\nARGUMENTS: ";
 const PLUGIN_REFERENCE = /\$\{CLAUDE_PLUGIN_ROOT\}\/([A-Za-z0-9._/-]+)/g;
 
 class UsageError extends Error {}
@@ -90,10 +91,13 @@ export function stagedTreeHash(dir) {
  * True when `loaded`, the skill body a run showed after "Base directory
  * for this skill:", equals SKILL.md without its frontmatter once the
  * plugin-root and skill-dir variables are substituted as Claude Code does.
+ * When SKILL.md has no `$ARGUMENTS` and the run passed arguments, Claude
+ * Code appends "\n\nARGUMENTS: <args>" to the body; that exact suffix,
+ * with arguments the run's Skill call passed, is also accepted.
  * @param {string} skillText SKILL.md content @param {string} loaded
- * @param {{pluginPath: string, skill: string}} options
+ * @param {{pluginPath: string, skill: string, args?: string[]}} options
  */
-export function loadedBodyMatches(skillText, loaded, { pluginPath, skill }) {
+export function loadedBodyMatches(skillText, loaded, { pluginPath, skill, args = [] }) {
   let body = skillText.replace(/\r\n/g, "\n");
   if (body.startsWith("---\n")) {
     const end = body.indexOf("\n---\n", 3);
@@ -106,7 +110,11 @@ export function loadedBodyMatches(skillText, loaded, { pluginPath, skill }) {
     .join(`${pluginPath}/skills/${skill}`)
     .split("$ARGUMENTS")
     .join("");
-  return expected.trim() === loaded.replace(/\r\n/g, "\n").trim();
+  const text = loaded.replace(/\r\n/g, "\n");
+  if (expected.trim() === text.trim()) return true;
+  if (body.includes("$ARGUMENTS")) return false;
+  const at = text.lastIndexOf(ARGUMENTS_SUFFIX);
+  return at !== -1 && args.includes(text.slice(at + ARGUMENTS_SUFFIX.length)) && expected.trim() === text.slice(0, at).trim();
 }
 
 /** @param {string} parent @param {string} path @returns {boolean} path is parent or below it */
@@ -183,7 +191,7 @@ const contentOf = (message) => (Array.isArray(message.message?.content) ? messag
  * Decides whether a stream-json run counts as a GREEN run of `ship-kit:<skill>`.
  * @param {string} text the stream, one JSON message per line
  * @param {{skill: string, dmi?: boolean, marker?: string | null}} options
- * @returns {{ok: true, text: string, pluginPath: string, loadedBodies: string[]} | {ok: false, reason: string}}
+ * @returns {{ok: true, text: string, pluginPath: string, loadedBodies: string[], skillArgs: string[]} | {ok: false, reason: string}}
  */
 export function checkStream(text, { skill, dmi = false, marker = null }) {
   const qualified = `ship-kit:${skill}`;
@@ -244,7 +252,16 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
   } else if (!invokedSkill(messages, inits[0], qualified)) {
     return { ok: false, reason: `no Skill tool call invoked ${qualified} successfully` };
   }
-  return { ok: true, text: redactToken(final.result, marker ?? undefined), pluginPath, loadedBodies };
+  const skillArgs = messages.flatMap((m) =>
+    m.type === "assistant" && isTopLevel(m)
+      ? contentOf(m).flatMap((b) =>
+          isObject(b) && b.type === "tool_use" && b.name === "Skill" && b.input?.skill === qualified && typeof b.input.args === "string"
+            ? [b.input.args]
+            : [],
+        )
+      : [],
+  );
+  return { ok: true, text: redactToken(final.result, marker ?? undefined), pluginPath, loadedBodies, skillArgs };
 }
 
 /**
@@ -349,14 +366,14 @@ export function shippedTextHash(dir) {
  * @param {{pluginPath: string, loadedBodies: string[]}} verdict @param {string} skill
  * @returns {string | null} the failed condition, or null
  */
-function verifyStaged({ pluginPath, loadedBodies }, skill) {
+function verifyStaged({ pluginPath, loadedBodies, skillArgs = [] }, skill) {
   const skillFile = join(pluginPath, "skills", skill, "SKILL.md");
   if (!existsSync(skillFile)) return `the staged plugin the run loaded has no skills/${skill}/SKILL.md`;
   if (stagedTreeHash(pluginPath) !== basename(pluginPath)) {
     return `the staged copy at ${pluginPath} does not match its content hash`;
   }
   const text = readFileSync(skillFile, "utf8");
-  if (!loadedBodies.every((body) => loadedBodyMatches(text, body, { pluginPath, skill }))) {
+  if (!loadedBodies.every((body) => loadedBodyMatches(text, body, { pluginPath, skill, args: skillArgs }))) {
     return "the loaded skill body differs from the staged SKILL.md";
   }
   return null;
