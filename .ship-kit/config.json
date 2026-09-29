@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "shipKit": { "version": "0.1.0", "sha": "5835a220529882e7ec6a86efd781362c28344f0a" },
+  "review": {
+    "specDirs": ["docs/design/"],
+    "planDirs": ["docs/plans/"],
+    "seats": {
+      "general": { "mode": "required" },
+      "adversarial": { "mode": "required" }
+    }
+  }
+}
