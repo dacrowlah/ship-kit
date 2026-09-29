@@ -202,7 +202,7 @@ and in the naming test.
 | `scripts/review/override.mjs` | parse and authorize overrides and rebuttals | 11 |
 | `scripts/review/local-seats.mjs` | run seats headless for `/ship` | 15.3 |
 | `scripts/review/extract-tree.mjs` | write the PR head tree as plain files, symlinks as placeholders | 6.3 |
-| `scripts/review/receipt.mjs` | write a seat receipt from the environment | 6.3 |
+| `scripts/review/receipt.mjs` | write a seat receipt from the action's execution file, withholding credential-shaped output | 6.3 |
 | `scripts/release/bump-version.mjs` | bump `plugin.json` and regenerate seat marker tokens | 6.4 |
 | `scripts/coverage/lcov.mjs` | parse and merge LCOV | 12 |
 | `scripts/coverage/patch-coverage.mjs` | changed-line coverage | 12 |
@@ -244,7 +244,7 @@ every script through its interpreter (`node ...`, `bash ...`) using
 | `templates/blocks/claude-md-workflow.md` | inside the repo's `CLAUDE.md` | managed block |
 | `templates/files/preflight.mjs` | `.ship-kit/preflight.mjs` | managed file |
 | `templates/files/pre-push` | `.githooks/pre-push` | managed file |
-| `templates/files/config.json` | `.ship-kit/config.json` | user-owned, stamped |
+| `templates/files/config.json` | `.ship-kit/config.json` | user-owned; carries `shipKit.version` and `shipKit.sha`, no body hash (19.2) |
 | `templates/files/hunt-list-code.md` | `.ship-kit/hunt-lists/code.md` | user-owned seed |
 | `templates/files/hunt-list-design.md` | `.ship-kit/hunt-lists/design.md` | user-owned seed |
 
@@ -549,14 +549,17 @@ ship-kit release.
 `persist-credentials: false`; `fetch-depth: 0` in plan, which needs
 history for merge bases and ancestry (8.2), and 1 elsewhere). Everything
 else lives under `$RUNNER_TEMP/ship-kit/`, outside the checkout, each
-directory deleted and recreated before it is written:
+directory deleted and recreated before it is written. Every artifact name
+ends in the run attempt (`<attempt>` is `github.run_attempt`), so "Re-run
+all jobs" writes and reads only its own attempt's artifacts, never an
+earlier attempt's:
 
 | Directory | Content | How |
 |---|---|---|
 | `src/` | ship-kit at `job.workflow_sha` | `git init`, `git fetch --depth 1 https://github.com/<job.workflow_repository> <job.workflow_sha>`, checkout `FETCH_HEAD` (ship-kit is public; no credential) |
 | `deps/claude-plugins-official/` | the official marketplace at `PLUGINS_OFFICIAL_SHA` | same, from its public repository |
-| `review/` | the materialized review directory the seats read | written by `plan.mjs`, carried as the `ship-kit-plan` artifact |
-| `expect/` | `run.json`: the nonce, the plugin version and the superpowers `sha` (the expected markers are read from `src/`, 6.4) | written by `plan.mjs`, carried as the `ship-kit-expect` artifact, which only aggregate downloads |
+| `review/` | the materialized review directory the seats read | written by `plan.mjs`, carried as the `ship-kit-plan-<attempt>` artifact |
+| `expect/` | `run.json`: the nonce, the plugin version and the superpowers `sha` (the expected markers are read from `src/`, 6.4) | written by `plan.mjs`, carried as the `ship-kit-expect-<attempt>` artifact, which only aggregate downloads |
 | `pr/` | the PR head tree, as files | `scripts/review/extract-tree.mjs`: walks `git ls-tree -r -z <head>` and writes each blob with `git cat-file`; a symlink becomes a text file holding `symlink to <target>`, a submodule a text file naming its commit; no `.gitattributes` from the PR is applied (unlike `git archive`); nothing ever runs with this as its working directory |
 
 **Fetching the PR head.** The head is fetched as objects only, with the
@@ -649,13 +652,14 @@ parses every workflow and template in the repository and fails on any
    `{status, reason}` (`fail-config` or `needs-maintainer`) and sets
    `count=0`. Outputs: `matrix`, `count`, `empty`, `mode`, `json_schema`,
    `enforced`, `override`.
-6. Upload `review/` as `ship-kit-plan` and `expect/` as `ship-kit-expect`.
+6. Upload `review/` as `ship-kit-plan-<attempt>` and `expect/` as
+   `ship-kit-expect-<attempt>`.
 
 **seat** (matrix over `plan.outputs.matrix`, `fail-fast: false`, skipped
 when `count` is 0, `empty` is true or `override` is true):
 
 1. Check out, fetch `src/` and `deps/`, fetch the PR head, extract `pr/`.
-2. Download `ship-kit-plan` into `review/`; copy this seat's chunk to
+2. Download `ship-kit-plan-<attempt>` into `review/`; copy this seat's chunk to
    `diff.patch`, `stat.txt`, `prior.json`.
 3. Run `anthropics/claude-code-action` with:
    - `github_token: ${{ secrets.GITHUB_TOKEN }}` (F6, F16, R15), which is
@@ -700,54 +704,92 @@ when `count` is 0, `empty` is true or `override` is true):
    because a seat is already one shard and headless CI orphans in-agent
    subagents).
 4. Always write and upload a receipt: a step with
-   `env: OUT: ${{ steps.claude.outputs.structured_output }}` runs
+   `env: EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}`,
+   `SEAT` and `OUT_DIR` runs
    `node $RUNNER_TEMP/ship-kit/src/scripts/review/receipt.mjs <index>`,
-   which writes `{index, seat, body}` from `process.env.OUT` (`body` is
-   `null` when `OUT` is empty or not JSON) to an artifact named
-   `ship-kit-receipt-<index>`.
+   which reads the action's execution file (at most 64 MiB, a JSON array
+   of SDK messages) rather than one environment string, which Linux caps
+   at 128 KiB, and writes `{index, seat, body}`: `body` is the last
+   `result` message's `structured_output` when that is an object, and
+   `null` when the file is missing, oversized or not JSON or the last
+   result has none. When any string in the body, object keys included,
+   resembles a credential (the screen in aggregate step 3), the receipt is
+   `{index, seat, body: null, withheld: true}` and the text is never
+   written. The receipt is uploaded as `ship-kit-receipt-<index>-<attempt>`;
+   the execution file itself is never uploaded.
 
 **aggregate** (`needs: [plan, seat]`, `if: always()`, on the `aggregate`
 runner so it does not share fate with the seat machines):
 
-1. Fetch `src/`; download `ship-kit-plan`, `ship-kit-expect` and the
-   receipts.
+1. Fetch `src/`; download `ship-kit-plan-<attempt>`,
+   `ship-kit-expect-<attempt>` and every
+   `ship-kit-receipt-<index>-<attempt>`, one directory each.
 2. `node $RUNNER_TEMP/ship-kit/src/scripts/review/aggregate.mjs` decides
    `status`, in order:
+   - the event's `pull_request.base.ref` differs from
+     `repository.default_branch`, or either is missing: `fail-config`.
+     `pull_request_target` runs the base branch's copy of the caller, so
+     such a run used a caller the default branch never held;
    - a `status.json` from plan: its status (`fail-config` or
-     `needs-maintainer`);
-   - no plan artifact: `fail-coverage`;
+     `needs-maintainer`; any other content is `fail-coverage`);
+   - no usable plan artifact, or a plan job whose result is not
+     `success`: `fail-coverage`;
    - `override` true: `override`;
    - `empty` true (the PR changes no file): `pass`;
-   - coverage, for the `count` planned seats: exactly one receipt per
-     planned index, read only from `ship-kit-receipt-<index>`; a missing
-     receipt, a null body, a verdict outside `PASS`/`FAIL`,
-     `complete !== true`, a `contract_nonce` different from
-     `expect/run.json`'s, or a `skill_marker` different from the marker
-     line in `src/skills/<seat skill>/SKILL.md` at `job.workflow_sha`
-     (6.4) is `fail-coverage`;
-   - otherwise the verdict (6.4, 8.3).
-3. Post the summary with `gh pr comment --body-file`, and any inline
-   findings (`findings[].file`, `line`) as one pull-request review through
-   `gh api --input <file>`, all as `github-actions[bot]`. Seat text is
-   rendered inert first: `@` mentions are wrapped in code spans so they
-   notify no one, HTML is escaped, and any string shaped like
-   a credential (`ghs_`, `gho_`, `ghp_`, `github_pat_`, `sk-ant-`,
-   `x-access-token:`) replaces the whole finding with "withheld: output
-   resembled a credential" and sets `status=fail-coverage`. Then upload
-   the `ship-kit-state` artifact holding the comment id and the exact
-   state-marker payload (8.2).
-4. Set outputs `status`, `enforced`, `mode`. The job exits 0 on every
-   status; only a crash fails it, which the caller's gate treats as a
-   failure (6.5).
+   - coverage, for the `count` planned seats (full mode with no planned
+     seat is `fail-coverage`): exactly one receipt per planned index;
+     receipts for other indexes are ignored. A missing receipt, two
+     receipts for one index, a receipt naming another seat, a withheld
+     receipt, a null body, a body with any credential-shaped string
+     (step 3), a verdict outside `PASS`/`FAIL`, `complete !== true`, a
+     `contract_nonce` different from `expect/run.json`'s, or a
+     `skill_marker` different from the marker line in
+     `src/skills/<seat skill>/SKILL.md` at `job.workflow_sha` (6.4) is
+     `fail-coverage`;
+   - otherwise the verdict: in full mode `pass` when every seat returned
+     `PASS`, else `fail-findings`; in design-doc mode 8.3.
+3. Write the outputs `status`, `enforced` (the plan's recorded value,
+   `true` without one) and `mode` (the plan's, `full` without one) first;
+   then publish, as `github-actions[bot]`. Seat text is rendered inert
+   first: control, format and default-ignorable characters are removed,
+   and each seat's summary, unreviewed list and findings go inside a
+   backtick fence longer than any backtick run they hold (at least three),
+   placed as a top-level block, so mentions notify no one and links,
+   images and HTML do not render. Any string, including an object key,
+   that holds a credential prefix once control, format and
+   default-ignorable characters are stripped and the text is
+   NFKC-normalized (`ghp_`, `gho_`, `ghu_`,
+   `ghs_`, `ghr_`, `github_pat_`, `sk-ant-`, `x-access-token:` in any
+   case, its base64 form, a JWT or a PEM private key header), in the
+   body or in the text the fields are joined into, withholds that seat:
+   the comment shows "withheld: output resembled a credential" instead
+   of its text, and the seat fails coverage. Design-doc findings whose
+   `file` and `line` fall inside a hunk of the seat patches go first, as
+   one pull-request review with event `COMMENT` on the PR head, each
+   comment body fenced; the rest are counted in the summary, which lists
+   every finding; a failed review post adds a line to the summary and is
+   not fatal. Then the summary comment, posted through the REST API:
+   the state marker (8.2) on its first line, never truncated; a heading
+   with the status, enforced, mode and the superpowers `sha`; the plan's
+   reason; in design-doc mode the open BLOCKING findings; then each seat's
+   block, truncated before it is fenced so the whole comment stays within
+   GitHub's 65,536-character limit. The comment is never edited
+   afterwards. Its id and the exact marker line go to `state/state.json`,
+   uploaded as the `ship-kit-state-<attempt>` artifact (8.2).
+4. The job exits 0 on every status once the comment is posted; a crash
+   or a failed comment post exits non-zero, after the outputs were
+   written, which the caller's gate treats as a failure (6.5).
 
 **Canary-only behaviour**, under the same guard as `inputs.canary`
 (event `pull_request` and `job.workflow_repository == github.repository`):
 plan adds one negative-control matrix entry whose prompt is the review
 directory without the slash command, and aggregate expects it to be
 `fail-coverage` and excludes it from the verdict; the seat step also
-uploads the action's `execution_file` output, from which aggregate
-asserts the session's tool list (exactly the `--tools` set), that no hook
-ran, that reads of `review/diff.patch`, a file under `pr/` and the
+runs the execution checks against the action's `execution_file` itself
+and uploads only their results, never the file, as
+`ship-kit-canary-<index>-<attempt>`, from which aggregate asserts that
+the checks passed: the session's tool list (exactly the `--tools` set),
+that no hook ran, that reads of `review/diff.patch`, a file under `pr/` and the
 workspace `CLAUDE.md` succeeded; that reads of `.git/config`,
 `/proc/self/environ`, `~/.gitconfig`, `~/.claude/settings.json`,
 `~/.ssh/ship-kit-canary`, `$RUNNER_TEMP/ship-kit-canary` and a `pr/`
@@ -762,7 +804,7 @@ of these. A failed assertion fails the canary.
 seat step's `claude_args`, `settings`, `github_token` and marketplaces as
 listed, each job's permissions as in the table, that no step has a
 `working-directory` under `pr/`, that no `actions/checkout` step names
-the PR head, and that no seat step downloads `ship-kit-expect`.
+the PR head, and that no seat step downloads `ship-kit-expect-<attempt>`.
 
 ### 6.4 Seat output contract
 
@@ -822,8 +864,12 @@ contain a single quote (`tests/review/review-mode.test.mjs` asserts it).
 
 `templates/callers/review.yml`. Placeholders use `<<key>>` so they never
 collide with `${{ }}` expressions. `render.mjs` refuses unknown keys and
-any unreplaced placeholder. Credentials appear only as `${{ secrets.NAME }}`
-(20.5).
+any unreplaced placeholder. It is the one place every template and every
+config-derived value passes through, so it also refuses a value that is
+not a string or that contains `${{`, and an output holding more `${{`
+openers than its template (two values, or a value and the template's own
+text, meeting at `$` then `{{`): no value can become an expression.
+Credentials appear only as `${{ secrets.NAME }}` (20.5).
 
 ```yaml
 # ship-kit-managed: <<stamp_json>>
@@ -896,7 +942,14 @@ exit 1
 
 `<<default_branch>>` is the repository's default branch at setup. The
 filter keeps `TRUSTED_SHA` (the default-branch tip, F18) meaningful: the
-review runs for PRs into the branch whose config it reads.
+review runs for PRs into the branch whose config it reads. The name is
+written as a plain item of a YAML flow sequence inside a branch filter,
+where `+`, `?`, `[`, `*` and a leading `!` are pattern syntax and `,`,
+`]`, `#`, `&` or a leading digit change the scalar, so setup accepts a
+default branch only when its name starts with a letter, uses only
+letters, digits, `.`, `_`, `-` and `/`, and is not a YAML keyword (`true`,
+`false`, `null`, `yes`, `no`, `on`, `off`, `y`, `n`, in any case); it
+refuses any other name, naming the rule, rather than escaping it.
 
 `<<boot_job>>` is empty unless `render.bootWorkflow` names a local reusable
 workflow that must run first (for example, starting self-hosted capacity);
@@ -1018,14 +1071,27 @@ diff, is full mode. With no dirs configured the mode never triggers.
   `{v, kind, head, mode, complete, mergeBase, findings, runId}`; `kind` is
   the seat name and `runId` the workflow run that wrote it. Only the first
   line is parsed, so text a seat returns cannot stand in for it. The codec
-  is `scripts/lib/state-marker.mjs`.
+  is `scripts/lib/state-marker.mjs`. In design-doc mode `findings` holds
+  the open BLOCKING findings, new and carried (8.3). In full mode, whose
+  seats return no findings in release 2, `findings` holds one entry per
+  seat that returned FAIL, `{"severity": "BLOCKING", "file": "", "line":
+  0, "finding": "seat <i> returned FAIL"}`, so whether a run passed is
+  readable from its state. `complete` is true only when the status is
+  `pass` or `fail-findings` and every planned receipt passed the coverage
+  checks (6.3 aggregate step 2); every other outcome, including a run
+  with no plan artifact, writes `complete: false`, and a run whose plan
+  failed before classifying the mode writes `mode: "full"`. A marker
+  longer than 30,000 characters is written with `complete: false` and no
+  findings instead, which can only cost a full review.
 - Any workflow's token posts as `github-actions[bot]`, including one a PR
   adds, so authorship proves nothing. A state is trusted only when
-  `trustState` in `review-mode.mjs` confirms, through the API with the
+  `trustState` in `trust-state.mjs` confirms, through the API with the
   job's `actions: read`: run `runId` exists, its `event` is
   `pull_request_target` and its `path` is the managed caller for `kind`
-  (`.github/workflows/ship-kit-<kind>.yml`); its `ship-kit-state` artifact
-  (6.3 aggregate step 3) holds this comment's id and a payload identical
+  (`.github/workflows/ship-kit-<kind>.yml`, bare or followed by
+  `@refs/heads/<default branch>`); one of its unexpired
+  `ship-kit-state-<attempt>` artifacts, from any attempt of the run
+  (6.3 aggregate step 3), holds this comment's id and a payload identical
   to the marker; and the comment is unedited (`created_at ==
   updated_at`). Any API error is "not trusted".
   `tests/review/design-doc-mode.test.mjs` covers a forged marker from a
@@ -1049,10 +1115,13 @@ diff, is full mode. With no dirs configured the mode never triggers.
 `review/contract/design-doc.md` holds the severity rule and the extra
 output fields (`findings[]` with `severity`; `prior[]` with `id`,
 `status`, `note`). Aggregate: coverage first; a seat whose body lacks
-`findings`, or says FAIL with no finding and no unresolved prior, is
-incomplete. Then the gate fails only on a BLOCKING new finding, or a prior
-BLOCKING finding not confirmed RESOLVED by its assigned seat. `severityOf`
-treats anything other than an explicit `NON-BLOCKING` as BLOCKING.
+`findings` or `prior`, or says FAIL with no finding and no UNRESOLVED
+entry for a prior assigned to it, is incomplete. Then the gate fails only
+on a BLOCKING new finding, or a prior BLOCKING finding not confirmed
+RESOLVED, by `id`, by the seat it was assigned to (a RESOLVED entry from
+another seat, or conflicting entries for one id, leave it open).
+`severityOf` treats anything other than an explicit `NON-BLOCKING` as
+BLOCKING.
 
 The severity rule, in brief (the contract file is canonical): BLOCKING for
 wrong specified behavior, security, privacy or data integrity defects, a
@@ -1066,11 +1135,18 @@ any standards they name, so the contract needs no per-repo key for it.
 
 ### 8.4 Round count and the mining trigger
 
-Aggregate counts trusted complete design-doc states of either kind on the
-PR. When the count exceeds 3, the comment adds one line suggesting a design
-mining pass (18.5). The threshold is the owner's "design PR > ~3 rounds",
-fixed at "more than 3 complete review runs"; it is a constant in
-`aggregate.mjs`, not config, since it only prints a hint.
+Aggregate counts the distinct `head` values among trusted complete
+design-doc states of either kind on the PR, this run's included when it is
+one, so two seats reviewing one head count as one round. A prior state
+counts only when, besides `trustState` (8.2), its run's own record (the
+single-run API read) lists exactly this PR, with the default branch as its
+base: a run for a PR into another branch ran that branch's copy of the
+caller. Runs for a fork's PR list no pull request, so their rounds are not
+counted; any read that fails leaves out what it touched. When the count
+exceeds 3, the comment adds one line suggesting a design mining pass
+(18.5). The threshold is the owner's "design PR > ~3 rounds", fixed at
+"more than 3 complete review rounds"; it is a constant in `aggregate.mjs`,
+not config, since it only prints a hint.
 
 ---
 
@@ -1871,11 +1947,15 @@ without a model (21.3). Verbs: `detect`, `plan`, `write`, `check`.
 
 A managed file's first line (second after a shebang) is
 `ship-kit-managed: {"template":"<name>","version":"<x.y.z>","sha":"<40 hex>","body":"<sha256>"}`
-in the file's comment syntax; `body` is the SHA-256 of everything after
-that line. A managed block is delimited by
+in the file's comment syntax; `body` is the SHA-256 of the whole file,
+shebang and stamp line included, with the stamp's own `body` value read
+as 64 zeros, so moving the stamp line or adding, removing or changing a
+shebang is a change too. A managed block is delimited by
 `ship-kit-managed-begin <stamp>` and `ship-kit-managed-end` lines, `body`
-covering the lines between. The config carries `shipKit.version` and
-`shipKit.sha` and no body hash, since it is user data.
+covering the lines between. Hashes read CRLF as LF, so a checkout that
+converts line endings is not a hand edit. The config carries
+`shipKit.version` and `shipKit.sha` and no body hash, since it is user
+data.
 
 ### 19.3 Install
 
@@ -1900,7 +1980,8 @@ covering the lines between. The config carries `shipKit.version` and
 3. **Detect**: lockfiles and manifests (to propose preflight steps and a
    coverage tool), existing workflow `runs-on` labels, existing secret
    names (`gh secret list`, names only), `core.hooksPath`, the default
-   branch, required checks from both rulesets and classic protection
+   branch (refused unless the caller's branch filter can hold its name as
+   written, 6.5), required checks from both rulesets and classic protection
    (16.3's reader), whether the repo is public, whether `.claude/` is
    ignored (`git check-ignore`).
 4. **Ask** for every config key the detection could not settle (5.1's
@@ -2051,8 +2132,14 @@ design rules as production code; every change carries a test proving the
 behavior it claims, and a claimed guard is proven with a mutation; run
 preflight before push; fix review findings in the same PR; plans are
 sequences of deployable PRs; design docs state the current design only;
-the hook bootstrap line and the folder-trust note; a fill-in for the
-repo's model-tier guidance.
+the hook bootstrap line and the folder-trust note; and a line telling the
+adopter to write the repo's model-tier guidance beside the block, not in
+it, since update rewrites the block. A line for a feature a later release
+ships (`/ship-kit:develop`, preflight, the hook bootstrap line, all 0.3.0)
+carries `[since X.Y.Z] ` after its list marker in the template; setup
+renders it, marker stripped, only when the installing version is at least
+X.Y.Z, counting a release candidate of X.Y.Z as X.Y.Z since it carries
+that release's features.
 
 ---
 
