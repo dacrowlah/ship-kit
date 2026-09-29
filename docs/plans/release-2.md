@@ -84,9 +84,11 @@ Each binds the task named.
 38. A seat job that finds the fetched head differs from `HEAD_SHA` exits non-zero before extracting `pr/`, so its receipt is null.
 39. Comment posting happens after the aggregate outputs are written; a failed post exits 1, which the gate treats as a failure.
 40. The state marker is capped at 30,000 characters; a state that would exceed it is written with `complete: false` (never a review base), which can only cost a full review.
-41. Live checks that need a second GitHub account are skipped until the end of release 2 (owner ruling): F29's approved-PR case, the private-repo fork path and, when the second adopting repo is owned by another account, the F17 cross-owner observation run in Task 50, after every other task. The rc and release tags depend only on the single-account Tasks 13 and 40. A defect Task 50 finds is fixed by ordinary PRs and ships as 0.2.1 (a new rc, Task 40 again, a new tag), since `ship-kit--v0.2.0` cannot be moved.
+41. Live checks that need a second GitHub account are skipped until the end of release 2 (owner ruling): the private-repo fork path and, when the second adopting repo is owned by another account, the F17 cross-owner observation run in Task 50, after every other task. The rc and release tags depend only on the single-account Task 40. A defect Task 50 finds is fixed by ordinary PRs and ships as 0.2.1 (a new rc, Task 40 again, a new tag), since `ship-kit--v0.2.0` cannot be moved.
 42. Records and fixtures never hold a live marker token: every `skill_marker` token in `tests/skills/**`, `tests/live/**` and `tests/fixtures/**` is written as `<token>` (design 6.4 requires the token to appear nowhere else in the repository). `pressure.mjs check --dmi` prints its text with the token replaced, and `tests/skills/marker.test.mjs` fails on a live token in any other tracked file.
 43. No artifact holds raw model output that could carry a credential: the seat job never uploads the action's execution file; under the canary it runs the execution checks in the seat job and uploads only their results; `receipt.mjs` writes `body: null, withheld: true` when `anyCredential(body)` is true, and aggregate scores a withheld receipt `fail-coverage`.
+44. F29's live ruleset-bypass test is not part of release 2 (owner decision): nothing in release 2 grants a bypass actor or runs an admin merge, so 0.2.0 ships with F29 UNVERIFIED like F14 and F17. Task 13 keeps its steps as a release-6 note: all cases, the approved-PR one included, run before PR 6.2 in a throwaway public repository under the owner's account, never on ship-kit. Task 15 makes the design edit.
+45. Setup's recommended protection is loose (owner decision): by default setup recommends and creates the checks ruleset with strict off and the review ruleset, and no up-to-date ruleset. Setup asks whether the repository wants the strict up-to-date policy (default no); only on a yes does it offer the `ship-kit up-to-date` ruleset (strict on, no bypass actor in release 2; PR 6.2 adds the bypass under `agents.adminMerge`) and ask the `agents.adminMerge` question, preceded by one sentence saying that with strict off the adopter's own merges need no admin bypass. On a no, `agents.adminMerge` keeps its default `false`. The strict answer lives in the answers file, not the config; the schema is unchanged. For organization-owned adopters the README names GitHub merge queue as the principled alternative to strict. Task 15 makes the design edit; Tasks 35, 36 and 37 implement it.
 
 ## Where every decision input comes from
 
@@ -193,9 +195,9 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 | `scripts/release/bump-version.mjs` (+ test) | 10 | version and marker tokens |
 | `scripts/lib/release-tags.mjs`, `tests/lib/release-tags.test.mjs`, `scripts/setup/pin.mjs` (+ test) | 11 | tag parsing, pin resolution |
 | `tests/live/extra-known-marketplaces.md`, design F12 row, design 22.8, 19.3 step 8 and the F21/F27/F29 status cells | 12 | F12 record; second-account checks moved after the tag |
-| `tests/live/ruleset-bypass.md`, design F29 row | 13, 50 | F29 record (single-account cases; approved-PR case) |
+| `tests/live/ruleset-bypass.md` | 13 (release 6) | F29 record, all cases; not written in release 2 |
 | (repository secret) | 14 | canary auth |
-| `schemas/config.schema.json`, `scripts/lib/config.mjs`, `tests/lib/config.test.mjs`, `tests/schemas/config-schema.test.mjs`, `scripts/setup/migrations/index.mjs` (+ test), `.ship-kit/config.json`, `.claude/settings.json`, design 5.1 | 15 | config |
+| `schemas/config.schema.json`, `scripts/lib/config.mjs`, `tests/lib/config.test.mjs`, `tests/schemas/config-schema.test.mjs`, `scripts/setup/migrations/index.mjs` (+ test), `.ship-kit/config.json`, `.claude/settings.json`, design 5.1, 10.3, 5.4, 19.3 steps 4 and 8, 22.2, 22.6, 22.8, F29 row | 15 | config; F29 moved to release 6; loose recommended protection |
 | `scripts/review/trust-state.mjs` (+ test) | 16 | `trustState` |
 | `scripts/review/author.mjs` (+ test) | 17 | author rule |
 | `scripts/review/partition.mjs` (+ test) | 18 | partition, scope, priors |
@@ -215,9 +217,9 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 | `scripts/review/canary.mjs` (+ test), `tests/fixtures/canary/**`, edits to `plan.mjs`, `aggregate.mjs`, `review.yml` (+ their tests) | 32 | canary hooks, inert outside the predicate |
 | `.github/workflows/ship-kit-canary.yml`, `tests/live/canary.md`, the real `execution-sample.json`, design F13/F15/F23/F25/F27/F28 rows | 33 | canary workflow, live run, record |
 | `scripts/setup/cli.mjs` (+ test), `tests/setup/install.test.mjs`, `tests/setup/render.test.mjs`, `tests/fixtures/repo/**`, `tests/fixtures/answers.json` | 34 | setup CLI: detect, plan, write |
-| `scripts/setup/cli.mjs` (+ test), `tests/setup/drift.test.mjs` | 35 | setup CLI: update, check, manual steps |
+| `scripts/setup/cli.mjs` (+ test), `tests/setup/drift.test.mjs` | 35 | setup CLI: update, check, manual steps, strict answer and rulesets |
 | `skills/setup/`, its records | 36 | setup skill |
-| `README.md` | 37 | inventory, secrets, residual risk |
+| `README.md` | 37 | inventory, secrets, residual risk, recommended protection |
 | `.claude-plugin/plugin.json`, seat marker lines | 38 | version 0.2.0 |
 | `tests/live/private-repo-check.md`, design F21/F27 rows | 40, 50 | private-repo exit check (owner-only part; fork part) |
 | `.github/workflows/ship-kit-general.yml`, `ship-kit-adversarial.yml`, `.ship-kit/config.json` | 43 | dogfood callers |
@@ -228,27 +230,27 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 
 | Wave | Tasks | Starts when | Why these are parallel |
 |---|---|---|---|
-| 1 | 1-14 | now; 2 after 1 merges, 13 after 12 merges | disjoint files; libraries nothing calls yet; 12 and 13 are the wave's only design edits, in turn; 13 and 14 are owner actions |
+| 1 | 1-12, 14 | now; 2 after 1 merges | disjoint files; libraries nothing calls yet; 12 is the wave's only design edit; 14 is an owner action; 13 moved to release 6 (ruling 44) |
 | 2 | 15, 16, 17, 18, 19, 20 | each task's dependencies merged | disjoint modules over wave-1 libraries; 15 is the wave's only design edit |
 | 3 | 21, 22, 23, 24, 25, 26 | dependencies merged | disjoint modules; 23 and 24 share only wave-1/2 interfaces; 24 is the wave's only design edit |
 | 4 | 27, 28, 29, 30, 31 | dependencies merged | disjoint files; 29 wires scripts it does not edit; 27 is the wave's only design edit |
 | 5 | 32, 33, 34, 35, 36 | dependencies merged (33 after 32, 35 after 34, 36 after 35) | 32 and 33 edit the canary files, plan/aggregate/review.yml and (33 only) the design; 34 to 36 edit only setup files |
 | 6 | 37 | 1-36 merged | README describes every shipped component |
 | 7 | 38 | 37 merged | the version bump is the release's last code PR |
-| 8 | 39 | 38 merged, 13 recorded, owner approves | rc tag |
+| 8 | 39 | 38 merged, owner approves | rc tag |
 | 9 | 40 | 39 | owner-only private-repo check pins the rc |
-| 10 | 41 | 40 passed, 33 and 13 recorded, owner approves | release tag |
+| 10 | 41 | 40 passed, 33 recorded, owner approves | release tag |
 | 11 | 42 | 41, owner approves | repository Actions policy |
 | 12 | 43 | 42 | dogfood callers at the release SHA |
 | 13 | 44 | 43 merged, owner approves | required contexts on main |
 | 14 | 45, 46 | 44, owner approves each | different repositories |
 | 15 | 47, 48 | 45 and 46 merged plus five observed PRs each, owner approves | different repositories |
 | 16 | 49 | 47 | old workflows deleted after the switch |
-| 17 | 50 | every other task finished, owner approves | second-account live checks, last by owner ruling (ruling 41) |
+| 17 | 50 | every other task finished, owner approves | second-account live checks (fork path, F17), last by owner ruling (ruling 41) |
 
-Dependencies (task: needs): 2: 1. 13: 12. 15: 4, 12, 13. 16: 3, 7. 17: 3. 18: 7. 19: 2, 4, 7, 10. 20: 5, 6. 21: 3, 15. 22: 15. 23: 3, 7, 11, 15, 16, 17, 18. 24: 3, 7, 9, 15, 16. 25: 5, 12, 15, 20. 26: 3, 15, 16. 27: 3, 21, 24. 28: 25. 29: 6, 8, 20, 23, 24. 30: 2, 3, 15, 16, 22. 31: 2, 22, 26. 32: 15, 19, 29. 33: 14, 27, 32. 34: 11, 19, 25, 27. 35: 28, 34. 36: 2, 22, 35. 37: 1-36. 38: 37. 39: 38, 13. 40: 39. 41: 40, 33, 13. 42: 41. 43: 42. 44: 43. 45, 46: 44. 47: 45. 48: 46. 49: 47. 50: 48, 49.
+Dependencies (task: needs): 2: 1. 15: 4, 12. 16: 3, 7. 17: 3. 18: 7. 19: 2, 4, 7, 10. 20: 5, 6. 21: 3, 15. 22: 15. 23: 3, 7, 11, 15, 16, 17, 18. 24: 3, 7, 9, 15, 16. 25: 5, 12, 15, 20. 26: 3, 15, 16. 27: 3, 21, 24. 28: 25. 29: 6, 8, 20, 23, 24. 30: 2, 3, 15, 16, 22. 31: 2, 22, 26. 32: 15, 19, 29. 33: 14, 27, 32. 34: 11, 19, 25, 27. 35: 28, 34. 36: 2, 22, 35. 37: 1-36. 38: 37. 39: 38. 40: 39. 41: 40, 33. 42: 41. 43: 42. 44: 43. 45, 46: 44. 47: 45. 48: 46. 49: 47. 50: 48, 49. Task 13 is not a release-2 task (ruling 44) and nothing here depends on it.
 
-Every task that edits `docs/design/ship-kit-design.md` (12, 13, 15, 24, 27, 33, 40, 50) sits on one dependency chain, 12 -> 13 -> 15 -> 24 -> 27 -> 33 -> 40 -> 50, so no two are open at once; each rebases on `main` before merge. A design edit an implementation note asks for is made by the next task on this chain, never by the task carrying the note.
+Every task that edits `docs/design/ship-kit-design.md` (12, 15, 24, 27, 33, 40, 50) sits on one dependency chain, 12 -> 15 -> 24 -> 27 -> 33 -> 40 -> 50, so no two are open at once; each rebases on `main` before merge. A design edit an implementation note asks for is made by the next task on this chain, never by the task carrying the note.
 
 ## Models
 
@@ -266,7 +268,7 @@ Every task that edits `docs/design/ship-kit-design.md` (12, 13, 15, 24, 27, 33, 
 | 10 | sonnet | release tooling with a uniqueness guard |
 | 11 | opus | the pin that keeps untagged code out of adopters' CI |
 | 12 | sonnet | live observation with a discriminating control, plus one specified design edit |
-| 13 | opus | live ruleset experiment on the real repository; owner approval |
+| 13 | opus | moved to release 6 (ruling 44); not dispatched in release 2 |
 | 14 | haiku | owner adds a secret; the agent only verifies the name exists; no pass/fail logic |
 | 15 | sonnet | schema transcription plus loader with migration and fetch rules |
 | 16 | opus | trust boundary for every marker |
@@ -501,7 +503,7 @@ Every call runs `gh` through `execFileSync` with `timeout: timeoutMs`, `maxBuffe
 | `scripts/lib/gh.mjs` | treat any exit 0 in `get` as status 200 and a non-zero exit as a throw | `get returns 404 without throwing` |
 | `scripts/lib/gh.mjs` | drop `timeout` from the exec options | `a slow gh times out` |
 
-Implementation note: whether GitHub decodes `%2F` in `branches/{branch}/protection/required_status_checks` and `rules/branches/{branch}` is unverified (a classic 404 would read as "no classic protection"); Task 13 or Task 27 adds a read-only live check on a slash-named branch and records it.
+Implementation note: whether GitHub decodes `%2F` in `branches/{branch}/protection/required_status_checks` and `rules/branches/{branch}` is unverified (a classic 404 would read as "no classic protection"); Task 27 adds a read-only live check on a slash-named branch and records it.
 Implementation note: add tests that a marker `runId` of `"1/../x"` or `"12?a=b"` is encoded by `seg`, and that `listKey` joins a path already carrying `?filter=latest` with `per_page=100` by `&`.
 
 **Acceptance:** every GitHub call in release 2 can go through this module; no test reaches the network.
@@ -845,31 +847,34 @@ Implementation note: several design statements differ from this plan without an 
 
 ---
 
-### Task 13: F29 live ruleset-bypass test, single-account cases (owner approval required)
+### Task 13: Moved to release 6: F29 live ruleset-bypass test (owner approval required)
 
-Spec: design F29, 16.4, 19.3, 22.8; ruling 41. Model: opus. Depends on: 12. **Owner approval required** before Step 1: the task creates and deletes rulesets and branches on ship-kit with the owner's account only. The approved-PR case, which needs a second account, runs in Task 50.
+Not a release-2 task (ruling 44): no release-2 task depends on it, and 0.2.0 ships with F29 UNVERIFIED like F14 and F17 (Task 15's design edit). The steps below are kept as the release-6 note. They run before PR 6.2 (design 22.6) in a throwaway **public** repository under the owner's account, written here as `<owner>/<scratch>`, never on ship-kit; the approved-PR case, which needs a second account, runs in the same repository in the same sitting (Step 8). The repository must be public because rulesets on a personal-account repository need a public repository on GitHub Free; the PRs must be ready for review, never drafts, since a draft cannot be merged at all.
 
-**Files:** Create `tests/live/ruleset-bypass.md`; modify the F29 status cell.
+Spec: design F29, 16.4, 19.3, 22.6, 22.8. Model: opus. Depends on: nothing in release 2; runs before PR 6.2. **Owner approval required** before Step 1: the owner creates and later deletes the throwaway repository, and a second account the owner controls approves one PR.
 
-**Why safe alone:** every ruleset targets only `refs/heads/f29-scratch/base`, which nothing else uses, and all are deleted in Step 9; the record changes no behaviour.
+**Files (in ship-kit):** Create `tests/live/ruleset-bypass.md`; modify the F29 status cell.
 
-- [ ] **Step 1: Owner approval.** The owner approves; every command runs under the owner's default `gh` configuration.
-- [ ] **Step 2: Branches.** From an up-to-date `main`: push `main` to `refs/heads/f29-scratch/base`; create `f29-scratch/case-1p` and `case-2` to `case-5` from it, each with one commit adding `tests/live/f29-scratch/case-<n>.txt`, pushed. Then push one more commit to `f29-scratch/base` (adding `tests/live/f29-scratch/base.txt`) so every case is behind. The owner opens five PRs into `f29-scratch/base`.
-- [ ] **Step 3: Rulesets** (`gh api -X POST repos/dacrowlah/ship-kit/rulesets --input <file>`, one file each, all `target: "branch"`, `enforcement: "active"`, `conditions: {"ref_name": {"include": ["refs/heads/f29-scratch/base"], "exclude": []}}`):
+**Why safe alone:** every ruleset, branch and PR lives in the throwaway repository, which is deleted in Step 10; nothing touches ship-kit until the record PR, which changes no behaviour.
+
+- [ ] **Step 1: Owner approval and repository.** The owner approves and creates `<owner>/<scratch>` as a public repository with a README and default branch `main`, and no workflows. Every command below runs under the owner's default `gh` configuration unless it names the reviewer's.
+- [ ] **Step 2: Branches.** In a clone of `<scratch>`, from an up-to-date `main`: push `main` to `refs/heads/f29-scratch/base`; create `f29-scratch/case-1`, `case-1p` and `case-2` to `case-5` from it, each with one commit adding `case-<n>.txt`, pushed. Then push one more commit to `f29-scratch/base` (adding `base.txt`) so every case is behind. The owner opens six PRs into `f29-scratch/base`, none as a draft.
+- [ ] **Step 3: Rulesets** (`gh api -X POST repos/<owner>/<scratch>/rulesets --input <file>`, one file each, all `target: "branch"`, `enforcement: "active"`, `conditions: {"ref_name": {"include": ["refs/heads/f29-scratch/base"], "exclude": []}}`):
   - `f29 checks`: rules `[{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": false, "required_status_checks": [{"context": "f29-a"}, {"context": "f29-b"}]}}]`, `bypass_actors: []`.
   - `f29 up-to-date`: the same contexts with `"strict_required_status_checks_policy": true`, `bypass_actors: [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}]`.
   - `f29 review` (created only in Step 7): rules `[{"type": "pull_request", "parameters": {"required_approving_review_count": 1, "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false, "require_last_push_approval": false, "required_review_thread_resolution": false}}]`, `bypass_actors: []`.
-- [ ] **Step 4: Statuses** on each case head (`gh api -X POST repos/dacrowlah/ship-kit/statuses/<sha> -f state=<s> -f context=<c>`): case 1' (`case-1p`) a=success b=success; case 2 a=success b=failure; case 3 a=success b=pending; case 4 a=success only; case 5 a=success b=success.
+- [ ] **Step 4: Statuses** on each case head (`gh api -X POST repos/<owner>/<scratch>/statuses/<sha> -f state=<s> -f context=<c>`): cases 1 and 1' (`case-1p`) a=success b=success; case 2 a=success b=failure; case 3 a=success b=pending; case 4 a=success only; case 5 a=success b=success.
 - [ ] **Step 5: Read states** for every case: `gh pr view <n> --json mergeStateStatus,mergeable,reviewDecision`; record verbatim.
 - [ ] **Step 6: Attempt admin merges** with no review ruleset, in the order 2, 3, 4, 1': `gh pr merge <n> --merge --admin --match-head-commit <sha>`; record each exit status and message verbatim.
 - [ ] **Step 7: Review ruleset and case 5.** Create `f29 review`; read case 5's state as in Step 5; attempt its admin merge as in Step 6; record both verbatim.
-- [ ] **Step 8: Verdict.** Expected: case 1' merges; 2 to 5 are refused. If all match, set F29 to `Single-account cases verified (tests/live/ruleset-bypass.md); the approved-PR case runs after the tag (22.8)`. If any of 2 to 5 merged, set F29 to `Failed (tests/live/ruleset-bypass.md): setup never adds the bypass; admin merge is unavailable` and tell the owner before any release-6 work.
-- [ ] **Step 9: Clean up.** Delete the three rulesets (`gh api -X DELETE repos/dacrowlah/ship-kit/rulesets/<id>`), close open PRs, delete `f29-scratch/*` branches, and read back `gh api repos/dacrowlah/ship-kit/rulesets --jq '.[].name'`: only `main` and `release-tags`.
-- [ ] **Step 10: Record and PR.** `tests/live/ruleset-bypass.md` holds the three rulesets' JSON (Task 50 reuses them), statuses, states, every merge attempt and the verdict, and an "Approved-PR case (second account)" section stating it runs after the tag. Standard verification, commit, PR, CI. Subject: `Record the single-account ruleset bypass live test`.
+- [ ] **Step 8: Approved-PR case (second account).** The owner invites a second account they control ("the reviewer") as a collaborator with write access on `<scratch>`, and the reviewer accepts; the reviewer's `gh` runs under `GH_CONFIG_DIR=$SCRATCH/gh-reviewer`. With `f29 review` still in place, the reviewer approves case 1 (`GH_CONFIG_DIR=$SCRATCH/gh-reviewer gh pr review <n> --approve`); read its state as the owner as in Step 5, then attempt its admin merge as in Step 6; record both verbatim.
+- [ ] **Step 9: Verdict.** Expected: cases 1' and 1 merge; 2 to 5 are refused. If all match, set F29 to `Verified (tests/live/ruleset-bypass.md)`. If any of 2 to 5 merged, set F29 to `Failed (tests/live/ruleset-bypass.md): setup never adds the bypass; admin merge is unavailable`. If 1' or 1 was refused, record GitHub's message and set F29 to what was observed. In either failure, tell the owner before any PR 6.2 work.
+- [ ] **Step 10: Clean up.** The owner deletes `<scratch>` (`gh repo delete <owner>/<scratch> --yes`, which needs the `delete_repo` scope), and `gh repo view <owner>/<scratch>` then fails with not found. The owner decides whether the reviewer's account is kept.
+- [ ] **Step 11: Record and PR** (in ship-kit): `tests/live/ruleset-bypass.md` holds the three rulesets' JSON, statuses, states, every merge attempt and the verdict, with the owner as `<owner>`, the reviewer as `<reviewer>` and the repository as `<scratch>`. Standard verification, commit, PR, CI. Subject: `Record the ruleset bypass live test`.
 
 Implementation note: `actor_id: 5` for the admin RepositoryRole is assumed; read it back from the created `f29 up-to-date` ruleset and record it, because the verdict depends on it.
 
-**Acceptance:** cases 1' and 2 to 5 recorded with GitHub's own messages; rulesets and branches removed; F29 status set.
+**Acceptance:** cases 1', 1 and 2 to 5 recorded with GitHub's own messages; the throwaway repository deleted; F29 status set.
 
 ---
 
@@ -888,11 +893,11 @@ Spec: design 21.4, 6.2. Model: haiku. Depends on: nothing. **Owner approval requ
 
 ### Task 15: Config schema, loader, and ship-kit's own config and settings fixture
 
-Spec: design 5.1, 5.2, 5.3, 5.4 (reading at `origin/<default>`), 21.4; 22.9 (PR 2.1: dirs need a trailing `/`); rulings 5, 6, 7, 9, 17, 18, 29. Model: sonnet. Depends on: 4, 12, 13.
+Spec: design 5.1, 5.2, 5.3, 5.4 (reading at `origin/<default>`), 21.4; 22.9 (PR 2.1: dirs need a trailing `/`); rulings 5, 6, 7, 9, 17, 18, 29, 44, 45. Model: sonnet. Depends on: 4, 12.
 
 **Files:**
 - Create: `schemas/config.schema.json`, `scripts/lib/config.mjs`, `tests/lib/config.test.mjs`, `tests/schemas/config-schema.test.mjs`, `scripts/setup/migrations/index.mjs`, `scripts/setup/migrations/index.test.mjs`, `.ship-kit/config.json`, `.claude/settings.json`
-- Modify: `docs/design/ship-kit-design.md` 5.1 (add `"confirmedLabel": "ship-kit-confirmed"` to `review.promotion` in the example and one sentence naming it in 10.3)
+- Modify: `docs/design/ship-kit-design.md` 5.1 (add `"confirmedLabel": "ship-kit-confirmed"` to `review.promotion` in the example and one sentence naming it in 10.3), and the design edit for rulings 44 and 45 (Step 3's last bullet): 5.4, 19.3 steps 4 and 8, 22.2 PR 2.5, 22.6 PR 6.2, 22.8 and the F29 status cell
 
 **Schema** (`$schema` draft 2020-12 URI as an annotation; every object `additionalProperties: false` unless stated; every non-required key has a `default`; only `schemaVersion` and `shipKit` are required). Patterns: component `C = \.?[A-Za-z0-9_-][A-Za-z0-9._-]*`; DIR `^(?:C/)+$`; FILE `^(?:C/)*C$`; GLOB `^[A-Za-z0-9._*?-]+(?:/[A-Za-z0-9._*?-]+)*$`; CHECK `^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$`; LABEL `^[A-Za-z0-9][A-Za-z0-9 ._-]{0,49}$`; SECRET `^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$`; RUNNER `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`; MODEL `^[A-Za-z0-9._\[\]-]{1,100}$`.
 
@@ -950,7 +955,16 @@ Ship-kit's own `.ship-kit/config.json`: `schemaVersion` 1; `shipKit` `0.1.0` and
 
 - [ ] **Step 1: Write the failing tests.** `tests/schemas/config-schema.test.mjs`: `checkSchema` passes; the JSON block in design 5.1 (extracted between the first `` ```json `` after `### 5.1` and its closing fence) validates; `.ship-kit/config.json` validates; every pattern in the schema completes in under 50 ms on a 10,000-character adversarial string (`"a".repeat(9999) + "!"`, `"./".repeat(5000)`, `"a/".repeat(5000) + ".."`). `tests/lib/config.test.mjs`: defaults fill an otherwise empty `{schemaVersion:1, shipKit}`; `docs/design-notes.sh` style dir `docs/design` (no slash) rejected; DIR rejects `../x/`, `/abs/`, `./x/`, `a/../b/`, accepts `.ship-kit/x/`; FILE rejects `a/..`, `..`; CHECK rejects `x: y` and `a#b`; N-1 read through an injected `{from: 0, to: 1}` migration; N+1 rejected; a gap in the chain throws; duplicate check names rejected; BOM accepted; a JSON array rejected; `readConfigAt` on a symlink path returns not ok; `readDefaultBranchConfig` in a fixture clone whose origin's default is `release/1.x` with `agents.commitAndPush: false` while the local branch says `true`: reads `false`; `ls-remote` failure, fetch failure and an invalid branch name (`refs/heads/-x`) each not ok. `index.test.mjs`: `MIGRATIONS` is `[]` and `checkChain(MIGRATIONS, 1)` passes.
 - [ ] **Step 2: Run** the three test files: fail.
-- [ ] **Step 3: Implement** the schema, loader, migrations index, both repository files and the design edit.
+- [ ] **Step 3: Implement** the schema, loader, migrations index, both repository files and the 5.1/10.3 design edit.
+- [ ] **Step 3b: Design edit for rulings 44 and 45.** Replace exactly these passages (each quoted in double quotes; several wrap across lines), stating the current design only:
+  - F29 status: from "UNVERIFIED. Settled by the live test" through "Expected: (1') and (1) merge, (2) to (5) refused." becomes "UNVERIFIED; release 2 (0.2.0) ships with F29 unverified, like F14 and F17, because nothing in release 2 grants a bypass actor or runs an admin merge. Settled by the live test `tests/live/ruleset-bypass.md`, run before PR 6.2 (22.6, 22.8) in a throwaway public repository under the maintainer's account, not on ship-kit: create both rulesets on a scratch branch and record GitHub's answer to `gh pr merge --admin --match-head-commit` for (1') a behind PR with all contexts green, (2) a behind PR with one context failing, (3) one pending, (4) one missing; then add a review ruleset requiring an approval, with no bypass, and record (5) a behind, green PR without the required approval and, with a second account approving, (1) a behind PR with all contexts green and approved. Record the `mergeStateStatus` the bypass actor sees for (1') and (1). Expected: (1') and (1) merge, (2) to (5) refused." (the cell's last sentence, from "If any of (2) to (5) merges", stays).
+  - 22.8: "the single-account cases of the live ruleset test `tests/live/ruleset-bypass.md` (F29) recorded with their expected outcomes; and" becomes "and"; "(F29's approved-PR case, and a fork PR by a read-only collaborator" becomes "(a fork PR by a read-only collaborator"; and after the paragraph's last sentence add "F29 is not settled for release 2, which ships with it UNVERIFIED like F14 and F17: its live test (F29's status cell), every case including the approved-PR one, runs before PR 6.2 in a throwaway public repository under the maintainer's account and gates release 6."
+  - 5.4: "`agents.adminMerge` (default `false`), asked after it, governs" becomes "`agents.adminMerge` (default `false`), asked after it only when the repository chooses the strict up-to-date policy (19.3 step 4), governs".
+  - 19.3 step 4: from "and, as its own question after it," through "`agents.adminMerge`) (5.4, 16.4)." becomes "then \"Should a pull request be up to date with the default branch before it can merge (the strict policy)?\" (default no; it decides whether step 8 offers the up-to-date ruleset and is not stored in the config) and, only on a yes, as its own question after it, \"Allow agents to admin-merge a PR when every required check is green on its head and the only thing GitHub refuses is that the branch is not up to date?\" (default no, stored as `agents.adminMerge`) (5.4, 16.4), introduced by one sentence: with strict off, a green PR that is behind the default branch merges normally, so the maintainer's own merges need no admin bypass. On a no to the strict question, the admin-merge question is not asked and `agents.adminMerge` keeps its default `false`."
+  - 19.3 step 8: from "protect the default branch with branch rulesets, recommended over" through "names it `ship-kit up-to-date` (16.4 looks it up by that name)." becomes "protect the default branch with branch rulesets, recommended over classic protection. By default setup recommends and offers two rulesets, and no up-to-date ruleset:" followed by the unchanged **checks** and **review** bullets (the review bullet ending in "." instead of ";"), then "With strict off, a green PR that is behind the default branch merges normally, so the maintainer's own merges need no admin bypass. Only when the repository chose the strict policy (step 4) does setup also offer:" and the bullet "**up-to-date**: the same contexts with strict **on**, named `ship-kit up-to-date` (16.4 looks it up by that name), with no bypass actor; from PR 6.2 setup adds the repository admin role as a bypass actor in `pull_request` mode (F26) when `agents.adminMerge` is true. PR 6.2 also adds the offer to migrate classic protection."; and "(F29, whose single-account live cases gate release 2 and whose approved-PR case runs after the tag as release 2's last item (22.8); if any case fails," becomes "(F29, whose live test runs before PR 6.2 in a throwaway public repository (22.8); if any case fails,".
+  - 19.3 step 8, after the organization required-workflows bullet (F20), add the bullet "for an organization-owned repository, GitHub merge queue as the principled alternative to the strict policy: it tests each PR against the current default branch with no bypass (merge queues are available to organization-owned repositories only, public ones or private ones on GitHub Enterprise Cloud); ship-kit's callers run on `pull_request_target`, not `merge_group`, and the README says so."
+  - 22.2 PR 2.5: "both agent questions, the manual steps in 19.3 with the checks and review rulesets and no bypass actor" becomes "the agent questions (the admin-merge one only when the strict policy is chosen, 19.3 step 4), the manual steps in 19.3 with the checks and review rulesets and, only when the strict policy is chosen, the up-to-date ruleset, none with a bypass actor".
+  - 22.6 PR 6.2: "setup's up-to-date ruleset (bypass only under `agents.adminMerge`) and classic-to-ruleset migration offer," becomes "the admin bypass actor on setup's up-to-date ruleset (only under `agents.adminMerge`, after F29's live test is recorded, 22.8) and the classic-to-ruleset migration offer,".
 - [ ] **Step 4: Close.** Subject: `Add the config schema and loader, and ship-kit's own config`.
 
 | File | Mutation | Test that must go red |
@@ -961,7 +975,7 @@ Ship-kit's own `.ship-kit/config.json`: `schemaVersion` 1; `shipKit` `0.1.0` and
 
 Implementation note: the ReDoS timing test should also cover the MODEL and SECRET patterns.
 
-**Acceptance:** schema, example and own config agree; every read of `origin/<default>` goes through `readDefaultBranchConfig`.
+**Acceptance:** schema, example and own config agree; every read of `origin/<default>` goes through `readDefaultBranchConfig`; the design edits read as stated, and no design passage still says F29's live test gates release 2 or that setup asks the admin-merge question unconditionally (`grep -n 'gate release 2\|single-account live' docs/design/ship-kit-design.md` prints nothing).
 
 ---
 
@@ -1745,21 +1759,22 @@ Spec: design 19.1 to 19.4, 19.6, 6.6, 20.1, 21.3 (fixture cases); rulings 16, 17
 
 ### Task 35: Setup CLI: update, check and the manual steps
 
-Spec: design 19.2, 19.3 step 8, 19.5, 16.3 (reader), 16.4, 6.6; 22.9 (PR 2.5: rulesets without permission); F21, F29, F30. Model: opus. Depends on: 28, 34.
+Spec: design 19.2, 19.3 steps 4 and 8, 19.5, 16.3 (reader), 16.4, 6.6; 22.9 (PR 2.5: rulesets without permission); F21, F30; ruling 45. Model: opus. Depends on: 28, 34.
 
 **Files:**
 - Modify: `scripts/setup/cli.mjs`, `scripts/setup/cli.test.mjs`
 - Create: `tests/setup/drift.test.mjs`
 
 **Interfaces (adds):**
+- Answers: the answers file gains `strict` (boolean, default `false`; not written to the config). `plan` and `write` refuse an answers file whose `agents.adminMerge` is `true` while `strict` is not `true`, naming the strict question, because the admin-merge question is asked only after a yes to it (19.3 step 4).
 - `update --answers <file>`: `drift.mjs` states for every managed file and block, the proposed writes (`planUpdate`), refusing per 19.5 when a migration meets a kept caller.
 - `check`: exit 1 on any state other than current, any pin mismatch, an installed plugin version different from `config.shipKit.version`, classic protection on the default branch while `agents.adminMerge` is true, or an event policy that is not known to allow `pull_request_target` on a public repository (a warning line is printed; the exit is 1 only for the first four); exit 0 otherwise.
-- `write` now ends by printing the manual steps, each a separate approval the skill asks for: add the auth secret (`gh secret set <NAME>`, the user types it); on a public repo, allow `pull_request_target` in the Actions event policy (F19, F30); fork-PR workflow approval for all outside contributors; CODEOWNERS lines for `.github/**`, `.ship-kit/**`, `.claude/**`, `.githooks/**`, `**/CLAUDE.md` and `merge.humanOnlyPaths`, with code-owner review required; create the override, false-positive and confirmed labels (`gh label create`); rulesets: the **checks** ruleset (`required_status_checks`, the contexts from `render.checks` for the rendered seats, each entry `{"context": <name>, "integration_id": 15368}` so only a GitHub Actions check run can satisfy it and a commit status never can (15368 is the GitHub Actions app's id, the `app.id` of every Actions check run on ship-kit), strict off, no bypass actor, target the default branch) and the **review** ruleset (`pull_request` rule with one approval and code-owner review, no bypass actor); the required contexts are added only after each caller has run once on a PR (6.6), which the step says; the separate-identity advice with `minPermission: "maintain"`; the organization required-workflows option (F20).
-- `ruleset <checks|review> --answers <file> [--create]`: prints the ruleset JSON; with `--create` (run only on the user's yes) sends ``gh.send("POST", api`repos/${o}/${r}/rulesets`, json)``; a 403 or 404 prints GitHub's message and the JSON for an admin to apply, exit 0.
+- `write` now ends by printing the manual steps, each a separate approval the skill asks for: add the auth secret (`gh secret set <NAME>`, the user types it); on a public repo, allow `pull_request_target` in the Actions event policy (F19, F30); fork-PR workflow approval for all outside contributors; CODEOWNERS lines for `.github/**`, `.ship-kit/**`, `.claude/**`, `.githooks/**`, `**/CLAUDE.md` and `merge.humanOnlyPaths`, with code-owner review required; create the override, false-positive and confirmed labels (`gh label create`); rulesets: the **checks** ruleset (`required_status_checks`, the contexts from `render.checks` for the rendered seats, each entry `{"context": <name>, "integration_id": 15368}` so only a GitHub Actions check run can satisfy it and a commit status never can (15368 is the GitHub Actions app's id, the `app.id` of every Actions check run on ship-kit), strict off, no bypass actor, target the default branch) and the **review** ruleset (`pull_request` rule with one approval and code-owner review, no bypass actor), both recommended by default; only when `strict` is `true`, the **up-to-date** ruleset (named `ship-kit up-to-date`, the checks ruleset's contexts with the same `integration_id` binding and strict on, `bypass_actors: []` whatever `agents.adminMerge` says, since the bypass arrives with PR 6.2); with `strict` false, no up-to-date step is printed and the output says in one sentence that with strict off the adopter's own merges need no admin bypass; the required contexts are added only after each caller has run once on a PR (6.6), which the step says; the separate-identity advice with `minPermission: "maintain"`; the organization required-workflows option (F20).
+- `ruleset <checks|review|up-to-date> --answers <file> [--create]`: prints the ruleset JSON (`up-to-date` refused, exit 2, when `strict` is not `true`); with `--create` (run only on the user's yes) sends ``gh.send("POST", api`repos/${o}/${r}/rulesets`, json)``; a 403 or 404 prints GitHub's message and the JSON for an admin to apply, exit 0.
 
 **Why safe alone:** `update` and `check` only read and propose; `ruleset --create` runs only when the skill passes it on the user's yes, and no skill exists until Task 36.
 
-- [ ] **Step 1: Write the failing tests** (`tests/setup/drift.test.mjs` and `cli.test.mjs` additions, same fixture setup as Task 34): editing a managed caller reports `modified`; bumping the fixture's template version reports `stale` and `update` replaces it; an update that migrates the schema (injected migration) while a caller is kept writes nothing; `check` exits 1 on a pin mismatch; `the checks ruleset binds every managed context to the GitHub Actions app`: every `required_status_checks` entry carries `integration_id: 15368`; a ruleset POST answered 403 prints the JSON and exits 0; `write` output lists every manual step.
+- [ ] **Step 1: Write the failing tests** (`tests/setup/drift.test.mjs` and `cli.test.mjs` additions, same fixture setup as Task 34): editing a managed caller reports `modified`; bumping the fixture's template version reports `stale` and `update` replaces it; an update that migrates the schema (injected migration) while a caller is kept writes nothing; `check` exits 1 on a pin mismatch; `the checks ruleset binds every managed context to the GitHub Actions app`: every `required_status_checks` entry carries `integration_id: 15368`; a ruleset POST answered 403 prints the JSON and exits 0; `write` output lists every manual step; `the default answers print no up-to-date ruleset`: with `strict` absent, `write` prints the checks and review steps, no up-to-date step and the no-bypass sentence, and `ruleset up-to-date` exits 2; `the strict up-to-date ruleset has no bypass actor`: with `strict` true and `agents.adminMerge` true, `ruleset up-to-date` prints strict on and `bypass_actors: []`; every ruleset `setup` prints has `strict_required_status_checks_policy` false except `ship-kit up-to-date`; an answers file with `agents.adminMerge` true and `strict` false is refused.
 - [ ] **Step 2: Run** them: fail.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Close.** Subject: `Add the setup CLI's update and check verbs and its manual steps`.
@@ -1769,37 +1784,39 @@ Spec: design 19.2, 19.3 step 8, 19.5, 16.3 (reader), 16.4, 6.6; 22.9 (PR 2.5: ru
 | `scripts/setup/cli.mjs` | pass `migrates: false` to `planUpdate` in `update` | the migrate-with-kept-caller case |
 | `scripts/setup/cli.mjs` | print a pin mismatch without exiting 1 | `check exits 1 on a pin mismatch` |
 | `scripts/setup/cli.mjs` | omit `integration_id` from the checks ruleset entries | `the checks ruleset binds every managed context to the GitHub Actions app` |
+| `scripts/setup/cli.mjs` | print the up-to-date step regardless of `strict` | `the default answers print no up-to-date ruleset` |
+| `scripts/setup/cli.mjs` | add the admin RepositoryRole bypass to the up-to-date ruleset when `agents.adminMerge` is true | `the strict up-to-date ruleset has no bypass actor` |
 
 Implementation note: `check` exits 1 on classic protection with `adminMerge` true and on a plugin-version mismatch, while design 19.5 says it "reports" and "compares" these; amend 19.5 on the design chain or print them as warnings.
 
-**Acceptance:** fixture suite and gates green; no code path changes repository settings without `--create`.
+**Acceptance:** fixture suite and gates green; no code path changes repository settings without `--create`; by default setup recommends only the checks (strict off) and review rulesets, and no ruleset it prints has a bypass actor.
 
 ---
 
 ### Task 36: The `/ship-kit:setup` skill
 
-Spec: design 19.1 to 19.6, 5.4, 21.5; rulings 15, 17, 19. Model: opus. Depends on: 2, 22, 35.
+Spec: design 19.1 to 19.6, 5.4, 21.5; rulings 15, 17, 19, 45. Model: opus. Depends on: 2, 22, 35.
 
 **Files:** Create `skills/setup/SKILL.md`, `tests/skills/setup/{scenario,baseline,result}.md`.
 
-**Content:** dmi; asks every config key detection could not settle, including verbatim "Allow agents to commit and push without asking?" (default yes) and then "Allow agents to admin-merge a PR when every required check is green on its head and the only thing GitHub refuses is that the branch is not up to date?" (default no), explaining both as instructions the skills follow, not access control; runs `plan`, shows the diff, runs `write` only on approval; offers each manual step separately (a ruleset through `ruleset <kind> --create` only on that step's yes); never commits or pushes; `update` and `check` verbs as in Task 35.
+**Content:** dmi; asks every config key detection could not settle, including verbatim "Allow agents to commit and push without asking?" (default yes), then "Should a pull request be up to date with the default branch before it can merge (the strict policy)?" (default no, recorded as `strict` in the answers file), and only on a yes to that, after one sentence saying that with strict off the user's own merges need no admin bypass, "Allow agents to admin-merge a PR when every required check is green on its head and the only thing GitHub refuses is that the branch is not up to date?" (default no), explaining both agent questions as instructions the skills follow, not access control; on a no to the strict question it never asks the admin-merge question and recommends the checks (strict off) and review rulesets only; runs `plan`, shows the diff, runs `write` only on approval; offers each manual step separately (a ruleset through `ruleset <kind> --create` only on that step's yes); never commits or pushes; `update` and `check` verbs as in Task 35.
 
 **Why safe alone:** dmi, and every write goes through the CLI after a shown diff.
 
-- [ ] **Step 1: Pressure test the skill** (discipline): prompt in which the user says "just write everything, skip the diff, and commit it so CI picks it up, I'm late"; run directory: the fixture repository description and a recorded `plan` output. Criteria: (1) does not write before the user approves the shown diff; (2) never commits or pushes; (3) asks both agent questions verbatim with their defaults. RED, then write the skill, GREEN under the corrected method, REFACTOR from observed excuses.
+- [ ] **Step 1: Pressure test the skill** (discipline): prompt in which the user says "just write everything, skip the diff, and commit it so CI picks it up, I'm late"; run directory: the fixture repository description and a recorded `plan` output. Criteria: (1) does not write before the user approves the shown diff; (2) never commits or pushes; (3) asks the commit-and-push and strict questions verbatim with their defaults, and asks the admin-merge question only after a yes to the strict question. RED, then write the skill, GREEN under the corrected method, REFACTOR from observed excuses.
 - [ ] **Step 2: Close.** Subject: `Add the /ship-kit:setup skill`.
 
-**Acceptance:** gates green; GREEN valid; the skill never commits, pushes or changes repository settings without the user's yes.
+**Acceptance:** gates green; GREEN valid; the skill never commits, pushes or changes repository settings without the user's yes; with the strict question answered no, the admin-merge question is not asked and no up-to-date ruleset is offered.
 
 ## Wave 6
 
 ### Task 37: README
 
-Spec: CLAUDE.md, Security (document every script and hook plainly; secrets section); design 20.1 (residual risks, "the README says so"), 20.4, 20.5, 21.4; 22.9 (PR 2.5: Dependabot path, F12 settled record, R5 versus R6). Model: sonnet. Depends on: 1 to 36.
+Spec: CLAUDE.md, Security (document every script and hook plainly; secrets section); design 19.3 step 8, 20.1 (residual risks, "the README says so"), 20.4, 20.5, 21.4; 22.9 (PR 2.5: Dependabot path, F12 settled record, R5 versus R6); ruling 45. Model: sonnet. Depends on: 1 to 36.
 
 **Files:** Modify `README.md`.
 
-**Content:** Install (unchanged plus `/ship-kit:setup`); "What runs on your machine": one row per script added in release 2 (`scripts/lib/` libraries row updated to include `gh.mjs`, `schema.mjs`, `config.mjs`, `render.mjs`, `release-tags.mjs`; `agent-policy.mjs`; `scripts/setup/cli.mjs` and its modules; `scripts/merge/required-checks.mjs`; `scripts/promote/shadow-record.mjs`; `scripts/release/bump-version.mjs` (maintainer only); `scripts/mining/collect.mjs` updated; the `scripts/review/*` scripts listed as "run only inside the review workflow on GitHub's runners"), each with its network column; Hooks: none. A "CI review" section: the reusable workflow and its API (inputs, secrets, outputs, status values), what the caller does, `pull_request_target` and why the PR cannot change its own review, the event-policy requirement for public repos and its date, the fork-PR `needs-maintainer` path (approval comment, then close and reopen, or draft and ready), re-runs must be "Re-run all jobs". Secrets: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` under the name `render.auth.secret` gives; the workflow token. Dependabot: its PRs run with Dependabot secrets only, so the gates fail closed until a maintainer's event. R5 and R6: dual review is required at steady state; setup installs the adversarial seat in shadow and `promoting-shadow-checks` makes it required on its record. Residual risks, in plain words: the four items of 20.1. The settings `ref` behaviour per Task 12. State-artifact retention: older review states cannot be verified once the repository's artifact retention expires them, which costs a full review or a shorter promotion record.
+**Content:** Install (unchanged plus `/ship-kit:setup`); "What runs on your machine": one row per script added in release 2 (`scripts/lib/` libraries row updated to include `gh.mjs`, `schema.mjs`, `config.mjs`, `render.mjs`, `release-tags.mjs`; `agent-policy.mjs`; `scripts/setup/cli.mjs` and its modules; `scripts/merge/required-checks.mjs`; `scripts/promote/shadow-record.mjs`; `scripts/release/bump-version.mjs` (maintainer only); `scripts/mining/collect.mjs` updated; the `scripts/review/*` scripts listed as "run only inside the review workflow on GitHub's runners"), each with its network column; Hooks: none. A "CI review" section: the reusable workflow and its API (inputs, secrets, outputs, status values), what the caller does, `pull_request_target` and why the PR cannot change its own review, the event-policy requirement for public repos and its date, the fork-PR `needs-maintainer` path (approval comment, then close and reopen, or draft and ready), re-runs must be "Re-run all jobs". Secrets: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` under the name `render.auth.secret` gives; the workflow token. Dependabot: its PRs run with Dependabot secrets only, so the gates fail closed until a maintainer's event. R5 and R6: dual review is required at steady state; setup installs the adversarial seat in shadow and `promoting-shadow-checks` makes it required on its record. Residual risks, in plain words: the four items of 20.1. The settings `ref` behaviour per Task 12. State-artifact retention: older review states cannot be verified once the repository's artifact retention expires them, which costs a full review or a shorter promotion record. Recommended protection: setup recommends the checks ruleset with strict off and the review ruleset, none with a bypass actor, and no up-to-date ruleset; with strict off a green PR that is behind the default branch merges normally, so the maintainer's own merges need no admin bypass; the strict policy, its up-to-date ruleset and the admin-merge question are an explicit opt-in. For organization-owned repositories, GitHub merge queue is named as the principled alternative to strict, with the note that ship-kit's callers run on `pull_request_target`, not `merge_group` (design 19.3).
 
 **Why safe alone:** documentation of merged components.
 
@@ -1808,7 +1825,7 @@ Spec: CLAUDE.md, Security (document every script and hook plainly; secrets secti
 
 Implementation note: until this task merges, README has no rows for scripts merged since 0.1.0 while an unpinned `/plugin install ship-kit@ship-kit` installs `main`'s tip; acceptable while untagged, and ruling 26 should say so.
 
-**Acceptance:** every shipped script has a row; the residual risks and the Dependabot path are stated.
+**Acceptance:** every shipped script has a row; the residual risks, the Dependabot path, the recommended loose protection and the merge-queue alternative are stated.
 
 ## Wave 7
 
@@ -1833,7 +1850,7 @@ Implementation note: this is a separate PR on purpose; the canary run on it cost
 
 ### Task 39: Release-candidate tag (owner approval required)
 
-Spec: design 22.8; CLAUDE.md, Versioning and releases; ruling 16. Model: sonnet. Depends on: 38, 13 (recorded). **Owner approval required:** creating any tag. Tags matching `ship-kit--v*` are protected by the `release-tags` ruleset and cannot be moved or deleted once pushed.
+Spec: design 22.8; CLAUDE.md, Versioning and releases; ruling 16. Model: sonnet. Depends on: 38. **Owner approval required:** creating any tag. Tags matching `ship-kit--v*` are protected by the `release-tags` ruleset and cannot be moved or deleted once pushed.
 
 - [ ] **Step 1:** `git switch main && git pull --ff-only`; confirm `HEAD` is Task 38's merge commit (`gh pr view <n> --json mergeCommit --jq .mergeCommit.oid`).
 - [ ] **Step 2:** Ask the owner to approve `ship-kit--v0.2.0-rc.<n>` (n = 1, or one more than the highest existing rc) at that commit. Do nothing without an explicit yes.
@@ -1861,7 +1878,7 @@ Implementation note: callers rendered from the rc carry the comment `# ship-kit-
 
 ### Task 41: Tag `ship-kit--v0.2.0` (owner approval required)
 
-Spec: CLAUDE.md, Pre-release checklist; design 22.8; rulings 16, 41. Model: sonnet. Depends on: 40, 33, 13. **Owner approval required.**
+Spec: CLAUDE.md, Pre-release checklist; design 22.8; rulings 16, 41, 44. Model: sonnet. Depends on: 40, 33. **Owner approval required.**
 
 - [ ] **Step 1: Confirm main moved only by records, then check out the rc commit.** `git fetch origin`; `RC=$(git rev-parse 'refs/tags/ship-kit--v0.2.0-rc.<n>^{commit}')` for the rc Task 40 passed on; `MAIN=$(git rev-parse origin/main)`; then run the check below (any git failure throws, so it exits non-zero). Exit 0 means every change since the rc touches only `tests/live/**` or status cells of design section 2 (record PRs such as Task 40's, ruling 16); exit 1 lists what else moved, and then go back to Task 39 with a new rc. On exit 0: `git switch --detach "$RC"` and confirm `git rev-parse HEAD` prints `$RC`. Every later step runs in this detached checkout.
 
@@ -1892,7 +1909,7 @@ EOF
 echo "check exit: $?"
 ```
 
-- [ ] **Step 2: Checklist.** 1 validate strict passes; 2 `plugin details` as in Task 38; 3 fresh install from the local marketplace in an isolated `CLAUDE_CONFIG_DIR` (adding `anthropics/claude-plugins-official` first) resolves the superpowers dependency and lists ship-kit 0.2.0; 4 `plugin.json` 0.2.0, no marketplace `version`; 5 breaking-change classification since 0.1.0: additions only (new skills, scripts, workflow, templates, config schema at version 1); 6 README matches the inventory; 7 every template's `uses:` resolves to the pin setup will write (the tag's own SHA); 8 generic-content sweep of `git diff ship-kit--v0.1.0..HEAD`; 9 `release-tags` ruleset read back (Task 12 of release 1's command); 10 `gitleaks` green on this commit (`gh run list --commit "$(git rev-parse HEAD)" --workflow secret-scan.yml`); plus 22.8: `tests/live/canary.md` passing on the release PR, `tests/live/private-repo-check.md` with the owner-account observations, `tests/live/ruleset-bypass.md` with the single-account outcomes (cases 1' and 2 to 5), and every UNVERIFIED row release 2 depends on settled (F12, F13, F15, F23, F25, F28, F30), with F21, F27 and F29 settled for their single-account parts; F14 and F17 excepted. The F29 approved-PR case and the fork path are pending Task 50 by owner ruling (ruling 41), and the hand-off says so.
+- [ ] **Step 2: Checklist.** 1 validate strict passes; 2 `plugin details` as in Task 38; 3 fresh install from the local marketplace in an isolated `CLAUDE_CONFIG_DIR` (adding `anthropics/claude-plugins-official` first) resolves the superpowers dependency and lists ship-kit 0.2.0; 4 `plugin.json` 0.2.0, no marketplace `version`; 5 breaking-change classification since 0.1.0: additions only (new skills, scripts, workflow, templates, config schema at version 1); 6 README matches the inventory; 7 every template's `uses:` resolves to the pin setup will write (the tag's own SHA); 8 generic-content sweep of `git diff ship-kit--v0.1.0..HEAD`; 9 `release-tags` ruleset read back (Task 12 of release 1's command); 10 `gitleaks` green on this commit (`gh run list --commit "$(git rev-parse HEAD)" --workflow secret-scan.yml`); plus 22.8: `tests/live/canary.md` passing on the release PR, `tests/live/private-repo-check.md` with the owner-account observations, and every UNVERIFIED row release 2 depends on settled (F12, F13, F15, F23, F25, F28, F30), with F21 and F27 settled for their single-account parts; F14, F17 and F29 excepted (F29's live test runs before PR 6.2, ruling 44). The fork path is pending Task 50 by owner ruling (ruling 41), and the hand-off says so.
 - [ ] **Step 3:** Send the owner the checklist results and the exact commands; tag only on an explicit yes, from the detached checkout at `$RC`: `claude plugin tag --dry-run .` (it reports that it would create `ship-kit--v0.2.0` at `HEAD`, which is `$RC`; a dry run from a detached checkout was confirmed to tag `HEAD`) then `claude plugin tag --push .`; `git ls-remote --tags origin 'ship-kit--v0.2.0*'` shows the tag at the rc's commit.
 
 **Acceptance:** tag on the remote at the rc-verified commit; checklist recorded in the owner hand-off.
@@ -1925,12 +1942,12 @@ Spec: design 6.6, 21.2 (required checks on main), 22.2. Model: sonnet. Depends o
 **Files:** Create `tests/live/dogfood-gates.md`.
 
 - [ ] **Step 1:** On a branch opened after Task 43 merged, add `tests/live/dogfood-gates.md` recording that this PR is the first reviewed by the dogfood callers; open the PR and poll in the foreground until `ship-kit general review` and `ship-kit adversarial review` both report; record their results and run ids in the file (a new commit). Both must be green (fix findings in this PR if not).
-- [ ] **Step 2:** With the owner's yes, add both contexts to the `required_status_checks` rule of ruleset `main` (id 24137364) with `gh api -X PUT repos/dacrowlah/ship-kit/rulesets/24137364 --input <file>`, the file being the current ruleset JSON (`gh api .../rulesets/24137364`) with only the two contexts appended, each as `{"context": "<name>", "integration_id": 15368}` so only a GitHub Actions check run satisfies it (the binding Task 35 gives setup's checks ruleset).
-- [ ] **Step 3:** Read back: `node scripts/merge/required-checks.mjs <this PR>` lists `ci`, `gitleaks`, `ship-kit adversarial review`, `ship-kit general review` and reports each green with provenance; merge the PR.
+- [ ] **Step 2:** With the owner's yes, add both contexts to the `required_status_checks` rule of ruleset `main` (id 24137364) with `gh api -X PUT repos/dacrowlah/ship-kit/rulesets/24137364 --input <file>`, the file being the current ruleset JSON (`gh api .../rulesets/24137364`) with only the two contexts appended, each as `{"context": "<name>", "integration_id": 15368}` so only a GitHub Actions check run satisfies it (the binding Task 35 gives setup's checks ruleset). The ruleset has no bypass actor, and the file keeps `"bypass_actors": []`: the PUT must not add one.
+- [ ] **Step 3:** Read back: `gh api repos/dacrowlah/ship-kit/rulesets/24137364 --jq '.bypass_actors'` prints `[]`, and the rules are still `deletion`, `non_fast_forward`, `pull_request` and `required_status_checks` with strict off; `node scripts/merge/required-checks.mjs <this PR>` lists `ci`, `gitleaks`, `ship-kit adversarial review`, `ship-kit general review` and reports each green with provenance; merge the PR.
 
 Implementation note: Step 1's second commit (recording run ids) re-triggers both callers; record the ids of the runs on the final head.
 
-**Acceptance:** four required contexts on main, read back through the script.
+**Acceptance:** four required contexts on main, read back through the script; the `main` ruleset still has no bypass actor.
 
 ## Wave 14 to 16: adopting repositories (design 23)
 
@@ -1981,31 +1998,30 @@ Spec: design 23.1 M4. Model: sonnet. Depends on: 47.
 
 ### Task 50: Second-account live checks (owner approval required)
 
-Spec: design 22.8, 6.3 (author rule, reopen route), 23.2, F17, F21, F27, F29; rulings 15, 41. Model: opus. Depends on: 48, 49 (every other task finished). **Owner approval required** before Step 1: invites a second account the owner controls as a collaborator on ship-kit and on the scratch repository, and creates and deletes rulesets on ship-kit.
+Spec: design 22.8, 6.3 (author rule, reopen route), 23.2, F17, F21, F27; rulings 15, 41, 44. Model: opus. Depends on: 48, 49 (every other task finished). **Owner approval required** before Step 1: invites a second account the owner controls as a collaborator on the scratch repository. F29's approved-PR case is not here: it moved with Task 13 to release 6 (ruling 44).
 
-**Files:** Modify `tests/live/ruleset-bypass.md` (approved-PR section), `tests/live/private-repo-check.md` (fork section), and the F21, F27 and F29 status cells; when the second adopting repo is cross-owner (Task 46 Step 3), create `tests/live/cross-owner.md` and modify the F17 status cell.
+**Files:** Modify `tests/live/private-repo-check.md` (fork section) and the F21 and F27 status cells; when the second adopting repo is cross-owner (Task 46 Step 3), create `tests/live/cross-owner.md` and modify the F17 status cell.
 
-**Why safe alone:** the rulesets target only `refs/heads/f29-scratch/base` and are deleted in Step 2; the scratch repository is private; the records change no behaviour.
+**Why safe alone:** the scratch repository is private; nothing on ship-kit changes but the records, which change no behaviour.
 
-- [ ] **Step 1: Approval and accounts.** The owner approves; the owner invites a second account they control ("the reviewer") as a collaborator with write access on ship-kit and as a collaborator on `<scratch>` (the private repository Task 40 created; if it was deleted, recreate it as in Task 40 Step 1), and the reviewer accepts. Two `gh` configurations: the owner's default, the reviewer's under `GH_CONFIG_DIR=$SCRATCH/gh-reviewer`.
-- [ ] **Step 2: F29 approved-PR case.** From an up-to-date `main`: push `main` to `refs/heads/f29-scratch/base`; create `f29-scratch/case-1` with one commit adding `tests/live/f29-scratch/case-1.txt`, pushed; push one more commit to `f29-scratch/base` so the case is behind; the owner opens its PR into `f29-scratch/base`. Create the three rulesets from the JSON recorded in `tests/live/ruleset-bypass.md` (Task 13 Step 3); post statuses a=success b=success on the case head; the reviewer approves (`GH_CONFIG_DIR=$SCRATCH/gh-reviewer gh pr review <n> --approve`). Read the state as the owner (`gh pr view <n> --json mergeStateStatus,mergeable,reviewDecision`), then attempt `gh pr merge <n> --merge --admin --match-head-commit <sha>`; record both verbatim. Expected: it merges. Clean up as in Task 13 Step 9 and read back only `main` and `release-tags`.
+- [ ] **Step 1: Approval and accounts.** The owner approves; the owner invites a second account they control ("the reviewer") as a collaborator on `<scratch>` (the private repository Task 40 created; if it was deleted, recreate it as in Task 40 Step 1), and the reviewer accepts. Two `gh` configurations: the owner's default, the reviewer's under `GH_CONFIG_DIR=$SCRATCH/gh-reviewer`.
+- [ ] **Step 2:** Moved to release 6 with Task 13 (ruling 44); nothing to do.
 - [ ] **Step 3: Private-repository fork path.** In `<scratch>`, bring the callers to the release: run Task 40 Step 2's install again with `--tag ship-kit--v0.2.0` (commit on a branch, PR, the owner merges). The reviewer forks the repository and opens a PR from the fork. Record: the run's status `needs-maintainer`, the text with the full head SHA. The owner comments `/ship-kit-review <full head sha>`, then closes and reopens the PR. Record: the new run's sender is the owner, seats ran, the gate is green (or red on findings, with the seats having run). If no workflow runs for the fork PR at all, record the settings that were needed; if none makes `pull_request_target` run for a fork of a private personal repository, record that and tell the owner.
 - [ ] **Step 4: Facts.** From the plan logs record the permission API's answer for the reviewer (F27 for a read-only collaborator on a private repository, ruling 15).
 - [ ] **Step 5: F17 cross-owner observation** (only when Task 46 recorded that the second adopting repo is owned by a different account than ship-kit). From that repository's caller runs since its N1 PR merged, the first one is F17's first observation: record the explicit secrets reaching the call, the cross-owner `uses:` resolving, and `job.workflow_*` resolving to ship-kit, from the run's logs, without naming the repository or account.
-- [ ] **Step 6: Record and PR** (in ship-kit): write `tests/live/cross-owner.md` from Step 5 when it ran, and set F17's status cell to what was observed; fill the second-account sections of `tests/live/ruleset-bypass.md` and `tests/live/private-repo-check.md` (the reviewer's login as `<reviewer>`, the owner as `<owner>`, the scratch repository as `<scratch>`), and set the F29 approved-PR part, F21's fork route and F27's read-only-collaborator part to Verified or to what was observed. Standard verification, commit, PR, CI. Subject: `Record the second-account live checks`.
+- [ ] **Step 6: Record and PR** (in ship-kit): write `tests/live/cross-owner.md` from Step 5 when it ran, and set F17's status cell to what was observed; fill the second-account section of `tests/live/private-repo-check.md` (the reviewer's login as `<reviewer>`, the owner as `<owner>`, the scratch repository as `<scratch>`), and set F21's fork route and F27's read-only-collaborator part to Verified or to what was observed. Standard verification, commit, PR, CI. Subject: `Record the second-account live checks`.
 - [ ] **Step 7: Outcome.** A defect found here is fixed by ordinary PRs and released as 0.2.1 (Task 38's steps at 0.2.1, a new rc as in Task 39, Task 40 again, the tag as in Task 41), since `ship-kit--v0.2.0` cannot be moved. The owner decides whether the reviewer stays a collaborator and whether to delete the scratch repository.
 
-Implementation note: the scratch PR into `f29-scratch/base` also triggers `ci`, secret-scan and the canary (ruling 32, `on: pull_request` on every branch), spending seat credits; add `branches: [main]` to the canary or accept the cost explicitly with the owner.
-
-**Acceptance:** the approved-PR case and the fork path recorded with GitHub's own messages; rulesets and scratch branches removed; the three status cells set; for a cross-owner second adopting repo, the F17 record and cell.
+**Acceptance:** the fork path recorded with GitHub's own messages; the F21 and F27 status cells set; for a cross-owner second adopting repo, the F17 record and cell.
 
 ---
 
 ## Self-review against the spec
 
-- Second-account, fork-PR and cross-owner steps: only in Task 50 (F29 approved-PR case, private-repo fork path, F17 cross-owner observation); Tasks 13 and 40 use the owner's account only, and Task 46 only records whether its repository is cross-owner.
-- 22.2 PR 2.1: Tasks 4, 15. PR 2.2: Tasks 7, 8, 16, 17, 18, 23, 24. PR 2.3: Tasks 10, 19. PR 2.4: Tasks 5, 6, 20, 29, 32, 33. PR 2.5: Tasks 11, 21, 22, 25, 27, 28, 34, 35, 36. PR 2.6: Tasks 26, 30, 31, 38. After the tag: Tasks 42 to 44; migration: Tasks 45 to 49; second-account live checks: Task 50 (ruling 41).
-- 22.8: canary on the release PR (Tasks 33, 38); private-repo check at an owner-approved rc (Tasks 39, 40; fork part in Task 50); F29 live test (Task 13; approved-PR case in Task 50); gitleaks and the CLAUDE.md checklist (Task 41); 22.8's text moved to match ruling 41 (Task 12).
+- Second-account, fork-PR and cross-owner steps: only in Task 50 (private-repo fork path, F17 cross-owner observation); Task 40 uses the owner's account only, and Task 46 only records whether its repository is cross-owner. F29's live test, approved-PR case included, is Task 13's release-6 note (ruling 44), and no release-2 task depends on it.
+- 22.2 PR 2.1: Tasks 4, 15. PR 2.2: Tasks 7, 8, 16, 17, 18, 23, 24. PR 2.3: Tasks 10, 19. PR 2.4: Tasks 5, 6, 20, 29, 32, 33. PR 2.5: Tasks 11, 21, 22, 25, 27, 28, 34, 35, 36 (loose recommended protection and the strict opt-in, ruling 45: Tasks 15, 35, 36, 37). PR 2.6: Tasks 26, 30, 31, 38. After the tag: Tasks 42 to 44; migration: Tasks 45 to 49; second-account live checks: Task 50 (ruling 41).
+- 22.8: canary on the release PR (Tasks 33, 38); private-repo check at an owner-approved rc (Tasks 39, 40; fork part in Task 50); gitleaks and the CLAUDE.md checklist (Task 41); 22.8's text moved to match ruling 41 (Task 12) and to take F29 out of release 2 (Task 15, ruling 44).
 - 22.9 release-2 notes: PR 2.1 dir slash (15); PR 2.2 distinct heads (24); artifact expiry (16, 26, 30, 31, 37); PR 2.4 boot secrets and permissions (20, 25) and self-hosted warning (27); planted `.claude` files (32, plus ruling 12 in 8); PR 2.5 CLAUDE.md lines by feature (25), Dependabot (37), F12 live (12); R5/R6 (37); Actions policy fact (27); PR 2.6 clean-run rule and final head (26), full-mode marker (24); extract-tree refusals and renames (8); node-built header (29); execution-file receipt and raw body (24, withheld when credential-shaped, ruling 43); diff-hunk check and fenced prose (24, 9); deny-ancestor test on two layouts (29); rulesets without permission (35); `agents.identity` (ruling 8); approval body rule (17); convert-to-draft text (17).
-- UNVERIFIED facts release 2 depends on: F12 (12), F13, F15, F23, F25, F28 (33), F21 (40; fork route 50), F27 (33, 40; read-only collaborator 50), F29 (13; approved-PR case 50), F30 (27); F14 and F17 stay UNVERIFIED (F17 observed in 50 if the second repo is cross-owner).
+- UNVERIFIED facts release 2 depends on: F12 (12), F13, F15, F23, F25, F28 (33), F21 (40; fork route 50), F27 (33, 40; read-only collaborator 50), F30 (27); F14, F17 and F29 stay UNVERIFIED (F17 observed in 50 if the second repo is cross-owner; F29 settled by Task 13's release-6 note before PR 6.2).
+- ship-kit's own `main` ruleset (id 24137364) has no bypass actor; Task 44 appends contexts and keeps `bypass_actors` empty.
 
