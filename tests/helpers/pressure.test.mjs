@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { isolatedEnv } from "../../scripts/assert-test-globs.mjs";
-import { checkStream, loadedBodyMatches, main, readMarker, shippedTextHash, stage, stagedTreeHash } from "./pressure.mjs";
+import { checkBaseline, checkStream, loadedBodyMatches, main, MODEL_ID, pinnedModel, readMarker, shippedTextHash, stage, stagedTreeHash } from "./pressure.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -35,12 +35,24 @@ const LISTED = loadedFrom(RAW_LISTED, STAGED_PATH);
 const SKILL = "proving-tests-can-fail";
 const HEX = "0123456789abcdef";
 const MARKER = `${SKILL}@0.1.0:${HEX}`;
+const OTHER_MODEL = "claude-other-model-1";
+/** Ids that differ from the fixture model only by a suffix, padding or case. */
+const NEAR_MISSES = ["claude-opus-5-5[1m]", "claude-opus-5-5-20260901", " claude-opus-5-5", "claude-opus-5-5 ", "claude-opus-5-5\n", "CLAUDE-OPUS-5-5", "claude-opus-5", ""];
+
+/** Writes `<root>/tests/skills/pinned-model.txt`. @returns {string} root */
+function pin(root, content = `${FIXTURE_MODEL}\n`) {
+  mkdirSync(join(root, "tests", "skills"), { recursive: true });
+  writeFileSync(join(root, "tests", "skills", "pinned-model.txt"), content);
+  return root;
+}
 
 /** @param {string} text @returns {object[]} */
 const parse = (text) => text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
 /** @param {object[]} messages @returns {string} */
 const join_ = (messages) => messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
 const finalResult = (text) => parse(text).filter((m) => m.type === "result").at(-1).result;
+/** The model the fixture streams' init message reports. */
+const FIXTURE_MODEL = parse(RAW_INVOKED)[0].model;
 
 /** Rewrites the stream's final result message. @returns {string} */
 function withResult(text, edit) {
@@ -94,7 +106,7 @@ function pluginRoot() {
   writeFileSync(join(root, "scripts", "x.mjs"), "x\n");
   mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "docs", "design.md"), "answers\n");
-  return root;
+  return pin(root);
 }
 
 /**
@@ -540,7 +552,7 @@ function repoWithSkill(skillText) {
   const root = tmp("pressure-repo-");
   mkdirSync(join(root, "skills", SKILL), { recursive: true });
   writeFileSync(join(root, "skills", SKILL, "SKILL.md"), skillText);
-  return root;
+  return pin(root);
 }
 
 function streamFile(text) {
@@ -550,7 +562,8 @@ function streamFile(text) {
 }
 
 /** Output of a valid check: the hash line, a blank line, the text. */
-const checked = (plugin, text) => `Shipped-text SHA-256: ${shippedTextHash(join(plugin, "skills", SKILL))}\n\n${text}\n`;
+const checked = (plugin, text, model = FIXTURE_MODEL) =>
+  `Shipped-text SHA-256: ${shippedTextHash(join(plugin, "skills", SKILL))}\nModel: ${model}\n\n${text}\n`;
 
 test("check through main prints the text on success and the reason on failure", () => {
   const { root, plugin } = stagedFixtureSkill();
@@ -944,4 +957,208 @@ test("a skill that places $ARGUMENTS itself does not accept an appended ARGUMENT
   assert.equal(loadedBodyMatches(text, "Args: .\n\n\nARGUMENTS: x", options), false);
   assert.equal(loadedBodyMatches("---\nname: s\n---\nBody.\n", "Body.\n\n\nARGUMENTS: x", options), true);
   assert.equal(loadedBodyMatches("---\nname: s\n---\nBody.\n", "Body.\n\n\nARGUMENTS: x", { pluginPath: plugin, skill: "s" }), false);
+});
+
+// --- the pinned model ------------------------------------------------------
+
+/** Sets the init message's model (deletes it for `undefined`). @returns {string} */
+function withModel(text, model) {
+  const messages = parse(text);
+  if (model === undefined) delete messages[0].model;
+  else messages[0].model = model;
+  return join_(messages);
+}
+
+/**
+ * A RED stream: the invoked fixture with ship-kit cleared from the init
+ * message's plugins, skills and slash commands, and its Skill call, that
+ * call's result and the loaded skill body removed.
+ * @returns {string}
+ */
+function baselineStream() {
+  const messages = parse(INVOKED);
+  const init = messages[0];
+  init.plugins = init.plugins.filter((p) => p.name !== "ship-kit");
+  init.skills = init.skills.filter((s) => !s.startsWith("ship-kit:"));
+  init.slash_commands = init.slash_commands.filter((s) => !s.startsWith("ship-kit:"));
+  const { call, result } = skillCallParts(messages);
+  return join_(messages.filter((m) => m !== call && m !== result && !(m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX))));
+}
+
+test("the pinned model file is one well-formed line", () => {
+  assert.equal(`${pinnedModel(REPO)}\n`, readFileSync(join(REPO, "tests", "skills", "pinned-model.txt"), "utf8"));
+  assert.match(pinnedModel(REPO), MODEL_ID);
+  assert.equal(pinnedModel(pin(tmp("pressure-pin-"), "model-a[1m]\n")), "model-a[1m]");
+  const cases = ["a\nb\n", "claude-opus-5-5", "claude opus\n", "claude-opus-5-5\n\n", "claude-opus-5-5\r\n", "\n", "", `${"a".repeat(101)}\n`, "a/b\n", "-x\n", "--max-turns\n", "--dangerously-skip-permissions\n", ".x\n"];
+  for (const content of cases) {
+    const root = pin(tmp("pressure-pin-"), content);
+    assert.throws(() => pinnedModel(root), /pinned-model\.txt/, JSON.stringify(content));
+  }
+  assert.throws(() => pinnedModel(tmp("pressure-pin-")), /pinned-model\.txt/, "a missing pin file");
+  const { root, plugin } = stagedFixtureSkill();
+  pin(root, "two\nlines\n");
+  const result = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, plugin))], { root });
+  assert.equal(result.code, 2);
+  assert.equal(result.out, "");
+  assert.equal(run(["baseline", "--stream", streamFile(baselineStream())], { root }).code, 2);
+});
+
+test("a GREEN run under the pin passes and prints its model", () => {
+  const verdict = checkStream(INVOKED, { skill: SKILL, dmi: false, expectModel: FIXTURE_MODEL });
+  assert.equal(verdict.ok, true, verdict.reason);
+  assert.equal(verdict.model, FIXTURE_MODEL);
+  const { root, plugin } = stagedFixtureSkill();
+  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, plugin))], { root });
+  assert.equal(ok.code, 0, ok.err);
+  assert.equal(ok.out.split("\n")[1], `Model: ${FIXTURE_MODEL}`);
+  assert.equal(ok.out, checked(plugin, finalResult(INVOKED)));
+});
+
+test("a GREEN run under another model fails", () => {
+  const verdict = checkStream(withModel(INVOKED, OTHER_MODEL), { skill: SKILL, dmi: false, expectModel: FIXTURE_MODEL });
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, `the run's model ${OTHER_MODEL} differs from the pinned model ${FIXTURE_MODEL}`);
+  const { root, plugin } = stagedFixtureSkill();
+  const refused = run(["check", "--skill", SKILL, "--stream", streamFile(withModel(loadedFrom(RAW_INVOKED, plugin), OTHER_MODEL))], { root });
+  assert.equal(refused.code, 1);
+  assert.equal(refused.out, "");
+  assert.match(refused.err, new RegExp(`${OTHER_MODEL} differs from the pinned model ${FIXTURE_MODEL}`));
+  const dmi = withResult(withModel(INVOKED, OTHER_MODEL), (m) => ({ ...m, structured_output: { skill_marker: MARKER } }));
+  assert.equal(checkStream(dmi, { skill: SKILL, dmi: true, marker: MARKER, expectModel: FIXTURE_MODEL }).ok, false, "dmi too");
+  assert.ok(!NEAR_MISSES.includes(FIXTURE_MODEL));
+  for (const model of NEAR_MISSES) {
+    const near = checkStream(withModel(INVOKED, model), { skill: SKILL, dmi: false, expectModel: FIXTURE_MODEL });
+    assert.equal(near.ok, false, JSON.stringify(model));
+    assert.equal(near.reason, `the run's model ${model} differs from the pinned model ${FIXTURE_MODEL}`);
+  }
+});
+
+test("an init with no model fails", () => {
+  for (const model of [undefined, 42, null]) {
+    for (const expectModel of [FIXTURE_MODEL, undefined]) {
+      const verdict = checkStream(withModel(INVOKED, model), { skill: SKILL, dmi: false, expectModel });
+      assert.equal(verdict.ok, false, `${model} ${expectModel}`);
+      assert.equal(verdict.reason, "init message names no model");
+    }
+  }
+});
+
+test("--any-model accepts another model", () => {
+  const { root, plugin } = stagedFixtureSkill();
+  const stream = streamFile(withModel(loadedFrom(RAW_INVOKED, plugin), OTHER_MODEL));
+  const ok = run(["check", "--skill", SKILL, "--stream", stream, "--any-model"], { root });
+  assert.equal(ok.code, 0, ok.err);
+  assert.equal(ok.out, checked(plugin, finalResult(INVOKED), OTHER_MODEL));
+  const noPin = stagedFixtureSkill();
+  rmSync(join(noPin.root, "tests", "skills", "pinned-model.txt"));
+  const unpinned = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, noPin.plugin)), "--any-model"], {
+    root: noPin.root,
+  });
+  assert.equal(unpinned.code, 0, "--any-model never reads the pin");
+  const modelless = run(["check", "--skill", SKILL, "--stream", streamFile(withModel(loadedFrom(RAW_INVOKED, plugin), undefined)), "--any-model"], {
+    root,
+  });
+  assert.equal(modelless.code, 1);
+  assert.match(modelless.err, /init message names no model/);
+});
+
+test("a RED run under the pin passes", () => {
+  const root = repoWithSkill("s\n");
+  const ok = run(["baseline", "--stream", streamFile(baselineStream())], { root });
+  assert.equal(ok.code, 0, ok.err);
+  assert.equal(ok.out, `Model: ${FIXTURE_MODEL}\n\n${finalResult(INVOKED)}\n`);
+  const other = parse(baselineStream());
+  other[0].plugins.push({ name: "ship-kit-extras", path: "/x" });
+  other[0].skills.push("superpowers:ship-kit-like", "ship-kit-helper");
+  other[0].slash_commands.push("ship-kitchen", "ship-kit-helper");
+  assert.equal(run(["baseline", "--stream", streamFile(join_(other))], { root }).code, 0, "other names are not ship-kit");
+});
+
+test("a RED run that loaded ship-kit is refused", () => {
+  const root = repoWithSkill("s\n");
+  const invoked = run(["baseline", "--stream", streamFile(INVOKED)], { root });
+  assert.equal(invoked.code, 1);
+  assert.equal(invoked.out, "");
+  assert.match(invoked.err, /ship-kit/);
+  const plantings = [
+    (init) => init.plugins.push({ name: "ship-kit", path: "/p" }),
+    (init) => init.skills.push(`ship-kit:${SKILL}`),
+    (init) => init.slash_commands.push("ship-kit:anything"),
+  ];
+  for (const plant of plantings) {
+    const messages = parse(baselineStream());
+    plant(messages[0]);
+    const refused = run(["baseline", "--stream", streamFile(join_(messages))], { root });
+    assert.equal(refused.code, 1, plant.toString());
+    assert.match(refused.err, /ship-kit/);
+  }
+});
+
+test("a RED run under another model is refused", () => {
+  const root = repoWithSkill("s\n");
+  const other = run(["baseline", "--stream", streamFile(withModel(baselineStream(), OTHER_MODEL))], { root });
+  assert.equal(other.code, 1);
+  assert.equal(other.out, "");
+  assert.match(other.err, new RegExp(`${OTHER_MODEL} differs from the pinned model ${FIXTURE_MODEL}`));
+  const none = run(["baseline", "--stream", streamFile(withModel(baselineStream(), undefined))], { root });
+  assert.equal(none.code, 1);
+  assert.match(none.err, /init message names no model/);
+  for (const model of NEAR_MISSES) {
+    const near = run(["baseline", "--stream", streamFile(withModel(baselineStream(), model))], { root });
+    assert.equal(near.code, 1, JSON.stringify(model));
+    assert.equal(near.out, "");
+  }
+  assert.throws(() => checkBaseline(baselineStream(), {}), /expectModel/, "the library call names the model it accepts");
+});
+
+test("baseline has no any-model mode: a RED run on another model is never accepted", () => {
+  const root = repoWithSkill("s\n");
+  const haiku = streamFile(withModel(baselineStream(), "claude-haiku-4-5"));
+  const plain = run(["baseline", "--stream", haiku], { root });
+  assert.equal(plain.code, 1);
+  assert.equal(plain.out, "");
+  assert.match(plain.err, /claude-haiku-4-5 differs from the pinned model/);
+  const flagged = run(["baseline", "--stream", haiku, "--any-model"], { root });
+  assert.equal(flagged.code, 2);
+  assert.equal(flagged.out, "");
+  assert.match(flagged.err, /unexpected argument --any-model/);
+});
+
+test("a RED run with no final success is refused", () => {
+  const root = repoWithSkill("s\n");
+  const messages = parse(baselineStream());
+  const truncated = messages.slice(0, messages.findLastIndex((m) => m.type === "result"));
+  const cases = [
+    join_(truncated),
+    join_([...messages, messages[1]]),
+    withResult(baselineStream(), (m) => ({ ...m, subtype: "error_max_turns" })),
+    withResult(baselineStream(), (m) => ({ ...m, is_error: true })),
+    withResult(baselineStream(), (m) => ({ ...m, result: 42 })),
+    join_(messages.slice(1)),
+    join_([messages[0], ...messages]),
+    "",
+  ];
+  for (const stream of cases) {
+    const refused = run(["baseline", "--stream", streamFile(stream)], { root });
+    assert.equal(refused.code, 1, stream.slice(-120));
+    assert.equal(refused.out, "");
+    assert.ok(refused.err.length > 0);
+  }
+});
+
+test("baseline usage errors exit 2", () => {
+  const root = repoWithSkill("s\n");
+  for (const argv of [["baseline"], ["baseline", "--stream"], ["baseline", "--stream", join(root, "missing.jsonl")]]) {
+    const result = run(argv, { root });
+    assert.equal(result.code, 2, JSON.stringify(argv));
+    assert.ok(result.err.length > 0);
+  }
+  const valid = streamFile(baselineStream());
+  assert.equal(run(["baseline", "--stream", valid], { root }).code, 0, "the stream itself is a valid RED run");
+  for (const argv of [["baseline", "--stream", valid, "--any-model"], ["baseline", "--any-model", "--stream", valid], ["baseline", "--stream", valid, "--dmi"]]) {
+    const result = run(argv, { root });
+    assert.equal(result.code, 2, JSON.stringify(argv));
+    assert.equal(result.out, "");
+    assert.match(result.err, /unexpected argument --(any-model|dmi)/);
+  }
 });

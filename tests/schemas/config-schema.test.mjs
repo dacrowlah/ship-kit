@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { checkSchema } from "../../scripts/lib/schema.mjs";
 import { loadConfig } from "../../scripts/lib/config.mjs";
+import { MODEL_ID, pinnedModel } from "../helpers/pressure.mjs";
 
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 const SCHEMA = JSON.parse(read("schemas/config.schema.json"));
 
@@ -66,6 +69,35 @@ test("the design example's check names are the schema's defaults", () => {
   assert.deepEqual(loadConfig(designExample()).config.review.promotion, example.review.promotion);
 });
 
+const PIN = pinnedModel(ROOT);
+
+test("the review.model default equals the pinned model", () => {
+  const model = SCHEMA.properties.review.properties.model;
+  assert.equal(model.type, "string");
+  assert.equal(model.default, PIN);
+  assert.equal(loadConfig(JSON.stringify({ schemaVersion: 1, shipKit: { version: "0.2.0", sha: "0".repeat(40) } })).config.review.model, PIN);
+});
+
+test("review.model and every seat's model share one pattern that starts with a letter or digit, and the pin matches it", () => {
+  const { model, seats } = SCHEMA.properties.review.properties;
+  assert.equal(model.pattern, "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$");
+  assert.equal(MODEL_ID.source, model.pattern);
+  assert.deepEqual(Object.keys(seats.properties), ["general", "adversarial", "security", "test-integrity"]);
+  for (const [seat, node] of Object.entries(seats.properties)) {
+    assert.equal(node.properties.model.pattern, model.pattern, seat);
+    assert.deepEqual(node.properties.model.type, ["null", "string"], seat);
+    assert.equal(node.properties.model.default, null, seat);
+  }
+  assert.match(PIN, new RegExp(model.pattern, "u"));
+});
+
+test("the design 5.1 example names the pinned model as review.model", () => {
+  const example = JSON.parse(designExample());
+  assert.equal(example.review.model, PIN);
+  assert.equal(loadConfig(designExample()).config.review.model, PIN);
+  assert.equal(SCHEMA.properties.review.properties.model.default, example.review.model);
+});
+
 test("ship-kit's own .ship-kit/config.json validates with the agreed values", () => {
   const result = loadConfig(read(".ship-kit/config.json"));
   assert.equal(result.ok, true, result.reason);
@@ -106,6 +138,7 @@ test("every schema pattern finishes in under 50 ms on adversarial 10,000-charact
   assert.match(names, /secret/);
   assert.match(names, /model/);
   assert.match(names, /specDirs/);
+  assert.ok(patterns.some(([pointer]) => pointer === "/properties/review/properties/model"), "review.model has a pattern under test");
   for (const [pointer, pattern] of patterns) {
     const re = new RegExp(pattern, "u");
     for (const input of inputs) {
