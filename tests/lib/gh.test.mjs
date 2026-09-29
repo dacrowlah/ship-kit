@@ -88,7 +88,7 @@ test("get reads a status line with LF-only headers", () => {
   assert.deepEqual(gh.get("x"), { status: 200, json: [1] });
 });
 
-for (const bad of ["", "-X", "--method=DELETE", "a b", "a\nb", "a\tb", "a\u007fb", "café", 5, null, undefined, ["x"]]) {
+for (const bad of ["", "-X", "--method=DELETE", "a b", "a\nb", "a\tb", "a\u007fb", "caf\u00e9", 5, null, undefined, ["x"]]) {
   test(`get refuses the path ${JSON.stringify(bad)} before running gh`, () => {
     let ran = false;
     const gh = makeGh({ run: () => { ran = true; return ""; } });
@@ -382,7 +382,7 @@ test("seg encodes release/1.x as release%2F1.x", () => {
   assert.equal(seg("50%"), "50%25");
   assert.equal(seg("a b"), "a%20b");
   assert.equal(seg("{owner}"), "%7Bowner%7D");
-  assert.equal(seg("café"), "caf%C3%A9");
+  assert.equal(seg("caf\u00e9"), "caf%C3%A9");
   assert.equal(seg("..."), "...");
   assert.equal(seg(12), "12");
 });
