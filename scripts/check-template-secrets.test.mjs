@@ -6,7 +6,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import * as scanner from "./check-template-secrets.mjs";
 import { findTemplateSecretViolations, main } from "./check-template-secrets.mjs";
+import { TEMPLATE_MANIFEST } from "./setup/render-files.mjs";
 
 const SCRIPT_PATH = fileURLToPath(
   new URL("./check-template-secrets.mjs", import.meta.url),
@@ -214,4 +216,61 @@ test("CLI: exits 1 for a failing .github/workflows/ fixture", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- Every template is scanned, whatever its name ---------------------------
+//
+// The scan reads every regular file under templates/, not the ones with a
+// known extension: a template that setup copies into an adopting repository
+// (a `.txt` block, an extensionless file, a dot file) is exactly as able to
+// carry a credential as a workflow.
+
+const PLANTED = ["env:", "  API_TOKEN: ghp_plantedValue0123456789", ""].join("\n");
+const CLEAN = ["env:", "  API_TOKEN: ${{ secrets.API_TOKEN }}", ""].join("\n");
+
+function withTemplates(files, body) {
+  const dir = mkdtempSync(join(tmpdir(), "check-template-secrets-all-"));
+  try {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    return body(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("scanTargets lists every manifest entry of the real repository, whatever its extension", () => {
+  const repo = fileURLToPath(new URL("..", import.meta.url));
+  const scanned = new Set(scanner.scanTargets(repo).map((file) => file.slice(repo.length)));
+  for (const { path } of TEMPLATE_MANIFEST) assert.ok(scanned.has(path), `${path} is not scanned`);
+  assert.ok(TEMPLATE_MANIFEST.some(({ path }) => path.endsWith(".txt")), "the manifest holds a .txt template, which is what this test is about");
+});
+
+for (const name of ["blocks/x.txt", "blocks/X.TXT", "files/no-extension", "files/.hidden", "files/thing.yml.tmpl", ".dot/nested/deep.cfg"]) {
+  test(`a credential planted in templates/${name} is flagged`, () => {
+    withTemplates({ [`templates/${name}`]: PLANTED }, (dir) => {
+      const result = runCli(dir);
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /API_TOKEN/);
+      assert.ok(result.stderr.includes(`templates/${name}:2`), result.stderr);
+    });
+  });
+}
+
+test("a clean file of an unknown extension under templates/ is scanned and counted, and passes", () => {
+  withTemplates({ "templates/blocks/x.txt": CLEAN, "templates/files/no-extension": CLEAN }, (dir) => {
+    const result = runCli(dir);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /scanned 2 file\(s\)/);
+  });
+});
+
+test("the other scan roots still read only their known extensions", () => {
+  withTemplates({ ".github/workflows/notes.txt": PLANTED, "workflows/notes.txt": PLANTED }, (dir) => {
+    const result = runCli(dir);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /nothing to scan/);
+  });
 });

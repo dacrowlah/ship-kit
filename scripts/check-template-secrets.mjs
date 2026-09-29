@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Scans every YAML/JSON/sh/mjs/md file under templates/, workflows/ and
-// .github/workflows/ (whichever of those directories exist) for a
-// credential-shaped key (TOKEN, KEY, SECRET, PASSWORD, PAT, CREDENTIAL)
+// Scans every file under templates/ (whatever its name or extension: setup
+// copies templates of any type into adopting repositories) and every
+// YAML/JSON/sh/mjs/md file under workflows/ and .github/workflows/
+// (whichever of those directories exist) for a credential-shaped key (TOKEN, KEY, SECRET, PASSWORD, PAT, CREDENTIAL)
 // assigned to anything other than a GitHub Actions expression
 // (${{ secrets.X }} or ${{ inputs.X }}) or an empty value.
 //
@@ -12,7 +13,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { isMain } from "./lib/entry-point.mjs";
 
-const SCAN_ROOTS = ["templates", "workflows", ".github/workflows"];
+const TEMPLATES_ROOT = "templates";
+const SCAN_ROOTS = [TEMPLATES_ROOT, "workflows", ".github/workflows"];
 const SCAN_EXTENSIONS = [".yml", ".yaml", ".json", ".sh", ".mjs", ".md"];
 
 // Matches a credential-shaped key name (case-insensitive), e.g.
@@ -120,7 +122,12 @@ export function findTemplateSecretViolations(content, filePath) {
   return violations;
 }
 
-function walk(dir) {
+/**
+ * @param {string} dir
+ * @param {(name: string) => boolean} wanted which non-directory entries to keep
+ * @returns {string[]} every wanted entry under dir, dot entries included
+ */
+function walk(dir, wanted) {
   const results = [];
   let entries;
   try {
@@ -131,12 +138,25 @@ function walk(dir) {
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...walk(fullPath));
-    } else if (SCAN_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
+      results.push(...walk(fullPath, wanted));
+    } else if (wanted(entry.name)) {
       results.push(fullPath);
     }
   }
   return results;
+}
+
+const hasScannedExtension = (name) => SCAN_EXTENSIONS.some((ext) => name.endsWith(ext));
+const anyName = () => true;
+
+/**
+ * @param {string} cwd the directory whose scan roots are checked
+ * @returns {string[]} the files a scan reads: every file under templates/,
+ *   so every template setup renders is covered by name or extension, plus
+ *   the known extensions under the workflow directories
+ */
+export function scanTargets(cwd = process.cwd()) {
+  return SCAN_ROOTS.flatMap((root) => walk(join(cwd, root), root === TEMPLATES_ROOT ? anyName : hasScannedExtension));
 }
 
 /**
@@ -145,7 +165,7 @@ function walk(dir) {
  * @returns {number} the exit code
  */
 export function main(cwd = process.cwd(), out = console) {
-  const files = SCAN_ROOTS.flatMap((root) => walk(join(cwd, root)));
+  const files = scanTargets(cwd);
 
   if (files.length === 0) {
     out.log(

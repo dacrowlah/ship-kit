@@ -26,7 +26,8 @@ import { globSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { runBodies, scriptBodies, yamlExpressionViolations } from "../helpers/run-bodies.mjs";
 import { YamlSubsetError } from "../helpers/yaml.mjs";
-import { renderedTemplateVariants } from "../helpers/rendered-templates.mjs";
+import { TEMPLATE_MANIFEST } from "../../scripts/setup/render-files.mjs";
+import { renderedTemplateVariants, templateExpressionViolations } from "../helpers/rendered-templates.mjs";
 
 const EXPRESSION = "${{";
 
@@ -163,14 +164,9 @@ test("a second YAML document in the same file is refused", () => {
 // Real workflow files are always complete, standalone YAML: scanned as text
 // straight off disk.
 const REPO_WORKFLOW_YAML_GLOB = ".github/workflows/*.yml";
-const REPO_SHELL_GLOB = "templates/**/*.sh";
 
 function repoWorkflowFiles() {
   return globSync(REPO_WORKFLOW_YAML_GLOB).sort();
-}
-
-function repoShellFiles() {
-  return globSync(REPO_SHELL_GLOB).sort();
 }
 
 /**
@@ -228,15 +224,11 @@ test("no run: or script: value in a tracked workflow, or a rendered template, co
   // `render()` itself refuses an unreplaced placeholder) and then walked by
   // the identical tree-walk gate real workflow files get.
   gateRenderedTemplates(renderedTemplateVariants, violations);
-  // Every line of a shell template is itself a run body once copied into a
-  // `run: |` step, so the whole file is scanned the same way.
-  for (const path of repoShellFiles()) {
-    const text = readFileSync(path, "utf8");
-    const lines = text.split(/\r\n|\r|\n/);
-    lines.forEach((line, index) => {
-      if (line.includes(EXPRESSION)) violations.push(`${path}:${index + 1}: shell template line contains an expression`);
-    });
-  }
+  // Every other template listed in the manifest is text setup copies or
+  // embeds. A shell fragment's every line is itself a run body once inserted
+  // into a `run: |` step, and nothing else has a reason to hold an opener, so
+  // each is scanned line by line.
+  violations.push(...templateExpressionViolations());
   assert.deepEqual(violations, []);
 });
 
@@ -347,7 +339,8 @@ function gateInMemoryTemplate(path, template, variants, violations) {
   gateRenderedTemplates(
     () =>
       renderedTemplateVariants({
-        glob: () => [path],
+        manifest: [{ path, role: "workflow" }],
+        listFiles: () => [path],
         registry: { [path]: variants },
         read: (requested) => {
           if (requested !== path) throw new Error(`read of an unexpected path: ${requested}`);
@@ -368,19 +361,51 @@ for (const [form, text] of Object.entries(BYPASS_TEMPLATES)) {
 }
 
 test("a placeholder-bearing template using a quoted run key is gated once rendered with its own values", () => {
-  const template = `jobs:\n<<job>>\n`;
-  const values = () => ({ job: `  evil:\n    "run": "echo ${EXPR}"` });
+  const template = `jobs:\n  evil:\n    "run": "echo ${EXPR}"\n<<extra>>\n`;
+  const values = () => ({ extra: "  fine:\n    name: ok" });
   const violations = [];
   gateInMemoryTemplate("templates/evil.yml", template, [{ name: "with job", values }], violations);
   assert.equal(violations.length, 1, JSON.stringify(violations));
   assert.match(violations[0], /run:\/script: value contains an expression/);
 });
 
+test("a value that carries an expression into a template is a violation: render refuses it before the tree walk", () => {
+  const template = `jobs:\n<<job>>\n`;
+  const values = () => ({ job: `  evil:\n    "run": "echo ${EXPR}"` });
+  const violations = [];
+  gateInMemoryTemplate("templates/evil.yml", template, [{ name: "with job", values }], violations);
+  assert.equal(violations.length, 1, JSON.stringify(violations));
+  assert.match(violations[0], /cannot be rendered for the gate \(value <<job>> contains /);
+});
+
 test("a template file with no registered values is a violation, not a silent skip", () => {
   const violations = [];
-  gateRenderedTemplates(() => renderedTemplateVariants({ glob: () => ["templates/new.yml"], registry: {} }), violations);
+  gateRenderedTemplates(
+    () =>
+      renderedTemplateVariants({
+        manifest: [{ path: "templates/new.yml", role: "workflow" }],
+        listFiles: () => ["templates/new.yml"],
+        registry: {},
+      }),
+    violations,
+  );
   assert.equal(violations.length, 1);
   assert.match(violations[0], /no values registered/);
+});
+
+test("a file under templates/ that the manifest does not list is a violation, not a silent skip", () => {
+  for (const unlisted of ["templates/.github/workflows/evil.yml", "templates/callers/x.YML", "templates/files/evil.yml.tmpl"]) {
+    const violations = [];
+    gateRenderedTemplates(() => renderedTemplateVariants({ listFiles: () => [...TEMPLATE_MANIFEST.map((item) => item.path), unlisted] }), violations);
+    assert.equal(violations.length, 1, unlisted);
+    assert.match(violations[0], /does not list/);
+  }
+});
+
+test("a non-workflow template holding an expression is reported, by line", () => {
+  const texts = { "templates/blocks/x.sh": "echo ok\necho ${{ github.event.pull_request.title }}\n" };
+  const found = templateExpressionViolations({ manifest: [{ path: "templates/blocks/x.sh", role: "fragment" }], read: (path) => texts[path] });
+  assert.deepEqual(found, ["templates/blocks/x.sh:2: fragment template line contains an expression"]);
 });
 
 test("a template that renders to empty output is a violation, not a vacuous pass", () => {
@@ -402,7 +427,8 @@ test("a rendered variant that still holds a placeholder is a violation", () => {
   gateRenderedTemplates(
     () =>
       renderedTemplateVariants({
-        glob: () => ["templates/t.yml"],
+        manifest: [{ path: "templates/t.yml", role: "workflow" }],
+        listFiles: () => ["templates/t.yml"],
         registry: { "templates/t.yml": [{ name: "leaky", values: () => ({}) }] },
         read: () => "a: 1\n",
         renderTemplate: () => "a: 1\n<<boot_job>>\n",

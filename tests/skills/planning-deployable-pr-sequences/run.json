@@ -1,0 +1,19 @@
+{
+  "prompt": "Write an implementation plan for this change in this repository: add a `--json` flag to `scripts/check-template-secrets.mjs` that prints violations as a JSON array, and a CI step in `.github/workflows/secret-scan.yml` that uploads that JSON as an artifact. Output only the plan.",
+  "files": [
+    {
+      "from": "scripts/check-template-secrets.mjs",
+      "to": "scripts/check-template-secrets.mjs"
+    },
+    {
+      "from": "scripts/lib/entry-point.mjs",
+      "to": "scripts/lib/entry-point.mjs"
+    },
+    {
+      "from": ".github/workflows/secret-scan.yml",
+      "to": ".github/workflows/secret-scan.yml"
+    }
+  ],
+  "dmi": false,
+  "jsonSchema": null
+}

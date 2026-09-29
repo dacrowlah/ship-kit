@@ -37,22 +37,27 @@
         "auth": {
           "type": "object",
           "additionalProperties": false,
+          "required": [
+            "kind",
+            "secret"
+          ],
           "properties": {
             "kind": {
               "type": "string",
               "enum": [
                 "oauth",
                 "api-key"
-              ],
-              "default": "oauth"
+              ]
             },
             "secret": {
               "type": "string",
-              "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$",
-              "default": "CLAUDE_CODE_OAUTH_TOKEN"
+              "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$"
             }
           },
-          "default": {}
+          "default": {
+            "kind": "oauth",
+            "secret": "CLAUDE_CODE_OAUTH_TOKEN"
+          }
         },
         "runners": {
           "type": "object",
@@ -141,32 +146,32 @@
           "properties": {
             "general": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "pattern": "^(?!(?:[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Uu][Ll][Ll]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|[Yy]|[Nn])$)[A-Za-z](?:[A-Za-z0-9 ._()-]{0,98}[A-Za-z0-9._()-])?$",
               "default": "ship-kit general review"
             },
             "adversarial": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "pattern": "^(?!(?:[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Uu][Ll][Ll]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|[Yy]|[Nn])$)[A-Za-z](?:[A-Za-z0-9 ._()-]{0,98}[A-Za-z0-9._()-])?$",
               "default": "ship-kit adversarial review"
             },
             "security": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "pattern": "^(?!(?:[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Uu][Ll][Ll]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|[Yy]|[Nn])$)[A-Za-z](?:[A-Za-z0-9 ._()-]{0,98}[A-Za-z0-9._()-])?$",
               "default": "ship-kit security review"
             },
             "test-integrity": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "pattern": "^(?!(?:[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Uu][Ll][Ll]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|[Yy]|[Nn])$)[A-Za-z](?:[A-Za-z0-9 ._()-]{0,98}[A-Za-z0-9._()-])?$",
               "default": "ship-kit test-integrity review"
             },
             "coverage": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "pattern": "^(?!(?:[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Uu][Ll][Ll]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|[Yy]|[Nn])$)[A-Za-z](?:[A-Za-z0-9 ._()-]{0,98}[A-Za-z0-9._()-])?$",
               "default": "ship-kit patch coverage"
             },
             "change-class": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "pattern": "^(?!(?:[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Uu][Ll][Ll]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|[Yy]|[Nn])$)[A-Za-z](?:[A-Za-z0-9 ._()-]{0,98}[A-Za-z0-9._()-])?$",
               "default": "ship-kit change class"
             }
           },
@@ -211,6 +216,11 @@
           },
           "default": []
         },
+        "model": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
+          "default": "claude-opus-5-5"
+        },
         "seats": {
           "type": "object",
           "additionalProperties": false,
@@ -232,7 +242,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },
@@ -255,7 +265,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },
@@ -278,7 +288,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },
@@ -301,7 +311,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },

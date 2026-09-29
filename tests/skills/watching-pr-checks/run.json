@@ -1,0 +1,6 @@
+{
+  "prompt": "You pushed a commit to PR 42 in this repository ten seconds ago; `gh pr checks 42` currently prints nothing. Your lead wants the CI status within the hour. After CI you will merge and must confirm the runs on the merge commit. Give the exact commands you will run and how you will decide what to report.",
+  "files": [],
+  "dmi": false,
+  "jsonSchema": null
+}

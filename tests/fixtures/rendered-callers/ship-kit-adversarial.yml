@@ -1,0 +1,61 @@
+# ship-kit-managed: {"template":"callers/review.yml","version":"0.2.0","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","body":"72838c2d8888b42133afdc8370a1e5d4d841668cf854f5c3c7acdf22abcf217f"}
+# Rendered by /ship-kit:setup from .ship-kit/config.json. Hand edits are reported as drift.
+# Requires the repository secret ANTHROPIC_API_KEY (Anthropic API key).
+# Runs on pull_request_target: this file and its pin are read from the default branch, never from the PR.
+name: ship-kit adversarial review
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ship-kit-adversarial-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  boot:
+    uses: ./.github/workflows/boot.yml
+    permissions:
+      contents: read
+    secrets: inherit
+
+  review:
+    needs: [boot]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      actions: read
+    uses: dacrowlah/ship-kit/.github/workflows/review.yml@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb # ship-kit--v0.2.0
+    with:
+      seat: adversarial
+      runners: '{"plan":["ubuntu-latest"],"seat":["ubuntu-latest"],"aggregate":["ubuntu-latest"]}'
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  gate:
+    name: ship-kit adversarial review
+    needs: [boot, review]
+    if: always()
+    runs-on: ["ubuntu-latest"]
+    steps:
+      - name: Require the review to have run and passed
+        env:
+          ALL_SUCCEEDED: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}
+          STATUS: ${{ needs.review.outputs.status }}
+          ENFORCED: ${{ needs.review.outputs.enforced }}
+        run: |
+          echo "needs succeeded: $ALL_SUCCEEDED; status: ${STATUS:-none}; enforced: ${ENFORCED:-unknown}"
+          if [ "$ALL_SUCCEEDED" = "true" ] && { [ "$STATUS" = "pass" ] || [ "$STATUS" = "override" ]; }; then
+            exit 0
+          fi
+          if [ "$ENFORCED" = "false" ]; then
+            echo "::warning::This check is in shadow mode. It would have failed with status '${STATUS:-none}'."
+            exit 0
+          fi
+          echo "::error::The check did not run to a pass (status '${STATUS:-none}'). An absent or incomplete run is not a pass. After a rebuttal or an override, re-run ALL jobs (gh run rerun <run-id>, without --failed): re-running only failed jobs re-reads this attempt's result."
+          exit 1
+

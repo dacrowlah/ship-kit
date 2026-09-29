@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, posix } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { readRunSpec, skillsWithRecords } from "../helpers/drift.mjs";
 import { pinnedModel, shippedTextHash } from "../helpers/pressure.mjs";
-import { listSkills } from "../helpers/skills.mjs";
+import { fenceMap, isRepoFile, linesOutsideFences, section, sections } from "../helpers/records.mjs";
+import { listSkills, parseFrontmatter } from "../helpers/skills.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 export const ARTIFACTS = ["scenario.md", "baseline.md", "result.md"];
@@ -33,68 +35,11 @@ const readRecord = (root, skill, file) => {
   return existsSync(path) ? readFileSync(path, "utf8").replace(/\r\n/g, "\n") : null;
 };
 
-/**
- * Marks each line as inside or outside a fenced code block, following
- * CommonMark: an opener is up to three spaces, then three or more backticks
- * (with no backtick in the info string) or tildes; a closer is the same
- * character, at least as long, with nothing but spaces after it.
- * @param {string} text
- * @returns {{lines: {text: string, fenced: boolean, block: number}[], unclosed: number | null}}
- *   block numbers each fenced block from 1 (0 outside fences); unclosed is the 1-based line of a fence never closed
- */
-export function fenceMap(text) {
-  const lines = [];
-  let open = null;
-  let blocks = 0;
-  text.split("\n").forEach((line, index) => {
-    if (open === null) {
-      const opener = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-      if (opener && !(opener[1][0] === "`" && opener[2].includes("`"))) {
-        blocks += 1;
-        open = { fence: opener[1], line: index + 1 };
-        lines.push({ text: line, fenced: true, block: blocks });
-      } else lines.push({ text: line, fenced: false, block: 0 });
-      return;
-    }
-    lines.push({ text: line, fenced: true, block: blocks });
-    const closer = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
-    if (closer && closer[1][0] === open.fence[0] && closer[1].length >= open.fence.length) open = null;
-  });
-  return { lines, unclosed: open === null ? null : open.line };
-}
-
-/** Lines of a Markdown text that sit outside fenced code blocks. @param {string} text @returns {string[]} */
-export function linesOutsideFences(text) {
-  return fenceMap(text).lines.filter((l) => !l.fenced).map((l) => l.text);
-}
-
 /** @param {string} where @param {string} text @returns {string[]} a violation when a fence is never closed */
 const unclosedFence = (where, text) => {
   const line = fenceMap(text).unclosed;
   return line === null ? [] : [`${where}: code fence opened at line ${line} is never closed`];
 };
-
-/**
- * The bodies of every `## <heading>` section: the lines up to the next
- * `## ` or `# ` heading, outside fences.
- * @param {string} text @param {string} heading @returns {string[][]}
- */
-export function sections(text, heading) {
-  const lines = linesOutsideFences(text);
-  const found = [];
-  lines.forEach((line, start) => {
-    if (line !== `## ${heading}`) return;
-    const rest = lines.slice(start + 1);
-    const end = rest.findIndex((l) => /^#{1,2} /.test(l));
-    found.push(end === -1 ? rest : rest.slice(0, end));
-  });
-  return found;
-}
-
-/** The first `## <heading>` section's body, or null. @param {string} text @param {string} heading */
-export function section(text, heading) {
-  return sections(text, heading)[0] ?? null;
-}
 
 /** Every skill carries its pressure-test record (design 21.5). @returns {string[]} */
 export function checkSkillArtifacts(root) {
@@ -181,12 +126,8 @@ export function checkModelLines(root) {
   return violations;
 }
 
-/** @param {string} root @param {string} rel @returns {boolean} a regular file inside root */
-const isRepoFile = (root, rel) => {
-  if (isAbsolute(rel) || posix.normalize(rel) !== rel || rel.startsWith("..")) return false;
-  const path = join(root, rel);
-  return existsSync(path) && lstatSync(path).isFile();
-};
+/** @param {string[]} lines a section's body @returns {string[]} every backticked span in it */
+const backticked = (lines) => [...lines.join("\n").matchAll(/`([^`]+)`/g)].map((m) => m[1]);
 
 /**
  * Relative module and file specifiers of a module (static, dynamic and
@@ -226,7 +167,7 @@ export function checkRunDirectories(root) {
       continue;
     }
     const text = found[0].join("\n").trim();
-    const listed = [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    const listed = backticked(found[0]);
     if (text === "None.") continue;
     if (listed.length === 0) {
       violations.push(`${where}: ## Run directory lists no backticked file and is not "None."`);
@@ -239,6 +180,48 @@ export function checkRunDirectories(root) {
       for (const imported of relativeImports(readFileSync(join(root, rel), "utf8"), rel)) {
         if (!listed.includes(imported)) violations.push(`${where}: ${rel} imports ${imported}, which the run directory does not list`);
       }
+    }
+  }
+  return violations;
+}
+
+/**
+ * Every skill with a record has the run spec the drift runner reads
+ * (tests/helpers/drift.mjs, which refuses a malformed spec and any `to`
+ * that leaves the run directory), and it agrees with scenario.md: its
+ * `prompt` appears verbatim in `## Prompt`, its `from` paths are
+ * exactly the backticked paths of `## Run directory`, and `dmi` is true
+ * exactly when SKILL.md sets `disable-model-invocation: true`.
+ * @param {string} root @returns {string[]}
+ */
+export function checkRunSpecs(root) {
+  const violations = [];
+  for (const skill of skillsWithRecords(root)) {
+    const where = `tests/skills/${skill.name}/run.json`;
+    let spec;
+    try {
+      spec = readRunSpec(root, skill.name);
+    } catch (error) {
+      violations.push(error.message);
+      continue;
+    }
+    const scenario = readRecord(root, skill.name, "scenario.md") ?? "";
+    const prompt = section(scenario, "Prompt");
+    if (prompt === null || !prompt.join("\n").includes(spec.prompt)) {
+      violations.push(`${where}: prompt does not appear verbatim in scenario.md's ## Prompt section`);
+    }
+    const found = sections(scenario, "Run directory");
+    const listed = new Set(found.length === 1 ? backticked(found[0]) : []);
+    const copied = new Set(spec.files.map((file) => file.from));
+    for (const path of listed) {
+      if (!copied.has(path)) violations.push(`${where}: ${path} is in scenario.md's ## Run directory but no files entry copies it`);
+    }
+    for (const path of copied) {
+      if (!listed.has(path)) violations.push(`${where}: files copies ${path}, which scenario.md's ## Run directory does not list`);
+    }
+    const dmi = skill.text !== null && parseFrontmatter(skill.text)["disable-model-invocation"] === "true";
+    if (spec.dmi !== dmi) {
+      violations.push(`${where}: dmi is ${spec.dmi} but SKILL.md ${dmi ? "sets" : "does not set"} disable-model-invocation: true`);
     }
   }
   return violations;
@@ -438,6 +421,19 @@ const SKILL_MD = [
   '| "ship it tonight" | No. |',
   "",
 ].join("\n");
+const RUN_SPEC = `${JSON.stringify(
+  {
+    prompt: "Do the thing.",
+    files: [
+      { from: "lib/a.mjs", to: "lib/a.mjs" },
+      { from: "lib/b.mjs", to: "lib/b.mjs" },
+    ],
+    dmi: false,
+    jsonSchema: null,
+  },
+  null,
+  2,
+)}\n`;
 const BASELINE = 'Model: claude-opus-5-5\n\nAttempt 1: "I will ship it tonight." and "it is fine ... trust me".\n';
 
 /** @param {Record<string, string>} [over] repo-relative path -> content @returns {string} the fixture root */
@@ -450,6 +446,7 @@ function fixture(over = {}) {
     "tests/skills/mining-x/scenario.md": SCENARIO,
     "tests/skills/mining-x/baseline.md": BASELINE,
     "tests/skills/pinned-model.txt": "claude-opus-5-5\n",
+    "tests/skills/mining-x/run.json": RUN_SPEC,
     ...over,
   };
   for (const [rel, text] of Object.entries(files)) {
@@ -472,6 +469,7 @@ test("the fixture passes every records gate", () => {
   assert.deepEqual(checkRunDirectories(root), []);
   assert.deepEqual(checkRationalizations(root), []);
   assert.deepEqual(checkModelLines(root), []);
+  assert.deepEqual(checkRunSpecs(root), []);
 });
 
 test("every result.md carries the current shipped-text hash", () => {
@@ -786,4 +784,70 @@ test("a model line inside a fence does not count", () => {
   const unclosed = fixture({ "tests/skills/mining-x/baseline.md": `${BASELINE}\`\`\`\nModel: x\n` });
   assert.deepEqual(checkModelLines(unclosed), ["tests/skills/mining-x/baseline.md: code fence opened at line 4 is never closed"]);
   assert.throws(() => checkModelLines(fixture({ "tests/skills/pinned-model.txt": "a b\n" })), /pinned-model\.txt/);
+});
+
+test("every skill with a record has a consistent run spec", () => {
+  assert.deepEqual(checkRunSpecs(REPO), []);
+});
+
+/** The fixture with its run spec edited by `edit`. @returns {string} root */
+const withSpec = (edit) => fixture({ "tests/skills/mining-x/run.json": JSON.stringify(edit(JSON.parse(RUN_SPEC))) });
+
+test("a skill with a record and no run spec fails", () => {
+  const root = fixture();
+  rmSync(join(root, "tests/skills/mining-x/run.json"));
+  assert.deepEqual(checkRunSpecs(root), ["tests/skills/mining-x/run.json is missing"]);
+  const unrecorded = fixture();
+  rmSync(join(unrecorded, "tests/skills/mining-x/run.json"));
+  rmSync(join(unrecorded, "tests/skills/mining-x/result.md"));
+  assert.deepEqual(checkRunSpecs(unrecorded), [], "a skill with no record needs no run spec");
+});
+
+test("a run spec copying a file its Run directory does not list fails", () => {
+  const root = withSpec((spec) => ({ ...spec, files: [...spec.files, { from: "skills/mining-x/SKILL.md", to: "SKILL.md" }] }));
+  assert.deepEqual(checkRunSpecs(root), [
+    "tests/skills/mining-x/run.json: files copies skills/mining-x/SKILL.md, which scenario.md's ## Run directory does not list",
+  ]);
+});
+
+test("a Run directory path that no run spec entry copies fails", () => {
+  const root = withSpec((spec) => ({ ...spec, files: spec.files.slice(0, 1) }));
+  assert.deepEqual(checkRunSpecs(root), [
+    "tests/skills/mining-x/run.json: lib/b.mjs is in scenario.md's ## Run directory but no files entry copies it",
+  ]);
+  const none = fixture({
+    "tests/skills/mining-x/scenario.md": SCENARIO.replace(/## Run directory[^]*$/, "## Run directory\n\nNone.\n"),
+  });
+  assert.deepEqual(checkRunSpecs(none), [
+    "tests/skills/mining-x/run.json: files copies lib/a.mjs, which scenario.md's ## Run directory does not list",
+    "tests/skills/mining-x/run.json: files copies lib/b.mjs, which scenario.md's ## Run directory does not list",
+  ]);
+});
+
+test("a run spec whose to leaves the run directory fails", () => {
+  for (const to of ["../lib/a.mjs", "lib/../../a.mjs", "/tmp/a.mjs", "./lib/a.mjs", "lib//a.mjs", ""]) {
+    const root = withSpec((spec) => ({ ...spec, files: [{ from: "lib/a.mjs", to }, spec.files[1]] }));
+    const violations = checkRunSpecs(root);
+    assert.equal(violations.length, 1, `${JSON.stringify(to)}: ${violations}`);
+    assert.match(violations[0], /^tests\/skills\/mining-x\/run\.json: /);
+    assert.match(violations[0], /relative path/);
+  }
+});
+
+test("a run spec whose prompt is not the scenario's prompt, or whose dmi disagrees with SKILL.md, fails", () => {
+  assert.deepEqual(checkRunSpecs(withSpec((spec) => ({ ...spec, prompt: "Do another thing." }))), [
+    "tests/skills/mining-x/run.json: prompt does not appear verbatim in scenario.md's ## Prompt section",
+  ]);
+  assert.deepEqual(checkRunSpecs(withSpec((spec) => ({ ...spec, prompt: "Pass criteria" }))), [
+    "tests/skills/mining-x/run.json: prompt does not appear verbatim in scenario.md's ## Prompt section",
+  ]);
+  assert.deepEqual(checkRunSpecs(withSpec((spec) => ({ ...spec, dmi: true }))), [
+    "tests/skills/mining-x/run.json: dmi is true but SKILL.md does not set disable-model-invocation: true",
+  ]);
+  const dmiSkill = fixture({
+    "skills/mining-x/SKILL.md": SKILL_MD.replace("description: Use when testing.", "description: Use when testing.\ndisable-model-invocation: true"),
+  });
+  assert.deepEqual(checkRunSpecs(dmiSkill), [
+    "tests/skills/mining-x/run.json: dmi is false but SKILL.md sets disable-model-invocation: true",
+  ]);
 });
