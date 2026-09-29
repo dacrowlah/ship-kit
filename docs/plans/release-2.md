@@ -89,12 +89,13 @@ Each binds the task named.
 43. No artifact holds raw model output that could carry a credential: the seat job never uploads the action's execution file; under the canary it runs the execution checks in the seat job and uploads only their results; `receipt.mjs` writes `body: null, withheld: true` when `anyCredential(body)` is true, and aggregate scores a withheld receipt `fail-coverage`.
 44. F29's live ruleset-bypass test is not part of release 2 (owner decision): nothing in release 2 grants a bypass actor or runs an admin merge, so 0.2.0 ships with F29 UNVERIFIED like F14 and F17. Task 13 keeps its steps as a release-6 note: all cases, the approved-PR one included, run before PR 6.2 in a throwaway public repository under the owner's account, never on ship-kit. Task 15 makes the design edit.
 45. Setup's recommended protection is loose (owner decision): by default setup recommends and creates the checks ruleset with strict off and the review ruleset, and no up-to-date ruleset. Setup asks whether the repository wants the strict up-to-date policy (default no); only on a yes does it offer the `ship-kit up-to-date` ruleset (strict on, no bypass actor in release 2; PR 6.2 adds the bypass under `agents.adminMerge`) and ask the `agents.adminMerge` question, preceded by one sentence saying that with strict off the adopter's own merges need no admin bypass. On a no, `agents.adminMerge` keeps its default `false`. The strict answer lives in the answers file, not the config; the schema is unchanged. For organization-owned adopters the README names GitHub merge queue as the principled alternative to strict. Task 15 makes the design edit; Tasks 35, 36 and 37 implement it.
+46. Model versions are tracked (owner decisions), in Tasks 51 to 55. (a) Record: `pressure.mjs` reads the model from the stream's init message and prints it (`check` with the shipped-text hash; the new `baseline` verb for RED runs); `result.md` and `baseline.md` each record one `Model:` line, and the records gate fails a record with no model line or one that differs from the model the verbs accepted. (b) Pin: every RED and GREEN run passes `--model <id>`, where `<id>` is the one line of `tests/skills/pinned-model.txt`, read by the method, `pressure.mjs` and the gate; the verbs refuse any other model, so records must use it, and changing it is a reviewed change. CI seats run `review.model` (default: the same id) or a seat's own model, always passed to claude-code-action as `--model` in `claude_args`, since v1.0.236 has no `model` input (its `action.yml`; its `docs/usage.md` marks `model` deprecated, "Use `claude_args` with `--model` instead"). (c) Re-check: moving the pin, including to follow a new default model, reruns every skill's RED and GREEN in the same PR (CLAUDE.md, "Keeping current"); a weekly workflow on ship-kit runs every GREEN run against the current default model, grades each discriminating criterion with the pinned model, and opens or updates one issue when a criterion flips. It holds no write token beyond `issues: write`, runs only on schedule and default-branch dispatch, caps itself at `MAX_RUNS` Claude invocations per run, and spends the owner's subscription through `CLAUDE_CODE_OAUTH_TOKEN`, so enabling it (merging Task 55) is owner approval. Every existing skill record is re-run RED and GREEN under the pin in Task 51, the task that adds the gate.
 
 ## Where every decision input comes from
 
 | Decision | Input | Source | Task |
 |---|---|---|---|
-| review mode, seat enforced, dirs, limits, turns, model | config | `git show TRUSTED_SHA:<config_path>`; strict defaults when absent or invalid | 15, 23 |
+| review mode, seat enforced, dirs, limits, turns, model | config | `git show TRUSTED_SHA:<config_path>`; strict defaults when absent or invalid; the seat's model, else `review.model` | 15, 23, 52, 53 |
 | repo hunt lists | list files | `git show TRUSTED_SHA:<path from trusted config>`, blob only | 23 |
 | shared hunt lists, contract, seat skills, expected marker | files | ship-kit at `job.workflow_sha` (`src/`) | 19, 23, 24 |
 | release pin | tags | `git ls-remote` of `job.workflow_repository`; peeled commit must equal `job.workflow_sha` | 11, 23 |
@@ -151,6 +152,7 @@ Release 1's method (`docs/plans/release-1.md`, "Pressure-test method") applies w
 - **Discriminating criteria.** `result.md` carries `Discriminating criteria: <n>[, <n>]`, the criteria that failed in at least one RED attempt. Only those count in any headline ("3 of 3 discriminating criteria pass"); a criterion RED met is dropped or narrowed, never claimed.
 - **Observed rationalizations.** Every rationalization-table row quotes an excuse from an observed RED or GREEN run: each fragment of the row's quoted text (split at ` ... `, trailing `.,;:!?` trimmed) appears verbatim in `baseline.md` or `result.md`. Scenario text, however apt, is not an observed excuse.
 - **Marker tokens.** Records never hold a live `skill_marker` token: `baseline.md`, `result.md` and any fixture write it as `<token>` (ruling 42), because design 6.4 requires the token to appear nowhere else in the repository.
+- **Model.** Every RED and GREEN run passes `--model "$MODEL"`, the one line of `tests/skills/pinned-model.txt`. RED runs count only when `node tests/helpers/pressure.mjs baseline --stream <file>` exits 0 and GREEN runs only when `check` does; each refuses a run whose init model is not the pin and prints `Model: <id>`, which `baseline.md` and `result.md` each record once (ruling 46; Task 51 adds this to CLAUDE.md and the gate).
 - **Shipped text.** `result.md` carries `Shipped-text SHA-256: <hex>`
  from `node tests/helpers/pressure.mjs hash --skill <name>`; the gate recomputes it and fails on a mismatch, so any edit to a skill or its reference files reruns GREEN before merge.
 
@@ -159,15 +161,18 @@ Set up per skill task (from the task's worktree):
 ```bash
 REPO=$(git rev-parse --show-toplevel)
 SKILL=<skill>
+MODEL=$(cat "$REPO/tests/skills/pinned-model.txt")
 RUN=$(cd "$(mktemp -d)" && pwd -P)
 PLUG=$(cd "$(mktemp -d)" && pwd -P)
 for f in <every path in the scenario's Run directory section>; do
   mkdir -p "$RUN/$(dirname "$f")" && cp "$REPO/$f" "$RUN/$f"
 done
 sed -n '/^## Prompt$/,/^## Pass criteria$/p' "$REPO/tests/skills/$SKILL/scenario.md" | sed '1d;$d' > "$SCRATCH/$SKILL-prompt.txt"
-ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose)
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose --model "$MODEL")
 # RED, attempt N:
 (cd "$RUN" && claude -p "${ISO[@]}" "$(cat "$SCRATCH/$SKILL-prompt.txt")" < /dev/null) > "$SCRATCH/$SKILL-red-N.jsonl"
+node "$REPO/tests/helpers/pressure.mjs" baseline --stream "$SCRATCH/$SKILL-red-N.jsonl" > "$SCRATCH/$SKILL-red-N.txt"
+echo "baseline exit: $?"
 # GREEN, run N (restage after every edit):
 rm -rf "$PLUG" && mkdir -p "$PLUG" && node "$REPO/tests/helpers/pressure.mjs" stage --out "$PLUG"
 (cd "$RUN" && claude -p "${ISO[@]}" --plugin-dir "$PLUG" "$(cat "$SCRATCH/$SKILL-prompt.txt")" < /dev/null) > "$SCRATCH/$SKILL-green-N.jsonl"
@@ -225,17 +230,22 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 | `.github/workflows/ship-kit-general.yml`, `ship-kit-adversarial.yml`, `.ship-kit/config.json` | 43 | dogfood callers |
 | `tests/live/dogfood-gates.md` | 44 | first dogfood observation |
 | `tests/live/cross-owner.md`, design F17 row | 50 | F17 cross-owner record, when the second adopting repo is cross-owner |
+| `tests/skills/pinned-model.txt`, `tests/helpers/pressure.mjs` (+ test), `tests/skills/artifacts.test.mjs`, `CLAUDE.md` (method, keeping current), `tests/skills/<every skill>/{baseline,result}.md` | 51 | pinned model, model lines, records gate, backfill |
+| `schemas/config.schema.json`, `scripts/lib/config.mjs`, `tests/lib/config.test.mjs`, `tests/schemas/config-schema.test.mjs`, design 5.1 and 6.3 seat step 3 | 52 | `review.model` and `seatModel` |
+| `scripts/review/plan.mjs`, `.github/workflows/review.yml` (+ their tests) | 53 | seats always pass `--model` |
+| `tests/helpers/drift.mjs` (+ test, fixtures), `tests/skills/<skill>/run.json`, `tests/skills/artifacts.test.mjs` | 54 | drift runner, run specs and their gate |
+| `.github/workflows/skill-drift.yml`, `tests/workflows/skill-drift-yml.test.mjs`, `CLAUDE.md` (keeping current) | 55 | weekly drift check against the default model |
 
 ## Waves and dependency order
 
 | Wave | Tasks | Starts when | Why these are parallel |
 |---|---|---|---|
 | 1 | 1-12, 14 | now; 2 after 1 merges | disjoint files; libraries nothing calls yet; 12 is the wave's only design edit; 14 is an owner action; 13 moved to release 6 (ruling 44) |
-| 2 | 15, 16, 17, 18, 19, 20 | each task's dependencies merged | disjoint modules over wave-1 libraries; 15 is the wave's only design edit |
-| 3 | 21, 22, 23, 24, 25, 26 | dependencies merged | disjoint modules; 23 and 24 share only wave-1/2 interfaces; 24 is the wave's only design edit |
-| 4 | 27, 28, 29, 30, 31 | dependencies merged | disjoint files; 29 wires scripts it does not edit; 27 is the wave's only design edit |
+| 2 | 15, 16, 17, 18, 19, 20, 51, 52, 54 | each task's dependencies merged (51 needs only 1, 2 and 19) | disjoint modules over wave-1 libraries; 51 edits only pressure tooling, CLAUDE.md and records; 54 adds test tooling and run specs after 51; 15 and then 52 are the wave's design edits, one after the other on the chain |
+| 3 | 21, 22, 23, 24, 25, 26, 55 | dependencies merged; 55 also waits for the owner's yes to merge | disjoint modules; 23 and 24 share only wave-1/2 interfaces; 24 is the wave's only design edit; 55 adds one workflow and a CLAUDE.md paragraph |
+| 4 | 27, 28, 29, 30, 31, 53 | dependencies merged (53 after 29) | disjoint files; 29 wires scripts it does not edit; 53 edits plan.mjs and review.yml after 29 and before 32; 27 is the wave's only design edit |
 | 5 | 32, 33, 34, 35, 36 | dependencies merged (33 after 32, 35 after 34, 36 after 35) | 32 and 33 edit the canary files, plan/aggregate/review.yml and (33 only) the design; 34 to 36 edit only setup files |
-| 6 | 37 | 1-36 merged | README describes every shipped component |
+| 6 | 37 | 1-36 and 51-54 merged | README describes every shipped component |
 | 7 | 38 | 37 merged | the version bump is the release's last code PR |
 | 8 | 39 | 38 merged, owner approves | rc tag |
 | 9 | 40 | 39 | owner-only private-repo check pins the rc |
@@ -248,9 +258,9 @@ Redaction and the leak grep are as in release 1. Seat-skill scenarios add `--jso
 | 16 | 49 | 47 | old workflows deleted after the switch |
 | 17 | 50 | every other task finished, owner approves | second-account live checks (fork path, F17), last by owner ruling (ruling 41) |
 
-Dependencies (task: needs): 2: 1. 15: 4, 12. 16: 3, 7. 17: 3. 18: 7. 19: 2, 4, 7, 10. 20: 5, 6. 21: 3, 15. 22: 15. 23: 3, 7, 11, 15, 16, 17, 18. 24: 3, 7, 9, 15, 16. 25: 5, 12, 15, 20. 26: 3, 15, 16. 27: 3, 21, 24. 28: 25. 29: 6, 8, 20, 23, 24. 30: 2, 3, 15, 16, 22. 31: 2, 22, 26. 32: 15, 19, 29. 33: 14, 27, 32. 34: 11, 19, 25, 27. 35: 28, 34. 36: 2, 22, 35. 37: 1-36. 38: 37. 39: 38. 40: 39. 41: 40, 33. 42: 41. 43: 42. 44: 43. 45, 46: 44. 47: 45. 48: 46. 49: 47. 50: 48, 49. Task 13 is not a release-2 task (ruling 44) and nothing here depends on it.
+Dependencies (task: needs): 2: 1. 15: 4, 12. 16: 3, 7. 17: 3. 18: 7. 19: 2, 4, 7, 10. 20: 5, 6. 21: 3, 15. 22: 15. 23: 3, 7, 11, 15, 16, 17, 18. 24: 3, 7, 9, 15, 16, 52. 25: 5, 12, 15, 20. 26: 3, 15, 16. 27: 3, 21, 24. 28: 25. 29: 6, 8, 20, 23, 24. 30: 2, 3, 15, 16, 22, 51. 31: 2, 22, 26, 51. 32: 15, 19, 29, 53. 33: 14, 27, 32. 34: 11, 19, 25, 27. 35: 28, 34. 36: 2, 22, 35, 51. 37: 1-36, 51-54. 38: 37. 39: 38. 40: 39. 41: 40, 33. 42: 41. 43: 42. 44: 43. 45, 46: 44. 47: 45. 48: 46. 49: 47. 50: 48, 49. 51: 1, 2, 19. 52: 15, 51. 53: 23, 29, 52. 54: 51. 55: 14, 54. Task 13 is not a release-2 task (ruling 44) and nothing here depends on it.
 
-Every task that edits `docs/design/ship-kit-design.md` (12, 15, 24, 27, 33, 40, 50) sits on one dependency chain, 12 -> 15 -> 24 -> 27 -> 33 -> 40 -> 50, so no two are open at once; each rebases on `main` before merge. A design edit an implementation note asks for is made by the next task on this chain, never by the task carrying the note.
+Every task that edits `docs/design/ship-kit-design.md` (12, 15, 52, 24, 27, 33, 40, 50) sits on one dependency chain, 12 -> 15 -> 52 -> 24 -> 27 -> 33 -> 40 -> 50, so no two are open at once; each rebases on `main` before merge. A design edit an implementation note asks for is made by the next task on this chain, never by the task carrying the note.
 
 ## Models
 
@@ -306,6 +316,11 @@ Every task that edits `docs/design/ship-kit-design.md` (12, 15, 24, 27, 33, 40, 
 | 48 | sonnet | same, second repository; owner approval |
 | 49 | sonnet | deletion PR; owner approval |
 | 50 | opus | live second-account checks after the tag; owner approval |
+| 51 | opus | gates that decide which records count, plus backfill reruns that may force skill edits |
+| 52 | sonnet | one schema key with a default and a small resolver, fully specified |
+| 53 | sonnet | two specified edits with exact tests over the plan output and the seat step |
+| 54 | opus | judgment over which runs and grades count as a flip; untrusted model output kept out of results |
+| 55 | opus | a workflow holding a subscription token and an issues token; owner approval to merge |
 
 ---
 
@@ -1617,7 +1632,7 @@ Implementation note: the action's `restoreConfigFromBase` overwrites the workspa
 
 ### Task 30: Trusted mining and the mining PR under the agent settings
 
-Spec: design 18.1 (from release 2: `--list` default from config at `origin/<default>`, markers kept only when `trustState` accepts them), 18.3 (the change is a PR committed and pushed under 5.4), 5.4, 21.5; 22.9 (PR 2.2/2.6: expired artifacts). Model: opus. Depends on: 2, 3, 15, 16, 22.
+Spec: design 18.1 (from release 2: `--list` default from config at `origin/<default>`, markers kept only when `trustState` accepts them), 18.3 (the change is a PR committed and pushed under 5.4), 5.4, 21.5; 22.9 (PR 2.2/2.6: expired artifacts). Model: opus. Depends on: 2, 3, 15, 16, 22, 51.
 
 **Files:**
 - Modify: `scripts/mining/collect.mjs`, `scripts/mining/collect.test.mjs`
@@ -1648,7 +1663,7 @@ Implementation note: the run-directory files ("a fixture clone description", "th
 
 ### Task 31: `promoting-shadow-checks`
 
-Spec: design 10.3, 5.4, 6.6, 21.5; 22.9 (PR 2.2/2.6: expired artifacts). Model: opus. Depends on: 2, 22, 26.
+Spec: design 10.3, 5.4, 6.6, 21.5; 22.9 (PR 2.2/2.6: expired artifacts). Model: opus. Depends on: 2, 22, 26, 51.
 
 **Files:** Create `skills/promoting-shadow-checks/SKILL.md`, `tests/skills/promoting-shadow-checks/{scenario,baseline,result}.md`.
 
@@ -1669,7 +1684,7 @@ Implementation note: "same wording as Task 30's step 8" but this task does not d
 
 ### Task 32: Canary hooks and the execution checks
 
-Spec: design 6.3 (canary-only behaviour), 6.4 (negative control), 21.4, 22.8; 22.9 (PR 2.4: planted `.claude/skills/`, `.claude/commands/`, `.claude/agents/`, `CLAUDE.md`); rulings 11, 12, 32, 42, 43. Model: opus. Depends on: 15, 19, 29.
+Spec: design 6.3 (canary-only behaviour), 6.4 (negative control), 21.4, 22.8; 22.9 (PR 2.4: planted `.claude/skills/`, `.claude/commands/`, `.claude/agents/`, `CLAUDE.md`); rulings 11, 12, 32, 42, 43. Model: opus. Depends on: 15, 19, 29, 53.
 
 **Files:**
 - Create: `scripts/review/canary.mjs` (100755), `scripts/review/canary.test.mjs`, `tests/fixtures/canary/contract-probe.md`, `tests/fixtures/canary/planted/**`, `tests/fixtures/canary/execution-sample.json` (hand-built)
@@ -1795,7 +1810,7 @@ Implementation note: `check` exits 1 on classic protection with `adminMerge` tru
 
 ### Task 36: The `/ship-kit:setup` skill
 
-Spec: design 19.1 to 19.6, 5.4, 21.5; rulings 15, 17, 19, 45. Model: opus. Depends on: 2, 22, 35.
+Spec: design 19.1 to 19.6, 5.4, 21.5; rulings 15, 17, 19, 45, 46. Model: opus. Depends on: 2, 22, 35, 51.
 
 **Files:** Create `skills/setup/SKILL.md`, `tests/skills/setup/{scenario,baseline,result}.md`.
 
@@ -1812,11 +1827,11 @@ Spec: design 19.1 to 19.6, 5.4, 21.5; rulings 15, 17, 19, 45. Model: opus. Depen
 
 ### Task 37: README
 
-Spec: CLAUDE.md, Security (document every script and hook plainly; secrets section); design 19.3 step 8, 20.1 (residual risks, "the README says so"), 20.4, 20.5, 21.4; 22.9 (PR 2.5: Dependabot path, F12 settled record, R5 versus R6); ruling 45. Model: sonnet. Depends on: 1 to 36.
+Spec: CLAUDE.md, Security (document every script and hook plainly; secrets section); design 19.3 step 8, 20.1 (residual risks, "the README says so"), 20.4, 20.5, 21.4; 22.9 (PR 2.5: Dependabot path, F12 settled record, R5 versus R6); rulings 45, 46. Model: sonnet. Depends on: 1 to 36, 51 to 54.
 
 **Files:** Modify `README.md`.
 
-**Content:** Install (unchanged plus `/ship-kit:setup`); "What runs on your machine": one row per script added in release 2 (`scripts/lib/` libraries row updated to include `gh.mjs`, `schema.mjs`, `config.mjs`, `render.mjs`, `release-tags.mjs`; `agent-policy.mjs`; `scripts/setup/cli.mjs` and its modules; `scripts/merge/required-checks.mjs`; `scripts/promote/shadow-record.mjs`; `scripts/release/bump-version.mjs` (maintainer only); `scripts/mining/collect.mjs` updated; the `scripts/review/*` scripts listed as "run only inside the review workflow on GitHub's runners"), each with its network column; Hooks: none. A "CI review" section: the reusable workflow and its API (inputs, secrets, outputs, status values), what the caller does, `pull_request_target` and why the PR cannot change its own review, the event-policy requirement for public repos and its date, the fork-PR `needs-maintainer` path (approval comment, then close and reopen, or draft and ready), re-runs must be "Re-run all jobs". Secrets: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` under the name `render.auth.secret` gives; the workflow token. Dependabot: its PRs run with Dependabot secrets only, so the gates fail closed until a maintainer's event. R5 and R6: dual review is required at steady state; setup installs the adversarial seat in shadow and `promoting-shadow-checks` makes it required on its record. Residual risks, in plain words: the four items of 20.1. The settings `ref` behaviour per Task 12. State-artifact retention: older review states cannot be verified once the repository's artifact retention expires them, which costs a full review or a shorter promotion record. Recommended protection: setup recommends the checks ruleset with strict off and the review ruleset, none with a bypass actor, and no up-to-date ruleset; with strict off a green PR that is behind the default branch merges normally, so the maintainer's own merges need no admin bypass; the strict policy, its up-to-date ruleset and the admin-merge question are an explicit opt-in. For organization-owned repositories, GitHub merge queue is named as the principled alternative to strict, with the note that ship-kit's callers run on `pull_request_target`, not `merge_group` (design 19.3).
+**Content:** Install (unchanged plus `/ship-kit:setup`); "What runs on your machine": one row per script added in release 2 (`scripts/lib/` libraries row updated to include `gh.mjs`, `schema.mjs`, `config.mjs`, `render.mjs`, `release-tags.mjs`; `agent-policy.mjs`; `scripts/setup/cli.mjs` and its modules; `scripts/merge/required-checks.mjs`; `scripts/promote/shadow-record.mjs`; `scripts/release/bump-version.mjs` (maintainer only); `scripts/mining/collect.mjs` updated; the `scripts/review/*` scripts listed as "run only inside the review workflow on GitHub's runners"), each with its network column; Hooks: none. A "CI review" section: the reusable workflow and its API (inputs, secrets, outputs, status values), what the caller does, `pull_request_target` and why the PR cannot change its own review, the event-policy requirement for public repos and its date, the fork-PR `needs-maintainer` path (approval comment, then close and reopen, or draft and ready), re-runs must be "Re-run all jobs". Secrets: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` under the name `render.auth.secret` gives; the workflow token. Model: every seat runs a named model, `review.model` (default: the model the seat skills' pressure tests ran under) or the seat's own `review.seats.<seat>.model`, and a release that moves the default says so in its notes. Dependabot: its PRs run with Dependabot secrets only, so the gates fail closed until a maintainer's event. R5 and R6: dual review is required at steady state; setup installs the adversarial seat in shadow and `promoting-shadow-checks` makes it required on its record. Residual risks, in plain words: the four items of 20.1. The settings `ref` behaviour per Task 12. State-artifact retention: older review states cannot be verified once the repository's artifact retention expires them, which costs a full review or a shorter promotion record. Recommended protection: setup recommends the checks ruleset with strict off and the review ruleset, none with a bypass actor, and no up-to-date ruleset; with strict off a green PR that is behind the default branch merges normally, so the maintainer's own merges need no admin bypass; the strict policy, its up-to-date ruleset and the admin-merge question are an explicit opt-in. For organization-owned repositories, GitHub merge queue is named as the principled alternative to strict, with the note that ship-kit's callers run on `pull_request_target`, not `merge_group` (design 19.3).
 
 **Why safe alone:** documentation of merged components.
 
@@ -2016,6 +2031,261 @@ Spec: design 22.8, 6.3 (author rule, reopen route), 23.2, F17, F21, F27; rulings
 
 ---
 
+## Model tracking (Tasks 51 to 55)
+
+These tasks carry ruling 46. They are numbered after Task 50 so every earlier reference stays stable; their waves are in "Waves and dependency order": 51, 52 and 54 in wave 2 (51 can start now), 55 in wave 3, 53 in wave 4.
+
+### Task 51: Pinned pressure-test model, model lines in the records, and the backfill
+
+Spec: design 21.5; CLAUDE.md, Skills ("Pressure-test method") and "Keeping current"; ruling 46. Model: opus. Depends on: 1, 2, 19.
+
+**Files:**
+- Create: `tests/skills/pinned-model.txt`
+- Modify: `tests/helpers/pressure.mjs`, `tests/helpers/pressure.test.mjs`
+- Modify: `tests/skills/artifacts.test.mjs`
+- Modify: `CLAUDE.md` (Skills, "Pressure-test method": the model bullet and `--model` in the flag list; "Keeping current": the pin-move rule)
+- Modify: `tests/skills/{mining-defect-shapes,planning-deployable-pr-sequences,proving-tests-can-fail,reviewing-design-documents,watching-pr-checks,reviewing-for-correctness,hunting-defect-shapes}/{baseline,result}.md` (the pinned-model runs and header lines); `scenario.md` and `skills/<skill>/SKILL.md` only where a rerun forces a REFACTOR round
+
+**The pin.** `tests/skills/pinned-model.txt` holds exactly one line, the model id, and a newline: `claude-opus-5-5`, the id the init message of Task 1's captured streams reports under Claude Code CLI 2.1.284. It is the one place the id is written for pressure tests: the method, `pressure.mjs` and the records gate all read this file, and Task 52 tests the seat default against it. Changing it is a reviewed change under "Keeping current" below.
+
+**Interfaces (adds to `tests/helpers/pressure.mjs`):**
+- `export const MODEL_ID = /^[A-Za-z0-9._\[\]-]{1,100}$/` (the MODEL pattern of Task 15's schema).
+- `export function pinnedModel(root) -> string`: reads `<root>/tests/skills/pinned-model.txt`; the content must be one line matching `MODEL_ID` followed by exactly one `\n`, else a usage error (exit 2).
+- `checkStream(text, {skill, dmi, marker, expectModel})`: the init message must carry a string `model`, else not ok ("init message names no model"); when `expectModel` is a string, the init `model` must equal it, else not ok ("the run's model <id> differs from the pinned model <pin>"); a valid result gains `model`.
+- CLI `check --skill <name> --stream <file> [--dmi] [--any-model]`: `expectModel` is `pinnedModel(root)` unless `--any-model` is given (used only by Task 54's drift runner, whose runs never make a record). Output on exit 0 is `Shipped-text SHA-256: <hex>\nModel: <id>\n\n<text>`.
+- CLI `baseline --stream <file>` (new, for RED runs): exit 0 when the stream has exactly one init message whose `model` equals `pinnedModel(root)`, the init lists no plugin named `ship-kit` and no skill or slash command starting `ship-kit:` (a RED run that loaded ship-kit is not a baseline), and the last message is a `success` result with string `result`; prints `Model: <id>\n\n<final text>`. Exit 1 printing the first failed condition otherwise, exit 2 on a usage or I/O error.
+
+**Records gate (adds to `tests/skills/artifacts.test.mjs`):** `result.md` and `baseline.md` each carry exactly one `Model: <id>` line outside fences, and `<id>` equals `pinnedModel(root)`. Because `check` and `baseline` exit 1 on a stream whose init model is not the pin, the only `Model:` line either verb prints is the pin; a record whose line differs from the pin therefore differs from the run that verb accepted, and the gate fails it. `Discriminating criteria` counts only RED attempts made under the pinned model.
+
+**Method changes** (CLAUDE.md and this plan's "Pressure-test method" section, which already names them): RED and GREEN add `--model "$(cat tests/skills/pinned-model.txt)"` to the isolation flags; RED runs are accepted by `pressure.mjs baseline`, GREEN runs by `pressure.mjs check`; `baseline.md` and `result.md` record the `Model:` line those verbs print. Add to CLAUDE.md, Skills, "Pressure-test method", after the `Discriminating criteria` bullet:
+
+```markdown
+- Every RED and GREEN run passes `--model <id>`, where `<id>` is the one
+  line of `tests/skills/pinned-model.txt`. `node tests/helpers/pressure.mjs
+  baseline --stream <file>` accepts a RED run and `check` a GREEN run only
+  when the init message reports that model; both print `Model: <id>`, which
+  `baseline.md` and `result.md` each record once. The records gate fails a
+  record with no `Model:` line or one that is not the pinned model, and
+  `Discriminating criteria` counts only RED attempts under the pin.
+```
+
+Add to CLAUDE.md, "Keeping current", as a paragraph before "Re-check:":
+
+```markdown
+Moving the pressure-test model is a reviewed change. The PR that edits
+`tests/skills/pinned-model.txt`, including one that follows a new default
+model, reruns every skill's pressure test, RED and GREEN, under the new
+pin and updates each record's `Model:` line and discriminating criteria;
+the records gate fails the PR until every record names the new pin. The
+same PR moves the seat default (`review.model` in the config schema and the
+design's 5.1 example), which is a user-visible change classified under
+"Versioning and releases".
+```
+
+and to its "Re-check:" list the bullet `- When Claude Code's default model changes (the scheduled drift check reports a new model).`
+
+**Why safe alone:** the pin, the verbs, the gate and every backfilled record land in one PR, so `main`'s CI is green at the merge; `--any-model` is inert until Task 54; no shipped component changes behaviour, and a SKILL.md edit a REFACTOR forces is re-proven by its own GREEN run in this PR.
+
+- [ ] **Step 1: Confirm the pin.** Run one isolated `claude -p --model claude-opus-5-5 ... --output-format stream-json --verbose "Reply with the word ok."` and read the init message's `model`. It must equal `claude-opus-5-5`; if the CLI reports a different string for the flag it was given, stop and report to the orchestrator (the pin must be both the value passed and the value the init reports).
+- [ ] **Step 2: Write the failing tests.** In `tests/helpers/pressure.test.mjs`:
+
+| Test | Input | Expected |
+|---|---|---|
+| the pinned model file is one well-formed line | the repository file; then fixtures with two lines, no trailing newline, a space in the id | the pin; then a usage error each |
+| a GREEN run under the pin passes and prints its model | `stream-invoked.jsonl`, `expectModel` the fixture's model | ok, `model` returned; CLI output's second line is `Model: <id>` |
+| a GREEN run under another model fails | the invoked stream with the init `model` changed | not ok, reason names both ids |
+| an init with no model fails | the invoked stream with the init `model` deleted | not ok |
+| --any-model accepts another model | the changed-model stream with `--any-model` | exit 0, prints that model |
+| a RED run under the pin passes | a baseline stream (the invoked stream's init with `plugins`, `skills` and `slash_commands` cleared of ship-kit entries, its Skill call and loaded body removed) | exit 0, prints `Model: <id>` then the final text |
+| a RED run that loaded ship-kit is refused | the invoked stream through `baseline` | exit 1 |
+| a RED run under another model is refused | the baseline stream with its init `model` changed | exit 1 |
+| a RED run with no final success is refused | the baseline stream truncated before `result` | exit 1 |
+
+In `tests/skills/artifacts.test.mjs` (fixture-driven, plus the real repository):
+
+| Test | Expected |
+|---|---|
+| every record names the pinned model | real repository: each `result.md` and `baseline.md` has one `Model:` line equal to the pin |
+| a record with no model line fails | fixture `baseline.md` without it: one violation naming the file |
+| a record under a model other than the pin fails | fixture `result.md` with `Model: other-model`: one violation naming both ids |
+| a model line inside a fence does not count | the only `Model:` line fenced: violation; two outside fences: violation |
+
+- [ ] **Step 3: Run to verify failure.** `node --test tests/helpers/pressure.test.mjs tests/skills/artifacts.test.mjs`: the new rows fail, and the real-repository row fails on every record.
+- [ ] **Step 4: Implement** the pin file, the `pressure.mjs` additions and the gate; write both CLAUDE.md passages above.
+- [ ] **Step 5: Backfill the seven skills under the pin** (the five release-1 skills and the two seat skills of Task 19). For each, from the method's setup with `--model "$MODEL"` added: at least two RED attempts, each accepted by `pressure.mjs baseline` (exit 0), appended to `baseline.md` under `## Pinned-model RED` (prompt and output in labelled fences, each criterion PASS or FAIL); one GREEN run accepted by `pressure.mjs check` (with `--dmi` for the seat skills), appended to `result.md` under `## Pinned-model GREEN`; then set the header lines: `baseline.md` gets `Model: <pin>`; `result.md` gets `Shipped-text SHA-256`, `Model` and `Discriminating criteria` recomputed from the pinned RED attempts only. A criterion that passes in every pinned RED attempt leaves the list; if the list would be empty, strengthen the scenario and rerun RED and GREEN. A GREEN run that fails a discriminating criterion is a REFACTOR round in this PR (close the loophole, rerun, record it under `## Loopholes closed`). Earlier runs stay in the records as evidence; no header claim rests on them.
+- [ ] **Step 6: Close** with the standard closing. Subject: `Pin the pressure-test model and record it in every skill record`.
+
+| File | Mutation | Test that must go red |
+|---|---|---|
+| `tests/helpers/pressure.mjs` | skip the `expectModel` comparison in `checkStream` | `a GREEN run under another model fails` |
+| `tests/helpers/pressure.mjs` | accept a RED stream whose init lists `ship-kit` | `a RED run that loaded ship-kit is refused` |
+| `tests/helpers/pressure.mjs` | skip the model comparison in `baseline` | `a RED run under another model is refused` |
+| `tests/skills/artifacts.test.mjs` | read the model lines from `result.md` only | `a record with no model line fails` |
+| `tests/skills/artifacts.test.mjs` | compare the model line with itself instead of the pin | `a record under a model other than the pin fails` |
+
+**Acceptance:** all seven records carry a `Model:` line equal to the pin with RED and GREEN runs made under it; `check` and `baseline` refuse any other model; the records gate is green on `main` at the merge.
+
+---
+
+### Task 52: The seat model config key
+
+Spec: design 5.1, 5.2, 6.3 (seat step 3), 7.2; ruling 46. Model: sonnet. Depends on: 15, 51. It is on the design chain between Tasks 15 and 24.
+
+**Files:**
+- Modify: `schemas/config.schema.json`, `scripts/lib/config.mjs`, `tests/lib/config.test.mjs`, `tests/schemas/config-schema.test.mjs`
+- Modify: `docs/design/ship-kit-design.md` 5.1 (the example gains `"model": "claude-opus-5-5"` under `review`, and one sentence: `review.model` is the model every seat runs unless its own `review.seats.<seat>.model` names another; its default is the model the seat skills' pressure tests ran under) and 6.3 seat step 3 (see Step 3)
+
+**Schema:** `review.model`: MODEL (Task 15's pattern `^[A-Za-z0-9._\[\]-]{1,100}$`), default the one line of `tests/skills/pinned-model.txt` (`claude-opus-5-5`). `review.seats.<seat>.model` keeps its type (null or MODEL, default null); null now means "use `review.model`".
+
+**Interfaces (adds to `scripts/lib/config.mjs`):** `export function seatModel(config, seat) -> string`: `config.review.seats[seat]?.model ?? config.review.model`, over a config `loadConfig` or `strictConfig` returned (so always a MODEL string).
+
+**Why safe alone:** a defaulted key no workflow reads until Task 53; every existing valid config stays valid, and `strictConfig()` gains the pinned default.
+
+- [ ] **Step 1: Write the failing tests.** `tests/schemas/config-schema.test.mjs`: the `review.model` default equals `tests/skills/pinned-model.txt` without its newline; the design 5.1 example's `review.model` equals it too; the ReDoS timing case already covering MODEL still passes. `tests/lib/config.test.mjs`: an otherwise empty config gets `review.model` equal to the pin; `seatModel` returns a seat's own model when set and `review.model` when the seat's is null or the seat is absent; `strictConfig()` carries the pin; `review.model` of `"a b"`, `""` and 101 characters are each rejected.
+- [ ] **Step 2: Run** both files: fail.
+- [ ] **Step 3: Implement** the key and `seatModel`, and make the design edit: in 6.3 seat step 3, "plus `--model <model>` when the seat's config names one." becomes "and `--model <model>`, where `<model>` is the seat's `review.seats.<seat>.model` or, when that is null, `review.model` (5.1), so a seat never runs on the action's default model. claude-code-action has no `model` input at the pinned version; the model reaches Claude Code only as the `--model` flag in `claude_args` (the action's `action.yml` at v1.0.236 defines `claude_args` as additional arguments passed directly to the Claude CLI, and its `docs/usage.md` lists the old `model` input as deprecated in favour of `claude_args: --model`)."
+- [ ] **Step 4: Close.** Subject: `Add the review.model config key with the pinned default`.
+
+| File | Mutation | Test that must go red |
+|---|---|---|
+| `schemas/config.schema.json` | default `review.model` to another id | the default-equals-pin case |
+| `scripts/lib/config.mjs` | return the seat's model even when null in `seatModel` | the null-seat case |
+
+**Acceptance:** schema default, design example and pin file agree; `seatModel` never returns null or empty for a loaded or strict config.
+
+---
+
+### Task 53: Seats always run the configured model
+
+Spec: design 6.3 (plan outputs, seat step 3), 7.2; ruling 46. Model: sonnet. Depends on: 23, 29, 52.
+
+**Files:**
+- Modify: `scripts/review/plan.mjs`, `scripts/review/plan.test.mjs`
+- Modify: `.github/workflows/review.yml`, `tests/workflows/review-yml.test.mjs`
+
+**Behaviour:** plan's `model` output is `seatModel(config, SEAT)` over the trusted config or `strictConfig()` (Task 52), never empty; a value not matching the MODEL pattern is `fail-config` (the schema already refuses it; plan asserts it again before writing an output). The seat step's `claude_args` always ends with `--model ${{ needs.plan.outputs.model }}`, with no condition on the value. The expression sits in the step's `with:`, never in a `run:` body, and the MODEL pattern admits no space or quote, so the value is one argument. The model is passed this way because claude-code-action v1.0.236 has no `model` input: its `action.yml` defines `claude_args` ("Additional arguments to pass directly to Claude CLI") and its `docs/usage.md` marks the old `model` input deprecated, "Use `claude_args` with `--model` instead".
+
+**Why safe alone:** `review.yml` is untagged and no caller pins it; the change only names the model a seat already runs; Task 32 (canary) builds on it, and the canary run of Task 33 exercises it live.
+
+- [ ] **Step 1: Write the failing tests.** `plan.test.mjs`: `the model output is the seat's model or review.model` (trusted config with a general model and a null adversarial model: `model` is the general model for `SEAT=general`, `review.model` for `adversarial`); `strict defaults name the pinned model` (absent trusted config: `model` equals the pin); `the PR head's model is ignored` (head config names another model: the output is the trusted one). `review-yml.test.mjs`: `the seat step always passes the plan's model` (the `claude_args` tokens end with `--model` and `${{ needs.plan.outputs.model }}`, and no expression in the step tests the model for emptiness).
+- [ ] **Step 2: Run** them: fail.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Close.** Subject: `Run every seat on its configured model`.
+
+| File | Mutation | Test that must go red |
+|---|---|---|
+| `scripts/review/plan.mjs` | output `review.seats[SEAT].model` or empty, as before | `the model output is the seat's model or review.model` |
+| `.github/workflows/review.yml` | pass `--model` only when the output is non-empty | `the seat step always passes the plan's model` |
+
+**Acceptance:** tests and actionlint green; no seat run depends on the action's default model.
+
+---
+
+### Task 54: The drift runner and per-skill run specs
+
+Spec: design 21.5; CLAUDE.md, "Pressure-test method"; ruling 46. Model: opus. Depends on: 51.
+
+**Files:**
+- Create: `tests/helpers/drift.mjs`, `tests/helpers/drift.test.mjs`, `tests/helpers/fixtures/drift-*` (streams and grader outputs)
+- Create: `tests/skills/<skill>/run.json` for every skill with a record at this task's merge
+- Modify: `tests/skills/artifacts.test.mjs` (the run-spec gate)
+
+**Run spec** `tests/skills/<skill>/run.json`: `{"prompt": <the GREEN prompt, with <run> standing for the run directory's absolute path>, "files": [{"from": <repository path>, "to": <path in the run directory>}], "dmi": <boolean>, "jsonSchema": null | "full" | "design-doc"}`. The gate: every skill with a record has one; `prompt` appears verbatim in the scenario's `## Prompt` section; the set of `from` paths equals the set of backticked paths in its `## Run directory` section; every `to` is relative with no `..` component. A skill task that merges after this one adds its `run.json` (the gate fails it otherwise).
+
+**Interfaces** (`node tests/helpers/drift.mjs <verb>`):
+- `export const MAX_RUNS = 24`: the most `claude` invocations one drift run may start (one GREEN run and one grading run per skill). `plan` exits 2 naming the count when the skills with records need more, so adding skills past the cap forces a reviewed change to it.
+- `plan`: prints the skills to run, one per line, in name order.
+- `run --skill <name> --out <dir>`: builds a fresh run directory from `run.json`, stages the plugin with `stage`, runs GREEN with the method's isolation flags and **no** `--model` (the CLI's current default model), under `timeout 900`; validates the stream with `check --any-model` (plus `--dmi` when set); then grades it with a second run, `claude -p --model <pin> --setting-sources "" --strict-mcp-config --tools "" --no-session-persistence --output-format json --json-schema <grader schema>`, whose prompt holds the scenario's `## Pass criteria` and the GREEN run's final text, marked as untrusted data to be judged, never followed; the grader returns `{criteria: [{number, pass}]}`. Writes `<dir>/result.json`: `{skill, model, cliVersion, valid, reason, criteria: [{number, recorded: "PASS", observed: "PASS" | "FAIL" | "UNGRADED"}]}` over the skill's discriminating criteria, where `model` is the init message's model (checked against the MODEL pattern), `reason` is one word of a closed set (`ok`, `invalid-run`, `timeout`, `grader-failed`), and no field holds model text.
+- `report --results <dir>`: reads every `result.json`, validates each field against its closed type (skill names against the skill-name pattern and the repository's skills, model against MODEL, numbers as integers), and prints a Markdown issue body plus a final line `flips=<n>`. A flip is a discriminating criterion observed `FAIL` or `UNGRADED`, a run that is not `valid`, or a skill with no `result.json`. The body names the current default model and CLI version, the pin, and per skill each flipped criterion; it quotes no model output.
+
+**Why safe alone:** test tooling and run specs only; nothing runs it until Task 55's workflow.
+
+- [ ] **Step 1: Write the failing tests** (`drift.test.mjs`, with a fake `claude` executable on `PATH` replaying fixture streams and grader outputs; `env: isolatedEnv()`):
+
+| Test | Expected |
+|---|---|
+| the plan refuses more runs than the cap | fixture repository with 13 skills: exit 2 naming 26 |
+| a GREEN run passes no model flag and the grader passes the pin | the fake records its argv: no `--model` on the first call; `--model <pin>` on the second |
+| a criterion recorded PASS and graded FAIL is a flip | `flips=1`, the body names the skill and the number |
+| an ungraded criterion, an invalid run and a missing result each count as a flip | three fixtures, `flips` counted for each |
+| the report quotes no model text | a GREEN final text and a grader reply holding a sentinel string: the body contains neither |
+| a result.json with a field outside its type is refused | a `model` with a space, a `skill` not in the repository: exit 2 |
+| the run directory holds exactly the spec's files | the fake lists its working directory |
+
+In `tests/skills/artifacts.test.mjs`: `every skill with a record has a consistent run spec` (real repository), and fixture cases for a missing `run.json`, a `from` not in the Run directory section, a Run-directory path with no `from`, and a `to` containing `..`.
+- [ ] **Step 2: Run** them: fail.
+- [ ] **Step 3: Implement** `drift.mjs`, the gate, and one `run.json` per skill; for each, run `drift.mjs run` once locally and confirm `check --any-model` accepts the stream (a spec that cannot produce a valid run is wrong, not the skill).
+- [ ] **Step 4: Close.** Subject: `Add the pressure-test drift runner and per-skill run specs`.
+
+| File | Mutation | Test that must go red |
+|---|---|---|
+| `tests/helpers/drift.mjs` | raise the plan's cap check to `MAX_RUNS * 2` | `the plan refuses more runs than the cap` |
+| `tests/helpers/drift.mjs` | count only `FAIL` as a flip | `an ungraded criterion, an invalid run and a missing result each count as a flip` |
+| `tests/helpers/drift.mjs` | copy the grader's reasoning text into `result.json` | `the report quotes no model text` |
+| `tests/skills/artifacts.test.mjs` | skip the from-set comparison | the missing-`from` fixture |
+
+**Acceptance:** every skill has a run spec the gate accepts and that produced a valid run; the runner never passes `--model` to a GREEN run and never writes model text to a result.
+
+---
+
+### Task 55: The scheduled drift workflow (owner approval required)
+
+Spec: design 21.4, 21.5; CLAUDE.md, "Keeping current", Security, Secrets; ruling 46. Model: opus. Depends on: 14, 54. **Owner approval required:** merging this PR enables a weekly schedule that spends the owner's Claude subscription usage (`CLAUDE_CODE_OAUTH_TOKEN` is a subscription OAuth token, Task 14), up to `MAX_RUNS` invocations per run, plus one manual run after the merge. The secret already exists; no secret, setting or tag changes.
+
+**Files:**
+- Create: `.github/workflows/skill-drift.yml`, `tests/workflows/skill-drift-yml.test.mjs`
+- Modify: `CLAUDE.md` ("Keeping current": the drift paragraph)
+
+**Workflow** `skill-drift.yml`:
+- `on`: `schedule` (`cron: "23 6 * * 1"`, weekly) and `workflow_dispatch` only; no `pull_request`, `pull_request_target`, `push` or other trigger, so nothing a PR contains ever runs here. Top-level `permissions: {}`; `concurrency: {group: skill-drift, cancel-in-progress: false}`.
+- Job `run` (`permissions: contents: read`, `timeout-minutes: 300`, `if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)` so a dispatch from another branch runs nothing): checkout with `persist-credentials: false`; setup-node `22`; install the Claude Code CLI at the newest published version, resolved with `npm view @anthropic-ai/claude-code version` into a variable and installed by exact version (the current default model arrives with the CLI, so a pinned CLI would never see it), in a step with no secret in its `env`; `node tests/helpers/drift.mjs plan` (the cap check; exit 2 fails the job before any model call); one step that loops over the planned skills running `drift.mjs run`, whose `env` alone holds `CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`; upload `result.json` files only as `skill-drift-${{ github.run_attempt }}` (`if: always()`).
+- Job `report` (`needs: run`, `if: always()`, `permissions: contents: read, issues: write`, `timeout-minutes: 10`): checkout (`persist-credentials: false`); download the results; `drift.mjs report` writes the body to a file; with `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` in that step's `env` only, when `flips` is above 0 or the `run` job did not succeed (`RUN_RESULT: ${{ needs.run.result }}` in `env`), find the open issue titled exactly `Pressure tests: criteria flipped under the current default model` and opened by `github-actions[bot]`, then edit its body and add a comment linking the run, or create it when none is open. With no flip and a successful run it writes nothing.
+- Every `uses:` is a 40-hex pin with its tag comment (the SHAs `ci.yml` pins); no `${{` inside any `run:` body (the no-expression gate already covers `.github/workflows/*.yml`); every value reaches a script through `env:`.
+
+Add to CLAUDE.md, "Keeping current", after the pin-move paragraph Task 51 added:
+
+```markdown
+`.github/workflows/skill-drift.yml` runs every skill's GREEN run weekly
+(and on manual dispatch from the default branch) against the newest Claude
+Code CLI's default model, not the pin, grades each discriminating
+criterion with the pinned model, and opens or updates one issue when a
+criterion recorded PASS no longer passes. It starts at most `MAX_RUNS`
+(24, in `tests/helpers/drift.mjs`) Claude invocations per run and spends
+the owner's subscription through `CLAUDE_CODE_OAUTH_TOKEN`. It holds no
+write token beyond `issues: write`. An open drift issue is the signal to
+move the pin as above, or to fix the skill.
+```
+
+**Why safe alone:** it runs only on the schedule or a default-branch dispatch, reads only the default branch, can write only issues, and caps its own cost; it gates nothing.
+
+- [ ] **Step 1: Write the failing test** `tests/workflows/skill-drift-yml.test.mjs` (parsed with `parseYaml`, run bodies with `runBodies`):
+
+| Test | Expected |
+|---|---|
+| triggers are exactly schedule and workflow_dispatch | `on` has those two keys only |
+| top-level permissions are empty and the jobs hold exactly the listed permissions | `{}`; `run` `{contents: read}`; `report` `{contents: read, issues: write}` |
+| the OAuth secret reaches only the drift-run step | `secrets.CLAUDE_CODE_OAUTH_TOKEN` appears in that step's `env` and nowhere else |
+| the workflow token reaches only the issue step | `secrets.GITHUB_TOKEN` appears in that step's `env` and nowhere else |
+| the run job is skipped off the default branch | its `if` is the expression above |
+| the cap check runs before any model call | the `plan` step precedes the run step in `run` |
+| only result files are uploaded | the upload `path` names `result.json` files only |
+| every uses is a 40-hex pin, every checkout sets persist-credentials false, every job has timeout-minutes | raw lines and parsed steps |
+| CLAUDE.md states the cap the runner enforces | the number in the drift paragraph equals `MAX_RUNS` |
+
+- [ ] **Step 2: Run** it: fail. **Step 3: Write** the workflow and the CLAUDE.md paragraph; actionlint clean.
+- [ ] **Step 4: Close** with the standard closing, subject `Add the weekly pressure-test drift check`, and stop before merging: the PR merges only on the owner's explicit yes. After the merge, run it once with `gh workflow run skill-drift.yml` and confirm the run finishes, uploads one `result.json` per skill, and either writes nothing or opens the issue; report the run URL.
+
+| File | Mutation | Test that must go red |
+|---|---|---|
+| `.github/workflows/skill-drift.yml` | add `pull_request` to `on` | `triggers are exactly schedule and workflow_dispatch` |
+| `.github/workflows/skill-drift.yml` | add `contents: write` to `report` | `top-level permissions are empty and the jobs hold exactly the listed permissions` |
+| `.github/workflows/skill-drift.yml` | move `CLAUDE_CODE_OAUTH_TOKEN` to job-level `env` | `the OAuth secret reaches only the drift-run step` |
+| `.github/workflows/skill-drift.yml` | drop the default-branch `if` | `the run job is skipped off the default branch` |
+
+**Acceptance:** tests and actionlint green; merged only on the owner's yes; one dispatched run completed with its result files and the expected issue behaviour.
+
+---
+
 ## Self-review against the spec
 
 - Second-account, fork-PR and cross-owner steps: only in Task 50 (private-repo fork path, F17 cross-owner observation); Task 40 uses the owner's account only, and Task 46 only records whether its repository is cross-owner. F29's live test, approved-PR case included, is Task 13's release-6 note (ruling 44), and no release-2 task depends on it.
@@ -2024,4 +2294,4 @@ Spec: design 22.8, 6.3 (author rule, reopen route), 23.2, F17, F21, F27; rulings
 - 22.9 release-2 notes: PR 2.1 dir slash (15); PR 2.2 distinct heads (24); artifact expiry (16, 26, 30, 31, 37); PR 2.4 boot secrets and permissions (20, 25) and self-hosted warning (27); planted `.claude` files (32, plus ruling 12 in 8); PR 2.5 CLAUDE.md lines by feature (25), Dependabot (37), F12 live (12); R5/R6 (37); Actions policy fact (27); PR 2.6 clean-run rule and final head (26), full-mode marker (24); extract-tree refusals and renames (8); node-built header (29); execution-file receipt and raw body (24, withheld when credential-shaped, ruling 43); diff-hunk check and fenced prose (24, 9); deny-ancestor test on two layouts (29); rulesets without permission (35); `agents.identity` (ruling 8); approval body rule (17); convert-to-draft text (17).
 - UNVERIFIED facts release 2 depends on: F12 (12), F13, F15, F23, F25, F28 (33), F21 (40; fork route 50), F27 (33, 40; read-only collaborator 50), F30 (27); F14, F17 and F29 stay UNVERIFIED (F17 observed in 50 if the second repo is cross-owner; F29 settled by Task 13's release-6 note before PR 6.2).
 - ship-kit's own `main` ruleset (id 24137364) has no bypass actor; Task 44 appends contexts and keeps `bypass_actors` empty.
-
+- Model tracking (ruling 46): records name their model and the gate requires the pin (51, backfilling all seven existing records in the same PR); the pin lives only in `tests/skills/pinned-model.txt`; seats run `review.model` or a seat's model (52, 53), passed as `claude_args --model` because claude-code-action v1.0.236 has no `model` input; later skill tasks (30, 31, 36) depend on 51 so their records carry the pinned model, and a skill merging after 54 adds its run spec; the weekly drift check (54, 55) runs against the current default model with a documented cap and merges only on the owner's yes. The design edit (52) sits on the design chain between 15 and 24.
