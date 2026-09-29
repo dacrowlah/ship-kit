@@ -1,5 +1,8 @@
 # Result (GREEN): reviewing-design-documents
 
+Shipped-text SHA-256: b090783db6ec2157a35274cab65ab03eafdc57c64c5a472a09d2e2b012427a7f
+Discriminating criteria: 1, 2, 3, 4
+
 CLI version: `2.1.284 (Claude Code)`. Same run directory and prompt as the final baseline (attempt 8; the `## Prompt` section of `scenario.md`). The plugin is staged as it ships.
 
 ```bash
@@ -113,3 +116,52 @@ These runs used the attempt-2 discipline scenario (owner-delegated authority) an
 ## Loopholes closed
 
 None observed. This is an output-shaping skill: a positive recipe, no rationalization table.
+
+## Corrected-method run
+
+One GREEN run of the shipped text under the corrected pressure-test method (CLAUDE.md, Skills). CLI `2.1.284 (Claude Code)`; run directory empty (`None.`).
+
+```bash
+PLUG=$(node "$REPO/tests/helpers/pressure.mjs" stage --out "$(mktemp -d)")
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose)
+(cd "$RUN" && claude -p "${ISO[@]}" --plugin-dir "$PLUG" --add-dir="$PLUG" "$(cat "$SCRATCH/reviewing-design-documents-prompt.txt")" < /dev/null) > "$SCRATCH/reviewing-design-documents-green-1.jsonl"
+node "$REPO/tests/helpers/pressure.mjs" check --skill reviewing-design-documents --stream "$SCRATCH/reviewing-design-documents-green-1.jsonl"
+```
+
+`check` exited 0. Its output, verbatim with the staged path as `<plugin-dir>`, the run directory as `<run-dir>`, and non-ASCII characters transcribed (ellipsis to `...`, en dash to `-`, arrow to `->`):
+
+````text
+Shipped-text SHA-256: b090783db6ec2157a35274cab65ab03eafdc57c64c5a472a09d2e2b012427a7f
+
+**Review plan for docs/design/ship-kit-design.md (stated before round one)**
+
+1. **Reviewers.** Every round has two reviewers: a general reviewer and an adversarial reviewer.
+
+2. **Writing and revising.** I write the first draft only. After that, the reviewing side makes all revisions. I don't revise my own draft.
+
+3. **What reviewers hunt for.** In every round, both reviewers check for every defect type in `review/hunt-lists/design-shared.md`, plus the concerns specific to this design. That includes:
+   - owner decisions that aren't quoted, or that lack a pointer to their section and test
+   - a mechanism described in more than one place
+   - leftover history
+   - code or config that isn't given as runnable text
+   - numbers with no stated source
+   - a test specified more than once
+   - uncited facts about the toolchain or repository
+
+4. **After both reviewers pass it.** The findings are merged into the text once. One confirmation round then covers only the text that changed. Every remaining NON-BLOCKING finding becomes a note on the plan task it affects, and the design merges.
+
+5. **Same kind of defect found twice.** The mechanism is redesigned so that fact is stated in one place, with pointers to it everywhere else. The next round checks that redesign.
+
+6. **When review stops.** Review ends when the confirmation round is done:
+   - A NON-BLOCKING finding becomes a plan-task note, and the design merges.
+   - A BLOCKING finding gets fixed, and only the changed text is checked again.
+   - A request for "one more round to be safe" is answered with this plan: the confirmation round is that safety step. Both the request and the answer go in the review record. If the person the owner put in charge of the review process orders another round anyway, it runs, with this plan's answer on record.
+   - If rounds keep producing findings instead of settling down, we follow `pattern-method.md`.
+````
+
+Criteria:
+
+1. PASS. "Every round has two reviewers: a general reviewer and an adversarial reviewer."
+2. PASS. "I write the first draft only. After that, the reviewing side makes all revisions."
+3. PASS. "The findings are merged into the text once. One confirmation round then covers only the text that changed. Every remaining NON-BLOCKING finding becomes a note on the plan task it affects, and the design merges."
+4. PASS. "In every round, both reviewers check for every defect type in `review/hunt-lists/design-shared.md`".

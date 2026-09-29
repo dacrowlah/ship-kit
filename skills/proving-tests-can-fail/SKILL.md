@@ -29,13 +29,13 @@ It cannot fail for its claim. Fix the test (or its fixture values), or move the 
 
 | Excuse | Reality |
 |---|---|
-| "Green is green, ship it." | Green says the test passes. Only a red run says it can fail. |
+| "I'd accept that the case table covers it" | Green says the test passes. Only a red run says it can fail. |
 | "do that mutation after the release", "I'll check that tomorrow", "propose a one-line test-only follow-up", "skip it and ship as-is" | By then the unproven test has shipped as a guard. It takes minutes now. |
 | "the case is likely green regardless. I haven't checked either point." | A prediction. Run it. |
 | "I don't have the old code." | Reverse the one line the test runs. |
 | "C also edits the file the lead said not to touch." | The scratch copy restores it byte for byte; `cmp` proves it. |
 | "Fixing the test would mean going against the lead's instruction, and that call is theirs." | Fixing a test that cannot fail is part of this change; an order about the production file does not cover the test file. |
-| "The fix is obvious", "other cases already cover it", "that's harder to do in a way that's quick" | One copy, one line, one test run. Show the red. |
+| "That's harder to do in a way that's quick" | One copy, one line, one test run. Show the red. |
 
 ## Red flags
 

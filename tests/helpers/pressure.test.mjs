@@ -897,3 +897,51 @@ test("$ARGUMENTS in a model-invoked body is compared as empty", () => {
   const plugin = "/p/" + "c".repeat(64);
   assert.equal(loadedBodyMatches("---\nname: s\n---\nArgs: $ARGUMENTS.\n", "Args: .", { pluginPath: plugin, skill: "s" }), true);
 });
+
+/**
+ * Passes `args` in the stream's Skill call and appends `appended` to the
+ * loaded body. With arguments and no `$ARGUMENTS` in SKILL.md, Claude Code
+ * 2.1.284 appends "\n\nARGUMENTS: <args>" to the body (seen in a real
+ * GREEN stream), which is the default here.
+ * @param {string} text @param {string | undefined} args @param {string} [appended]
+ */
+function withSkillArgs(text, args, appended = `\n\n\nARGUMENTS: ${args}`) {
+  const messages = parse(text).map((m) => {
+    const content = Array.isArray(m.message?.content) ? m.message.content : null;
+    if (!content) return m;
+    const edited = content.map((block) => {
+      if (block.type === "tool_use" && block.name === "Skill" && args !== undefined) return { ...block, input: { ...block.input, args } };
+      if (block.type === "text" && typeof block.text === "string" && block.text.startsWith(BASE_PREFIX)) return { ...block, text: block.text + appended };
+      return block;
+    });
+    return { ...m, message: { ...m.message, content: edited } };
+  });
+  return join_(messages);
+}
+
+test("a run that passed arguments counts when the loaded body ends with exactly those arguments", () => {
+  const { root, plugin } = stagedFixtureSkill();
+  const base = loadedFrom(RAW_INVOKED, plugin);
+  const check = (stream) => run(["check", "--skill", SKILL, "--stream", streamFile(stream)], { root });
+  const ok = check(withSkillArgs(base, "scripts/lib/glob.mjs"));
+  assert.equal(ok.code, 0, ok.err);
+  for (const stream of [
+    withSkillArgs(base, "scripts/lib/glob.mjs", "\n\n\nARGUMENTS: other"),
+    withSkillArgs(base, undefined, "\n\n\nARGUMENTS: scripts/lib/glob.mjs"),
+    withSkillArgs(base, "a", "\n\n\nARGUMENTS: a\nmore text"),
+    withSkillArgs(base, "a", "\n\nextra\n\nARGUMENTS: a"),
+  ]) {
+    const refused = check(stream);
+    assert.equal(refused.code, 1, stream.slice(-200));
+    assert.match(refused.err, /loaded skill body differs/);
+  }
+});
+
+test("a skill that places $ARGUMENTS itself does not accept an appended ARGUMENTS line", () => {
+  const plugin = "/p/" + "d".repeat(64);
+  const text = "---\nname: s\n---\nArgs: $ARGUMENTS.\n";
+  const options = { pluginPath: plugin, skill: "s", args: ["x"] };
+  assert.equal(loadedBodyMatches(text, "Args: .\n\n\nARGUMENTS: x", options), false);
+  assert.equal(loadedBodyMatches("---\nname: s\n---\nBody.\n", "Body.\n\n\nARGUMENTS: x", options), true);
+  assert.equal(loadedBodyMatches("---\nname: s\n---\nBody.\n", "Body.\n\n\nARGUMENTS: x", { pluginPath: plugin, skill: "s" }), false);
+});
