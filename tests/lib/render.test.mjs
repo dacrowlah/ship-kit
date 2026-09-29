@@ -18,6 +18,15 @@ test("a value containing <<other>> is not re-expanded", () => {
   assert.equal(out, "name: text <<other>> stuff\n");
 });
 
+test("a value containing another placeholder's own text is not re-expanded, even when that placeholder is supplied and used elsewhere", () => {
+  // A weaker guard here (only "other" as an unsupplied key) cannot tell a
+  // genuinely single-pass renderer apart from one that rescans but skips
+  // keys with no value: here "b" IS supplied and IS used in the template,
+  // so a rescan would substitute it into a's already-rendered text.
+  const out = render("a: <<a>>\nb: <<b>>\n", { a: "<<b>>", b: "REAL" });
+  assert.equal(out, "a: <<b>>\nb: REAL\n");
+});
+
 test("an unreplaced placeholder is refused", () => {
   assert.throws(
     () => render("name: <<n>>\n", {}),
