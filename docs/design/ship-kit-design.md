@@ -684,7 +684,7 @@ when `count` is 0, `empty` is true or `override` is true):
      --tools "Read,Grep,Glob,TodoWrite" --allowedTools
      "Read,Grep,Glob,TodoWrite" --disallowedTools "mcp__*" --add-dir
      <review dir> <pr dir> --max-turns <review.maxTurns> --json-schema
-     '<plan json_schema>'` and `--model <model>`, where `<model>` is the
+     '<plan json_schema>'`, and `--model <model>`, where `<model>` is the
      seat's `review.seats.<seat>.model` or, when that is null, `review.model`
      (5.1), so a seat never runs on the action's default model.
      claude-code-action has no `model` input at the pinned version; the model

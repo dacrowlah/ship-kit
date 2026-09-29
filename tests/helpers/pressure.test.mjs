@@ -989,7 +989,7 @@ test("the pinned model file is one well-formed line", () => {
   assert.equal(`${pinnedModel(REPO)}\n`, readFileSync(join(REPO, "tests", "skills", "pinned-model.txt"), "utf8"));
   assert.match(pinnedModel(REPO), MODEL_ID);
   assert.equal(pinnedModel(pin(tmp("pressure-pin-"), "model-a[1m]\n")), "model-a[1m]");
-  const cases = ["a\nb\n", "claude-opus-5-5", "claude opus\n", "claude-opus-5-5\n\n", "claude-opus-5-5\r\n", "\n", "", `${"a".repeat(101)}\n`, "a/b\n"];
+  const cases = ["a\nb\n", "claude-opus-5-5", "claude opus\n", "claude-opus-5-5\n\n", "claude-opus-5-5\r\n", "\n", "", `${"a".repeat(101)}\n`, "a/b\n", "-x\n", "--max-turns\n", "--dangerously-skip-permissions\n", ".x\n"];
   for (const content of cases) {
     const root = pin(tmp("pressure-pin-"), content);
     assert.throws(() => pinnedModel(root), /pinned-model\.txt/, JSON.stringify(content));

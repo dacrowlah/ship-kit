@@ -150,21 +150,32 @@ export function strictConfig() {
   return filled;
 }
 
+const SHOWN_MAX = 40;
+
+/** A value as an error message may show it: strings cut to SHOWN_MAX characters, anything else by type. */
+function shown(value) {
+  if (typeof value !== "string") return value === null ? "null" : typeof value;
+  return JSON.stringify(value.length > SHOWN_MAX ? `${value.slice(0, SHOWN_MAX)}...` : value);
+}
+
 /**
  * The model a seat runs: its own `review.seats.<seat>.model`, or `review.model`
  * when that is null or the seat has no entry (design 5.1, 6.3). Over a config
  * `loadConfig` or `strictConfig` returned this is always a model id, so a seat
- * never runs on the action's default model. A config built any other way that
- * resolves to anything but a model id is refused with a throw rather than
- * passed on to a workflow.
+ * never runs on the action's default model. A seat name outside `SEATS` (a
+ * typo must not quietly fall back to the review-wide model), and a config built
+ * any other way that resolves to anything but a model id, are refused with a
+ * throw rather than passed on to a workflow. The messages show at most
+ * `SHOWN_MAX` characters of a value.
  * @param {any} config
- * @param {string} seat
+ * @param {string} seat one of `SEATS`
  * @returns {string}
  */
 export function seatModel(config, seat) {
+  if (!SEATS.includes(seat)) throw new TypeError(`${shown(seat)} is not a ship-kit seat`);
   const model = config.review.seats[seat]?.model ?? config.review.model;
   if (typeof model !== "string" || !MODEL.test(model)) {
-    throw new TypeError(`no valid model for seat ${JSON.stringify(seat)}: got ${JSON.stringify(model)}`);
+    throw new TypeError(`no valid model for seat ${shown(seat)}: got ${shown(model)}`);
   }
   return model;
 }

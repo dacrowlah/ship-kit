@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { MODEL_ID, pinnedModel } from "../helpers/pressure.mjs";
 import {
   DEFAULT_REF, MAX_CONFIG_BYTES, SCHEMA_VERSION, SEATS, loadConfig, makeGit, readConfigAt,
   readDefaultBranchConfig, seatModel, semanticErrors, strictConfig,
 } from "../../scripts/lib/config.mjs";
 
 const SHIP_KIT = { version: "0.2.0", sha: "0123456789abcdef0123456789abcdef01234567" };
-// The pressure-test model: the one line of the pin file, without its newline.
-const PIN = readFileSync(new URL("../skills/pinned-model.txt", import.meta.url), "utf8").replace(/\n$/, "");
+const PIN = pinnedModel(fileURLToPath(new URL("../..", import.meta.url)));
+// A value the CLI would read as a flag (or a glob or path) if a workflow put it after `--model`.
+const FLAG_LIKE = ["-", "-p", "-x", "--", "--model", "--max-turns", "--disallowedTools", "--dangerously-skip-permissions", ".hidden", "_x", "[1m]"];
 const minimal = (extra = {}) => ({ schemaVersion: 1, shipKit: SHIP_KIT, ...extra });
 const load = (value, options) => loadConfig(JSON.stringify(value), options);
 const fakeMigration = { from: 0, to: 1, migrate: ({ schemaVersion, oldShipKit, ...rest }) => ({ ...rest, schemaVersion: 1, shipKit: oldShipKit }) };
@@ -285,7 +288,7 @@ test("strictConfig carries the pinned review.model, and every seat resolves to i
 // --- review.model and seatModel ------------------------------------------
 
 test("review.model accepts a model id and the id the seat key accepts", () => {
-  for (const model of ["claude-opus-4-1[1m]", "a", "a".repeat(100), "claude-opus-5-5", "x.y_z-1"]) {
+  for (const model of ["claude-opus-4-1[1m]", "a", "a".repeat(100), PIN, "x.y_z-1", "a--b", "9-0"]) {
     const result = load(minimal({ review: { model } }));
     assert.equal(result.ok, true, `${model}: ${result.reason}`);
     assert.equal(result.config.review.model, model);
@@ -305,6 +308,25 @@ test("review.model rejects null, non-strings, a trailing newline, non-ASCII and 
     const result = load(minimal({ review: { model } }));
     assert.equal(result.ok, false, `${JSON.stringify(model)} was accepted`);
     assert.match(result.reason, /\/review\/model /);
+  }
+});
+
+test("review.model refuses a value that starts with a dash or anything but a letter or digit", () => {
+  for (const model of FLAG_LIKE) {
+    const result = load(minimal({ review: { model } }));
+    assert.equal(result.ok, false, `${JSON.stringify(model)} was accepted`);
+    assert.match(result.reason, /\/review\/model must match pattern/, model);
+  }
+});
+
+test("every seat's model refuses a value that starts with a dash or anything but a letter or digit", () => {
+  for (const seat of SEATS) {
+    for (const model of FLAG_LIKE) {
+      const result = load(minimal({ review: { seats: { [seat]: { model } } } }));
+      assert.equal(result.ok, false, `${seat}: ${JSON.stringify(model)} was accepted`);
+      assert.match(result.reason, new RegExp(`/review/seats/${seat}/model must match pattern`), `${seat} ${model}`);
+    }
+    assert.equal(load(minimal({ review: { seats: { [seat]: { model: "a--b" } } } })).ok, true, seat);
   }
 });
 
@@ -331,14 +353,20 @@ test("seatModel returns review.model when the seat's own model is null", () => {
   assert.equal(seatModel(config, "adversarial"), "review-wide");
 });
 
-test("seatModel returns review.model when the seat is absent from review.seats", () => {
+test("seatModel returns review.model when a ship-kit seat is absent from review.seats", () => {
   const { config } = load(minimal({ review: { model: "review-wide" } }));
   delete config.review.seats.security;
   assert.equal(seatModel(config, "security"), "review-wide");
-  assert.equal(seatModel(config, "not-a-seat"), "review-wide");
-  assert.equal(seatModel(config, "constructor"), "review-wide");
-  assert.equal(seatModel(config, "__proto__"), "review-wide");
-  assert.equal(seatModel(config, undefined), "review-wide");
+  config.review.seats = {};
+  for (const seat of SEATS) assert.equal(seatModel(config, seat), "review-wide", seat);
+});
+
+test("seatModel refuses a seat name outside SEATS instead of falling back", () => {
+  const { config } = load(minimal({ review: { model: "review-wide", seats: { general: { model: "general-own" } } } }));
+  for (const seat of ["Adversarial", "advesarial", "general ", "", "not-a-seat", "constructor", "__proto__", "toString", undefined, null, 7, {}]) {
+    assert.throws(() => seatModel(config, seat), /not a ship-kit seat/, String(seat));
+  }
+  assert.equal(seatModel(config, "general"), "general-own");
 });
 
 test("seatModel on an otherwise empty config is the pin for every seat", () => {
@@ -353,10 +381,10 @@ test("seatModel never returns null or an empty string for a loaded or strict con
     strictConfig(),
   ];
   for (const config of configs) {
-    for (const seat of [...SEATS, "other"]) {
+    for (const seat of SEATS) {
       const model = seatModel(config, seat);
       assert.equal(typeof model, "string", seat);
-      assert.match(model, /^[A-Za-z0-9._\[\]-]{1,100}$/, seat);
+      assert.match(model, MODEL_ID, seat);
     }
   }
 });
@@ -369,6 +397,8 @@ test("seatModel refuses a config that did not come from the loader", () => {
     ["a seat model with a space", withSeat("a b")],
     ["a seat model of 101 characters", withSeat("a".repeat(101))],
     ["a seat model that is not a string", withSeat(7)],
+    ...FLAG_LIKE.map((model) => [`a seat model of ${model}`, withSeat(model)]),
+    ...FLAG_LIKE.map((model) => [`a review.model of ${model}`, { review: { model, seats: {} } }]),
     ["a missing review.model", { review: { seats: {} } }],
     ["a null review.model", { review: { model: null, seats: {} } }],
     ["an empty review.model", { review: { model: "", seats: {} } }],
@@ -378,6 +408,27 @@ test("seatModel refuses a config that did not come from the loader", () => {
   ];
   for (const [label, bad] of cases) assert.throws(() => seatModel(bad, "general"), (err) => err instanceof Error, label);
   assert.equal(seatModel(config, "general"), PIN);
+});
+
+test("seatModel's refusal names the problem without echoing an unbounded value", () => {
+  const long = `x y${"z".repeat(2000)}`;
+  const bad = { review: { model: PIN, seats: { general: { model: long } } } };
+  assert.throws(() => seatModel(bad, "general"), (err) => {
+    assert.ok(err instanceof TypeError);
+    assert.match(err.message, /no valid model for seat "general"/);
+    assert.ok(err.message.length < 200, `message is ${err.message.length} characters`);
+    assert.ok(!err.message.includes("z".repeat(100)));
+    return true;
+  });
+  const outsider = { review: { model: PIN, seats: {} } };
+  assert.throws(() => seatModel(outsider, "s".repeat(2000)), (err) => {
+    assert.match(err.message, /not a ship-kit seat/);
+    assert.ok(err.message.length < 200, `message is ${err.message.length} characters`);
+    return true;
+  });
+  for (const model of [7n, Symbol("s"), { toJSON() { throw new Error("boom"); } }, null, undefined]) {
+    assert.throws(() => seatModel({ review: { model, seats: {} } }, "general"), /no valid model for seat "general"/);
+  }
 });
 
 // --- readConfigAt ------------------------------------------------------------

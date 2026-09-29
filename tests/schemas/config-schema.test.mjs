@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { checkSchema } from "../../scripts/lib/schema.mjs";
 import { loadConfig } from "../../scripts/lib/config.mjs";
+import { MODEL_ID, pinnedModel } from "../helpers/pressure.mjs";
 
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 const SCHEMA = JSON.parse(read("schemas/config.schema.json"));
 
@@ -66,35 +69,32 @@ test("the design example's check names are the schema's defaults", () => {
   assert.deepEqual(loadConfig(designExample()).config.review.promotion, example.review.promotion);
 });
 
-/** The pressure-test model: the one line of the pin file, without its newline. */
-function pinnedModel() {
-  const text = read("tests/skills/pinned-model.txt");
-  assert.match(text, /^[^\n]+\n$/, "the pin file must hold one line ending in a newline");
-  return text.slice(0, -1);
-}
+const PIN = pinnedModel(ROOT);
 
 test("the review.model default equals the pinned model", () => {
   const model = SCHEMA.properties.review.properties.model;
   assert.equal(model.type, "string");
-  assert.equal(model.default, pinnedModel());
-  assert.equal(loadConfig(JSON.stringify({ schemaVersion: 1, shipKit: { version: "0.2.0", sha: "0".repeat(40) } })).config.review.model, pinnedModel());
+  assert.equal(model.default, PIN);
+  assert.equal(loadConfig(JSON.stringify({ schemaVersion: 1, shipKit: { version: "0.2.0", sha: "0".repeat(40) } })).config.review.model, PIN);
 });
 
-test("review.model and every seat's model share one pattern, and the pin matches it", () => {
+test("review.model and every seat's model share one pattern that starts with a letter or digit, and the pin matches it", () => {
   const { model, seats } = SCHEMA.properties.review.properties;
-  assert.equal(model.pattern, "^[A-Za-z0-9._\\[\\]-]{1,100}$");
+  assert.equal(model.pattern, "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$");
+  assert.equal(MODEL_ID.source, model.pattern);
+  assert.deepEqual(Object.keys(seats.properties), ["general", "adversarial", "security", "test-integrity"]);
   for (const [seat, node] of Object.entries(seats.properties)) {
     assert.equal(node.properties.model.pattern, model.pattern, seat);
     assert.deepEqual(node.properties.model.type, ["null", "string"], seat);
     assert.equal(node.properties.model.default, null, seat);
   }
-  assert.match(pinnedModel(), new RegExp(model.pattern, "u"));
+  assert.match(PIN, new RegExp(model.pattern, "u"));
 });
 
 test("the design 5.1 example names the pinned model as review.model", () => {
   const example = JSON.parse(designExample());
-  assert.equal(example.review.model, pinnedModel());
-  assert.equal(loadConfig(designExample()).config.review.model, pinnedModel());
+  assert.equal(example.review.model, PIN);
+  assert.equal(loadConfig(designExample()).config.review.model, PIN);
   assert.equal(SCHEMA.properties.review.properties.model.default, example.review.model);
 });
 
