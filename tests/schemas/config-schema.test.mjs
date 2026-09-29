@@ -66,6 +66,38 @@ test("the design example's check names are the schema's defaults", () => {
   assert.deepEqual(loadConfig(designExample()).config.review.promotion, example.review.promotion);
 });
 
+/** The pressure-test model: the one line of the pin file, without its newline. */
+function pinnedModel() {
+  const text = read("tests/skills/pinned-model.txt");
+  assert.match(text, /^[^\n]+\n$/, "the pin file must hold one line ending in a newline");
+  return text.slice(0, -1);
+}
+
+test("the review.model default equals the pinned model", () => {
+  const model = SCHEMA.properties.review.properties.model;
+  assert.equal(model.type, "string");
+  assert.equal(model.default, pinnedModel());
+  assert.equal(loadConfig(JSON.stringify({ schemaVersion: 1, shipKit: { version: "0.2.0", sha: "0".repeat(40) } })).config.review.model, pinnedModel());
+});
+
+test("review.model and every seat's model share one pattern, and the pin matches it", () => {
+  const { model, seats } = SCHEMA.properties.review.properties;
+  assert.equal(model.pattern, "^[A-Za-z0-9._\\[\\]-]{1,100}$");
+  for (const [seat, node] of Object.entries(seats.properties)) {
+    assert.equal(node.properties.model.pattern, model.pattern, seat);
+    assert.deepEqual(node.properties.model.type, ["null", "string"], seat);
+    assert.equal(node.properties.model.default, null, seat);
+  }
+  assert.match(pinnedModel(), new RegExp(model.pattern, "u"));
+});
+
+test("the design 5.1 example names the pinned model as review.model", () => {
+  const example = JSON.parse(designExample());
+  assert.equal(example.review.model, pinnedModel());
+  assert.equal(loadConfig(designExample()).config.review.model, pinnedModel());
+  assert.equal(SCHEMA.properties.review.properties.model.default, example.review.model);
+});
+
 test("ship-kit's own .ship-kit/config.json validates with the agreed values", () => {
   const result = loadConfig(read(".ship-kit/config.json"));
   assert.equal(result.ok, true, result.reason);
@@ -106,6 +138,7 @@ test("every schema pattern finishes in under 50 ms on adversarial 10,000-charact
   assert.match(names, /secret/);
   assert.match(names, /model/);
   assert.match(names, /specDirs/);
+  assert.ok(patterns.some(([pointer]) => pointer === "/properties/review/properties/model"), "review.model has a pattern under test");
   for (const [pointer, pattern] of patterns) {
     const re = new RegExp(pattern, "u");
     for (const input of inputs) {

@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   DEFAULT_REF, MAX_CONFIG_BYTES, SCHEMA_VERSION, SEATS, loadConfig, makeGit, readConfigAt,
-  readDefaultBranchConfig, semanticErrors, strictConfig,
+  readDefaultBranchConfig, seatModel, semanticErrors, strictConfig,
 } from "../../scripts/lib/config.mjs";
 
 const SHIP_KIT = { version: "0.2.0", sha: "0123456789abcdef0123456789abcdef01234567" };
+// The pressure-test model: the one line of the pin file, without its newline.
+const PIN = readFileSync(new URL("../skills/pinned-model.txt", import.meta.url), "utf8").replace(/\n$/, "");
 const minimal = (extra = {}) => ({ schemaVersion: 1, shipKit: SHIP_KIT, ...extra });
 const load = (value, options) => loadConfig(JSON.stringify(value), options);
 const fakeMigration = { from: 0, to: 1, migrate: ({ schemaVersion, oldShipKit, ...rest }) => ({ ...rest, schemaVersion: 1, shipKit: oldShipKit }) };
@@ -65,6 +67,7 @@ test("defaults fill an otherwise empty config", () => {
   assert.equal(config.render.changeClassCheck, false);
   assert.deepEqual(config.review.specDirs, []);
   assert.deepEqual(config.review.planDirs, []);
+  assert.equal(config.review.model, PIN);
   assert.deepEqual(config.review.seats, {
     general: { mode: "required", model: null },
     adversarial: { mode: "shadow", model: null },
@@ -269,6 +272,112 @@ test("strictConfig: every seat required, no design-doc dirs, admin approvals, ag
   assert.equal(strict.agents.adminMerge, false);
   strict.review.seats.general.mode = "shadow";
   assert.equal(strictConfig().review.seats.general.mode, "required");
+});
+
+test("strictConfig carries the pinned review.model, and every seat resolves to it", () => {
+  const strict = strictConfig();
+  assert.equal(strict.review.model, PIN);
+  for (const seat of SEATS) assert.equal(seatModel(strict, seat), PIN, seat);
+  strict.review.model = "changed";
+  assert.equal(strictConfig().review.model, PIN);
+});
+
+// --- review.model and seatModel ------------------------------------------
+
+test("review.model accepts a model id and the id the seat key accepts", () => {
+  for (const model of ["claude-opus-4-1[1m]", "a", "a".repeat(100), "claude-opus-5-5", "x.y_z-1"]) {
+    const result = load(minimal({ review: { model } }));
+    assert.equal(result.ok, true, `${model}: ${result.reason}`);
+    assert.equal(result.config.review.model, model);
+  }
+});
+
+test("review.model of a space, an empty string and 101 characters is rejected", () => {
+  for (const model of ["a b", "", "a".repeat(101)]) {
+    const result = load(minimal({ review: { model } }));
+    assert.equal(result.ok, false, `${JSON.stringify(model)} was accepted`);
+    assert.match(result.reason, /\/review\/model must match pattern/);
+  }
+});
+
+test("review.model rejects null, non-strings, a trailing newline, non-ASCII and shell metacharacters", () => {
+  for (const model of [null, 42, true, ["claude-opus-5-5"], {}, "claude-opus-5-5\n", "\nclaude", "claude\u00e9", "a;b", "$(x)", "a`b`", "a'b", 'a"b', "a/b", "a=b", "a\tb", "a\u0000b"]) {
+    const result = load(minimal({ review: { model } }));
+    assert.equal(result.ok, false, `${JSON.stringify(model)} was accepted`);
+    assert.match(result.reason, /\/review\/model /);
+  }
+});
+
+test("a seat's model keeps its type: null or a model id, never an empty string", () => {
+  for (const model of [null, "claude-opus-4-1[1m]"]) {
+    assert.equal(load(minimal({ review: { seats: { general: { model } } } })).ok, true, String(model));
+  }
+  for (const model of ["", "a b", "a".repeat(101), 7]) {
+    assert.equal(load(minimal({ review: { seats: { general: { model } } } })).ok, false, JSON.stringify(model));
+  }
+});
+
+test("seatModel returns the seat's own model when set", () => {
+  const { config } = load(minimal({ review: { model: "review-wide", seats: { general: { model: "general-own" }, adversarial: { model: "adversarial-own" } } } }));
+  assert.equal(seatModel(config, "general"), "general-own");
+  assert.equal(seatModel(config, "adversarial"), "adversarial-own");
+});
+
+test("seatModel returns review.model when the seat's own model is null", () => {
+  const { config } = load(minimal({ review: { model: "review-wide", seats: { general: { model: "general-own" } } } }));
+  assert.equal(config.review.seats.security.model, null);
+  assert.equal(seatModel(config, "security"), "review-wide");
+  assert.equal(seatModel(config, "test-integrity"), "review-wide");
+  assert.equal(seatModel(config, "adversarial"), "review-wide");
+});
+
+test("seatModel returns review.model when the seat is absent from review.seats", () => {
+  const { config } = load(minimal({ review: { model: "review-wide" } }));
+  delete config.review.seats.security;
+  assert.equal(seatModel(config, "security"), "review-wide");
+  assert.equal(seatModel(config, "not-a-seat"), "review-wide");
+  assert.equal(seatModel(config, "constructor"), "review-wide");
+  assert.equal(seatModel(config, "__proto__"), "review-wide");
+  assert.equal(seatModel(config, undefined), "review-wide");
+});
+
+test("seatModel on an otherwise empty config is the pin for every seat", () => {
+  const { config } = load(minimal());
+  for (const seat of SEATS) assert.equal(seatModel(config, seat), PIN, seat);
+});
+
+test("seatModel never returns null or an empty string for a loaded or strict config", () => {
+  const configs = [
+    load(minimal()).config,
+    load(minimal({ review: { seats: { general: { model: null }, adversarial: { model: "own" } } } })).config,
+    strictConfig(),
+  ];
+  for (const config of configs) {
+    for (const seat of [...SEATS, "other"]) {
+      const model = seatModel(config, seat);
+      assert.equal(typeof model, "string", seat);
+      assert.match(model, /^[A-Za-z0-9._\[\]-]{1,100}$/, seat);
+    }
+  }
+});
+
+test("seatModel refuses a config that did not come from the loader", () => {
+  const { config } = load(minimal());
+  const withSeat = (model) => ({ review: { model: PIN, seats: { general: { model } } } });
+  const cases = [
+    ["a seat model that is an empty string", withSeat("")],
+    ["a seat model with a space", withSeat("a b")],
+    ["a seat model of 101 characters", withSeat("a".repeat(101))],
+    ["a seat model that is not a string", withSeat(7)],
+    ["a missing review.model", { review: { seats: {} } }],
+    ["a null review.model", { review: { model: null, seats: {} } }],
+    ["an empty review.model", { review: { model: "", seats: {} } }],
+    ["a review.model with a newline", { review: { model: "a\nb", seats: {} } }],
+    ["a config without review", {}],
+    ["null", null],
+  ];
+  for (const [label, bad] of cases) assert.throws(() => seatModel(bad, "general"), (err) => err instanceof Error, label);
+  assert.equal(seatModel(config, "general"), PIN);
 });
 
 // --- readConfigAt ------------------------------------------------------------

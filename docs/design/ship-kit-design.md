@@ -316,6 +316,7 @@ halves with different lifetimes:
   "review": {
     "specDirs": ["docs/design/"],
     "planDirs": ["docs/plans/"],
+    "model": "claude-opus-5-5",
     "seats": {
       "general": { "mode": "required", "model": null },
       "adversarial": { "mode": "shadow", "model": null }
@@ -376,6 +377,10 @@ whether agents may use the admin-merge path (`agents.adminMerge`, 5.4,
 `maxSeats`, `targetLines` and `maxTurns` defaults are the working values of
 the first adopting repo, carried as starting points; nothing derives from
 them.
+
+`review.model` is the model every seat runs unless its own
+`review.seats.<seat>.model` names another; its default is the model the seat
+skills' pressure tests ran under.
 
 ### 5.2 Schema and validation
 
@@ -679,8 +684,15 @@ when `count` is 0, `empty` is true or `override` is true):
      --tools "Read,Grep,Glob,TodoWrite" --allowedTools
      "Read,Grep,Glob,TodoWrite" --disallowedTools "mcp__*" --add-dir
      <review dir> <pr dir> --max-turns <review.maxTurns> --json-schema
-     '<plan json_schema>'`, plus `--model <model>` when the seat's config
-     names one.
+     '<plan json_schema>'` and `--model <model>`, where `<model>` is the
+     seat's `review.seats.<seat>.model` or, when that is null, `review.model`
+     (5.1), so a seat never runs on the action's default model.
+     claude-code-action has no `model` input at the pinned version; the model
+     reaches Claude Code only as the `--model` flag in `claude_args` (the
+     action's `action.yml` at v1.0.236 defines `claude_args` as additional
+     arguments passed directly to the Claude CLI, and its `docs/usage.md`
+     lists the old `model` input as deprecated in favour of `claude_args:
+     --model`).
    The working directories are the workspace root (the default branch),
    `review/` and `pr/`; reads anywhere else, including the rest of
    `$RUNNER_TEMP`, the rest of `$HOME` and `/proc`, are refused (F28). The seat has no

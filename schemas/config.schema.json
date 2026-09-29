@@ -211,6 +211,11 @@
           },
           "default": []
         },
+        "model": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+          "default": "claude-opus-5-5"
+        },
         "seats": {
           "type": "object",
           "additionalProperties": false,

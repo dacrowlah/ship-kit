@@ -23,6 +23,7 @@ const SCHEMA = JSON.parse(readFileSync(new URL("../../schemas/config.schema.json
 checkSchema(SCHEMA);
 
 const FILE = new RegExp(SCHEMA.properties.review.properties.huntLists.properties.code.pattern, "u");
+const MODEL = new RegExp(SCHEMA.properties.review.properties.model.pattern, "u");
 const SHA = /^[0-9a-f]{40}$/;
 const GIT_TIMEOUT_MS = 120_000;
 const REGULAR_MODES = new Set(["100644", "100755"]);
@@ -147,6 +148,25 @@ export function strictConfig() {
   filled.review.override.minPermission = "admin";
   filled.agents.commitAndPush = false;
   return filled;
+}
+
+/**
+ * The model a seat runs: its own `review.seats.<seat>.model`, or `review.model`
+ * when that is null or the seat has no entry (design 5.1, 6.3). Over a config
+ * `loadConfig` or `strictConfig` returned this is always a model id, so a seat
+ * never runs on the action's default model. A config built any other way that
+ * resolves to anything but a model id is refused with a throw rather than
+ * passed on to a workflow.
+ * @param {any} config
+ * @param {string} seat
+ * @returns {string}
+ */
+export function seatModel(config, seat) {
+  const model = config.review.seats[seat]?.model ?? config.review.model;
+  if (typeof model !== "string" || !MODEL.test(model)) {
+    throw new TypeError(`no valid model for seat ${JSON.stringify(seat)}: got ${JSON.stringify(model)}`);
+  }
+  return model;
 }
 
 /**
