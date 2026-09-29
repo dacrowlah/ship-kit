@@ -1,0 +1,46 @@
+# ship-kit-managed: <<stamp_json>>
+# Rendered by /ship-kit:setup from .ship-kit/config.json. Hand edits are reported as drift.
+# Requires the repository secret <<secret>> (<<auth_text>>).
+# Runs on pull_request_target: this file and its pin are read from the default branch, never from the PR.
+name: ship-kit <<seat>> review
+
+on:
+  pull_request_target:
+    branches: [<<default_branch>>]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ship-kit-<<seat>>-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+<<boot_job>>
+  review:
+<<review_needs>>
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      actions: read
+    uses: dacrowlah/ship-kit/.github/workflows/review.yml@<<ship_kit_sha>> # ship-kit--v<<ship_kit_version>>
+    with:
+      seat: <<seat>>
+      runners: '<<runners_json>>'
+    secrets:
+      <<secret_input>>: ${{ secrets.<<secret>> }}
+
+  gate:
+    name: <<check_name>>
+    needs: [<<gate_needs>>]
+    if: always()
+    runs-on: <<gate_runner_json>>
+    steps:
+      - name: Require the review to have run and passed
+        env:
+          ALL_SUCCEEDED: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}
+          STATUS: ${{ needs.review.outputs.status }}
+          ENFORCED: ${{ needs.review.outputs.enforced }}
+        run: |
+<<gate_script>>

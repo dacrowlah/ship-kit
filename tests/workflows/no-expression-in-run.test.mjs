@@ -26,6 +26,7 @@ import { globSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { runBodies, scriptBodies, yamlExpressionViolations } from "../helpers/run-bodies.mjs";
 import { YamlSubsetError } from "../helpers/yaml.mjs";
+import { renderedTemplateVariants } from "../helpers/rendered-templates.mjs";
 
 const EXPRESSION = "${{";
 
@@ -159,30 +160,74 @@ test("a second YAML document in the same file is refused", () => {
 
 // -- The real repository: every tracked workflow and template. ----------
 
-const REPO_YAML_GLOBS = [".github/workflows/*.yml", "templates/**/*.yml", "templates/**/*.yaml"];
+// Real workflow files are always complete, standalone YAML: scanned as text
+// straight off disk.
+const REPO_WORKFLOW_YAML_GLOB = ".github/workflows/*.yml";
 const REPO_SHELL_GLOB = "templates/**/*.sh";
 
-function repoYamlFiles() {
-  return REPO_YAML_GLOBS.flatMap((pattern) => globSync(pattern)).sort();
+function repoWorkflowFiles() {
+  return globSync(REPO_WORKFLOW_YAML_GLOB).sort();
 }
 
 function repoShellFiles() {
   return globSync(REPO_SHELL_GLOB).sort();
 }
 
-test("no run: or script: value in a tracked workflow or template contains an expression", () => {
-  const violations = [];
-  for (const path of repoYamlFiles()) {
-    const text = readFileSync(path, "utf8");
-    try {
-      for (const hit of withExpression(yamlExpressionViolations(text))) {
-        violations.push(`${path}:${hit.line}: run:/script: value contains an expression`);
-      }
-    } catch (err) {
-      if (!(err instanceof YamlSubsetError)) throw err;
-      violations.push(`${path}: refused (cannot be fully parsed by the supported YAML subset): ${err.message}`);
+/**
+ * Runs the same tree-walk gate (`yamlExpressionViolations`) a parsed YAML
+ * document gets, refusing (not silently missing) anything the reader cannot
+ * represent, and records each hit or refusal as a violation string.
+ * @param {string} label identifies the text in a violation message
+ * @param {string} text
+ * @param {string[]} violations appended to in place
+ */
+function gateYamlText(label, text, violations) {
+  try {
+    for (const hit of withExpression(yamlExpressionViolations(text))) {
+      violations.push(`${label}:${hit.line}: run:/script: value contains an expression`);
     }
+  } catch (err) {
+    if (!(err instanceof YamlSubsetError)) throw err;
+    violations.push(`${label}: refused (cannot be fully parsed by the supported YAML subset): ${err.message}`);
   }
+}
+
+/**
+ * Gates every rendered template variant. A template with no registered
+ * renderer, a registered renderer for a template that is gone, or a variant
+ * that still holds a placeholder is itself a violation (fail closed): the
+ * next template can never fall back to an unscanned state.
+ * @param {() => { path: string, variant: string, text: string }[]} variantsOf
+ * @param {string[]} violations appended to in place
+ */
+function gateRenderedTemplates(variantsOf, violations) {
+  let variants;
+  try {
+    variants = variantsOf();
+  } catch (err) {
+    violations.push(`templates: cannot be rendered for the gate (${err.message})`);
+    return;
+  }
+  for (const { path, variant, text } of variants) {
+    gateYamlText(`${path} [${variant}]`, text, violations);
+  }
+}
+
+test("no run: or script: value in a tracked workflow, or a rendered template, contains an expression", () => {
+  const violations = [];
+  for (const path of repoWorkflowFiles()) {
+    gateYamlText(path, readFileSync(path, "utf8"), violations);
+  }
+  // A template under templates/**/*.yml holds `<<placeholder>>` tokens and
+  // is not standalone YAML in its raw form (for example
+  // `templates/callers/review.yml`'s column-0 `<<boot_job>>`, which stands
+  // in for an entire job before rendering). Rather than weaken the gate to
+  // a line scan for exactly the files whose whole purpose is to become a
+  // live `pull_request_target` workflow in an adopting repository, every
+  // registered variant is rendered first (placeholder-free, real YAML;
+  // `render()` itself refuses an unreplaced placeholder) and then walked by
+  // the identical tree-walk gate real workflow files get.
+  gateRenderedTemplates(renderedTemplateVariants, violations);
   // Every line of a shell template is itself a run body once copied into a
   // `run: |` step, so the whole file is scanned the same way.
   for (const path of repoShellFiles()) {
@@ -196,5 +241,174 @@ test("no run: or script: value in a tracked workflow or template contains an exp
 });
 
 test("the repository has at least one workflow to scan", () => {
-  assert.ok(repoYamlFiles().length > 0);
+  assert.ok(repoWorkflowFiles().length > 0);
+});
+
+
+// -- Bypass forms: every shape the tree-walk gate must catch (found) or
+// refuse (cannot be fully parsed, hence never silently clean), planted in a
+// minimal template-shaped document with no placeholders of its own. These
+// are the same forms Task 6 built `yamlExpressionViolations` to catch
+// instead of a line scan (`run-bodies.mjs`'s own header: a line scan
+// "cannot tell a run: key line from an equivalent flow mapping, quoted key,
+// or alias, and a construct outside what the scan recognizes is silently
+// treated as if it held no run:/script: value at all"), and are the exact
+// forms `renderedTemplateVariants` must expose to `yamlExpressionViolations`
+// once a template is rendered, not a form a line scan over the raw template
+// text could ever be trusted to find.
+
+const EXPR = "${{ github.event.pull_request.title }}";
+
+function planted(label, text) {
+  const violations = [];
+  gateYamlText(label, text, violations);
+  return violations;
+}
+
+test("a double-quoted run: key carrying an expression is found", () => {
+  const text = ["jobs:", "  evil:", `    "run": "echo ${EXPR}"`].join("\n");
+  const violations = planted("bypass-double-quoted-key", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /run:\/script: value contains an expression/);
+});
+
+test("a single-quoted run: key carrying an expression is found", () => {
+  const text = ["jobs:", "  evil:", `    'run': "echo ${EXPR}"`].join("\n");
+  const violations = planted("bypass-single-quoted-key", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /run:\/script: value contains an expression/);
+});
+
+test("a run key with a space before the colon (run :) carrying an expression is found", () => {
+  const text = ["jobs:", "  evil:", `    run : "echo ${EXPR}"`].join("\n");
+  const violations = planted("bypass-space-before-colon", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /run:\/script: value contains an expression/);
+});
+
+test("a flow-mapping step holding run: with an expression is refused", () => {
+  const text = ["jobs:", "  evil:", `    steps: [{run: "echo ${EXPR}"}]`].join("\n");
+  const violations = planted("bypass-flow-mapping", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /refused \(cannot be fully parsed/);
+});
+
+test("run: *alias referencing an anchor carrying an expression is refused", () => {
+  const text = [`x: &body "echo ${EXPR}"`, "jobs:", "  evil:", "    steps:", "      - run: *body"].join("\n");
+  const violations = planted("bypass-alias", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /refused \(cannot be fully parsed/);
+});
+
+test("an explicit-key (? run / : value) mapping entry is refused", () => {
+  const text = ["jobs:", "  evil:", "    ? run", `    : "echo ${EXPR}"`].join("\n");
+  const violations = planted("bypass-explicit-key", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /refused \(cannot be fully parsed/);
+});
+
+test("a double-quoted key with a hex escape spelling run (\"ru\\x6e\") is refused", () => {
+  const text = ["jobs:", "  evil:", `    "ru\\x6e": "echo ${EXPR}"`].join("\n");
+  const violations = planted("bypass-escaped-key", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /refused \(cannot be fully parsed/);
+});
+
+test("the control case (a plain run: with an expression) is found, confirming the harness itself works", () => {
+  const text = ["jobs:", "  evil:", `    run: "echo ${EXPR}"`].join("\n");
+  const violations = planted("bypass-control", text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /run:\/script: value contains an expression/);
+});
+
+test("every currently rendered template variant is clean: none of the bypass forms are present", () => {
+  const violations = [];
+  gateRenderedTemplates(renderedTemplateVariants, violations);
+  assert.deepEqual(violations, []);
+});
+
+// -- The whole pipeline (registry -> render -> tree walk), not just the
+// walk: each bypass form planted as a registered template variant, and the
+// fail-closed cases for a template the registry cannot render. ----------
+
+const BYPASS_TEMPLATES = {
+  "double-quoted key": ["jobs:", "  evil:", `    "run": "echo ${EXPR}"`].join("\n"),
+  "single-quoted key": ["jobs:", "  evil:", `    'run': "echo ${EXPR}"`].join("\n"),
+  "space before colon": ["jobs:", "  evil:", `    run : "echo ${EXPR}"`].join("\n"),
+  "flow mapping": ["jobs:", "  evil:", `    steps: [{run: "echo ${EXPR}"}]`].join("\n"),
+  alias: [`x: &body "echo ${EXPR}"`, "jobs:", "  evil:", "    steps:", "      - run: *body"].join("\n"),
+  "explicit key": ["jobs:", "  evil:", "    ? run", `    : "echo ${EXPR}"`].join("\n"),
+  "escaped key": ["jobs:", "  evil:", `    "ru\\x6e": "echo ${EXPR}"`].join("\n"),
+  "control (plain key)": ["jobs:", "  evil:", `    run: "echo ${EXPR}"`].join("\n"),
+};
+
+/** Renders one in-memory template the way the real pipeline would. */
+function gateInMemoryTemplate(path, template, variants, violations) {
+  gateRenderedTemplates(
+    () =>
+      renderedTemplateVariants({
+        glob: () => [path],
+        registry: { [path]: variants },
+        read: (requested) => {
+          if (requested !== path) throw new Error(`read of an unexpected path: ${requested}`);
+          return template;
+        },
+      }),
+    violations,
+  );
+}
+
+for (const [form, text] of Object.entries(BYPASS_TEMPLATES)) {
+  test(`a registered template using a ${form} is reported by the rendered-template gate`, () => {
+    const violations = [];
+    gateInMemoryTemplate("templates/evil.yml", `${text}\n`, [{ name: form, values: () => ({}) }], violations);
+    assert.equal(violations.length, 1, JSON.stringify(violations));
+    assert.match(violations[0], /^templates\/evil\.yml \[/);
+  });
+}
+
+test("a placeholder-bearing template using a quoted run key is gated once rendered with its own values", () => {
+  const template = `jobs:\n<<job>>\n`;
+  const values = () => ({ job: `  evil:\n    "run": "echo ${EXPR}"` });
+  const violations = [];
+  gateInMemoryTemplate("templates/evil.yml", template, [{ name: "with job", values }], violations);
+  assert.equal(violations.length, 1, JSON.stringify(violations));
+  assert.match(violations[0], /run:\/script: value contains an expression/);
+});
+
+test("a template file with no registered values is a violation, not a silent skip", () => {
+  const violations = [];
+  gateRenderedTemplates(() => renderedTemplateVariants({ glob: () => ["templates/new.yml"], registry: {} }), violations);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /no values registered/);
+});
+
+test("a template that renders to empty output is a violation, not a vacuous pass", () => {
+  const violations = [];
+  gateInMemoryTemplate("templates/t.yml", "<<body>>\n", [{ name: "blank", values: () => ({ body: "" }) }], violations);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /rendered to empty output/);
+});
+
+test("values for one template registered against a different template's file are a violation", () => {
+  const violations = [];
+  gateInMemoryTemplate("templates/evil.yml", "jobs: {}\n<<only_in_evil>>\n", [{ name: "wrong values", values: () => ({ seat: "general" }) }], violations);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /cannot be rendered for the gate/);
+});
+
+test("a rendered variant that still holds a placeholder is a violation", () => {
+  const violations = [];
+  gateRenderedTemplates(
+    () =>
+      renderedTemplateVariants({
+        glob: () => ["templates/t.yml"],
+        registry: { "templates/t.yml": [{ name: "leaky", values: () => ({}) }] },
+        read: () => "a: 1\n",
+        renderTemplate: () => "a: 1\n<<boot_job>>\n",
+      }),
+    violations,
+  );
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /unrendered placeholders/);
 });
