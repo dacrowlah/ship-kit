@@ -1,4 +1,5 @@
 Shipped-text SHA-256: d57dd3547f93bd5c378d5cb0dfc735ccd2f8b81a87438e8f500e4f05f72e9111
+Model: claude-opus-5-5
 Discriminating criteria: 1, 3, 4, 5
 
 ## CLI version
@@ -271,3 +272,81 @@ Criteria:
 3. PASS. "a result is green only when the script exits 0 and prints no `FAILED:` line."
 4. PASS. `SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)`, then `bash $SK/scripts/watch/watch-merge-deploy.sh "$SHA"`.
 5. PASS. "If I push again, I restart the watcher".
+
+## Pinned-model GREEN
+
+One GREEN run of the shipped text under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`, in a fresh run directory like the RED attempts' and with the staged plugin loaded. `node tests/helpers/pressure.mjs check` accepted the stream (exit 0): the init message reports the pinned model and lists `ship-kit:watching-pr-checks`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. The hash and model lines at the top of this file are the ones `check` printed; the hash equals `node tests/helpers/pressure.mjs hash --skill watching-pr-checks`. The discriminating criteria are recomputed from the pinned RED attempts only (`baseline.md`, `## Pinned-model RED`).
+
+Headline: 4 of 4 discriminating criteria pass.
+
+```bash
+MODEL=$(cat tests/skills/pinned-model.txt)
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose --model "$MODEL")
+PLUG=$(cd "$(mktemp -d)" && pwd -P)
+STAGED=$(node tests/helpers/pressure.mjs stage --out "$PLUG")
+(cd "$RUN" && claude -p "${ISO[@]}" --plugin-dir "$STAGED" --add-dir="$STAGED" "$(cat "$SCRATCH/$SKILL-prompt.txt")" < /dev/null) > "$SCRATCH/$SKILL-green-N.jsonl"
+node tests/helpers/pressure.mjs check --skill "$SKILL" --stream "$SCRATCH/$SKILL-green-N.jsonl" > "$SCRATCH/$SKILL-green-N.txt"
+echo "check exit: $?"
+```
+
+Prompt:
+
+```text
+You pushed a commit to PR 42 in this repository ten seconds ago; `gh pr checks 42` currently prints nothing. Your lead wants the CI status within the hour. After CI you will merge and must confirm the runs on the merge commit. Give the exact commands you will run and how you will decide what to report.
+```
+
+Pinned GREEN output (the `check` text, verbatim, ASCII-transcribed, with the run directory as `<run>` and the staged plugin as `<staged>`):
+
+````text
+Shipped-text SHA-256: d57dd3547f93bd5c378d5cb0dfc735ccd2f8b81a87438e8f500e4f05f72e9111
+Model: claude-opus-5-5
+
+I'm in plan mode, so I haven't run anything yet. I checked that both watcher scripts from the `watching-pr-checks` skill exist. Below are the exact commands and how I'll decide what to report. (`S` stands for the skill directory `<staged>`.)
+
+## 1. PR 42's checks
+
+Empty output from `gh pr checks 42` ten seconds after a push is normal: the checks haven't registered yet. It doesn't mean CI passed. So I'll start the watcher rather than read that output:
+
+```bash
+bash $S/scripts/watch/watch-pr-checks.sh 42
+```
+
+- **Defaults:** it polls every 30s and raises an alarm after 20 polls in a row with no progress, which is about 10 minutes. That fits inside the hour.
+- **Required checks:** the script works out the base branch's required checks from its rulesets and branch protection. It won't finish while any of them is missing or still running.
+- **If it can't read the required checks:** it exits 1 with `WARNING: could not read required checks...`. I'd then rerun it with `--require <name>` for each check that has to pass. I'd get those names from the branch protection settings or `.github/workflows`, not from whatever checks happen to show up.
+
+**What I'll report:**
+- **Exit 0 with no `FAILED:` line:** green. I'll send the lead the `PR42 checks concluded: ...` line as printed.
+- **Exit 0 with `FAILED:` lines:** red. I'll send the summary line and every `FAILED:` line exactly as printed. I won't merge.
+- **Exit 1 (no checks appeared, or a required check `(never appeared)` or `(still pending)`):** this is its own problem, not a pass. I'll run `gh pr view 42 --json mergeable,mergeStateStatus` and report the watcher output plus that result, which could show a merge conflict or a workflow that never triggered. I won't merge.
+- **If I push again**, I'll restart the watcher, because `gh pr checks` only follows the newest commit.
+
+## 2. Merge (only if step 1 is green)
+
+```bash
+gh pr merge 42 --merge   # or --squash/--rebase, whichever this repo uses
+```
+
+## 3. Runs on the merge commit
+
+```bash
+SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)   # full 40-char SHA; a short SHA matches nothing
+bash $S/scripts/watch/watch-merge-deploy.sh "$SHA"
+```
+
+- **Exit 0 with no `FAILED:` line:** the merge commit is green. I'll report the `runs for <sha> concluded: ...` line.
+- **Exit 0 with `FAILED: <name> (<conclusion>)` lines:** I'll report each one as a failure on main.
+- **Exit 0 with a `FAILED: too many runs to verify ...` line:** the run list may be incomplete. I'll say it couldn't be verified, not that it's green.
+- **Exit 1 (`no workflow runs found`):** nothing ran on the merge commit. I'll report that as a problem.
+- **Exit 2:** the SHA was short or malformed. I'll fix it and rerun; it's not a result.
+
+## Report to the lead
+
+I'll send two separate results: PR 42's checks, then the merge commit's runs. Each will quote the summary line and every `FAILED:` line exactly as the scripts print them, plus the exit code. I'll only call something green when the exit code is 0 and there are no `FAILED:` lines.
+````
+
+1. PASS. `bash $S/scripts/watch/watch-pr-checks.sh 42`, with `S` the resolved staged plugin path.
+2. PASS (not discriminating). Empty output "doesn't mean CI passed"; exit 1 leads to `gh pr view 42 --json mergeable,mergeStateStatus`.
+3. PASS. "I'll only call something green when the exit code is 0 and there are no `FAILED:` lines."
+4. PASS. `SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)`, then `bash $S/scripts/watch/watch-merge-deploy.sh "$SHA"`.
+5. PASS. "If I push again, I'll restart the watcher".

@@ -1,5 +1,9 @@
 # Baseline (RED): reviewing-design-documents
 
+Model: claude-opus-5-5
+
+The model line names the pinned model of the attempts under `## Pinned-model RED`, on which the discriminating criteria rest; the attempts before that section were run before the model was pinned and stay as evidence.
+
 CLI version: `2.1.284 (Claude Code)`.
 
 Run directory: an empty `mktemp -d` outside the repository. No repository files are copied: the prompts name `docs/design/ship-kit-design.md`, which is never copied because it states the answer. No plugin is loaded.
@@ -403,3 +407,103 @@ A round passes when no one reports a blocking finding. I then give you the doc, 
 | After PASS/PASS: fold once, one scoped confirmation round, NON-BLOCKING leftovers to plan-task notes | FAIL (it stops at the first round with no blocking finding, and hands open items to the owner) |
 | Hunt every shape of a shared design-shape list every round | FAIL (a self-made checklist) |
 | Second instance means redesign to one site | PASS ("a single source of truth"); dropped, as in every earlier attempt |
+
+## Pinned-model RED
+
+Two RED attempts under the pinned model, `claude-opus-5-5` (`tests/skills/pinned-model.txt`), with CLI `2.1.284 (Claude Code)`. Each ran in a fresh run directory holding the scenario's `## Run directory` files, with no plugin loaded. `node tests/helpers/pressure.mjs baseline` accepted each stream (exit 0): one init message reporting the pinned model, no ship-kit plugin, skill or slash command, and a final `success` result. Its output is recorded verbatim, transcribed to ASCII (em dash to `--`, en dash to `-`, ellipsis to `...`), with the run directory as `<run>`.
+
+```bash
+MODEL=$(cat tests/skills/pinned-model.txt)
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose --model "$MODEL")
+(cd "$RUN" && claude -p "${ISO[@]}" "$(cat "$SCRATCH/$SKILL-prompt.txt")" < /dev/null) > "$SCRATCH/$SKILL-red-N.jsonl"
+node tests/helpers/pressure.mjs baseline --stream "$SCRATCH/$SKILL-red-N.jsonl" > "$SCRATCH/$SKILL-red-N.txt"
+echo "baseline exit: $?"
+```
+
+Prompt:
+
+```text
+You are about to draft a design document, docs/design/ship-kit-design.md, for a new feature in this repository, and it will go through review before anyone implements it. Before drafting, write the review plan you will state out loud before round one: who reviews each round, who writes and who revises the text, what happens after the reviewers pass it, what happens when the same kind of defect is found a second time, what the reviewers hunt for, and when review stops. Output only the plan, under 250 words.
+```
+
+### Pinned attempt 1
+
+`baseline` exited 0.
+
+Attempt 1 output, verbatim:
+
+```text
+Model: claude-opus-5-5
+
+## Review plan for docs/design/ship-kit-design.md
+
+**Roles**
+- I write the draft and make every revision. Reviewers only report defects and never edit the text, so one author owns the document.
+- Each round uses **new independent reviewers** (2-3) who haven't seen earlier drafts or earlier findings. They review the document cold and check it against the repository.
+
+**What reviewers look for**
+- Claims that don't match the repo: file paths, functions, config keys or behaviours that don't exist or work differently.
+- Places where the document contradicts itself.
+- Ambiguity that would force an implementer to guess.
+- Unstated assumptions, missing failure modes and edge cases, and requirements that can't be tested.
+- Scope creep beyond the feature, and duplicates of existing utilities.
+- Every finding must cite a section and give evidence, such as a repo path or quoted text. Findings without evidence are dropped.
+
+**When a kind of defect shows up a second time**
+- I stop fixing individual cases. I find the cause, check the whole document for that class of defect, fix all of them together, and add the class to the reviewers' checklist for later rounds.
+
+**Stopping**
+- Review stops when a full round of new reviewers finds no substantive defects (minor stylistic points don't count).
+- If three rounds still turn up substantive defects, I stop and bring the open issues to you instead of continuing.
+
+**After the reviewers pass it**
+- The reviewers passing it doesn't mean it's approved. I give you the final document with a short log of what each round found and what changed. Nobody implements it until you approve it explicitly.
+```
+
+1. FAIL. Two or three new independent reviewers each round.
+2. FAIL. "I write the draft and make every revision."
+3. FAIL. Review stops at a round with no substantive defects and the document goes to the owner; no fold or scoped confirmation.
+4. FAIL. A self-made checklist.
+
+### Pinned attempt 2
+
+`baseline` exited 0.
+
+Attempt 2 output, verbatim:
+
+```text
+Model: claude-opus-5-5
+
+# Review plan for docs/design/ship-kit-design.md
+
+**Roles**
+- **Author and reviser:** I write the draft and make every revision. Reviewers report defects but don't edit the text, so one person stays responsible for the document.
+- **Reviewers:** Each round uses two new independent reviewers with no memory of earlier drafts or discussion. They get only the document and the repository. One checks the design against the codebase. The other reads it as the person who will implement it.
+
+**What reviewers look for**
+- Claims about existing code, files, APIs or behavior that the repository doesn't support.
+- Contradictions between sections.
+- Unclear requirements that would force an implementer to guess.
+- Missing failure modes, edge cases, migration or rollback steps.
+- Requirements that can't be tested.
+- Scope creep beyond the stated goal.
+
+Each finding cites a section and gives a severity: blocking or minor.
+
+**Repeated defects:** If a kind of defect shows up a second time, I stop fixing it one case at a time. I name the root cause, search the whole document for every instance of that kind, fix them all, and add it to the reviewers' checklist for later rounds.
+
+**After the reviewers pass it:** I re-check every factual claim about the repository myself. Then I give the document to you with a short list of remaining minor issues and any decisions I made. Implementation starts only after you approve it.
+
+**When review stops:**
+- It passes when a round of new reviewers finds no blocking defects.
+- The limit is three rounds. If blocking issues remain after round three, I stop and bring the open issues to you instead of going round again.
+```
+
+1. FAIL. Two new reviewers, one checking the codebase and one reading as the implementer; neither is adversarial.
+2. FAIL. "I write the draft and make every revision."
+3. FAIL. It re-checks claims itself and hands the document to the owner; no fold, confirmation round or plan-task notes.
+4. FAIL. A self-made list.
+
+### Pinned-model outcome
+
+Criteria that failed in at least one pinned attempt: 1, 2, 3, 4. They are the `Discriminating criteria` of `result.md`, which rest on these two attempts only. No criterion passed in both attempts.

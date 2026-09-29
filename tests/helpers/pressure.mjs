@@ -3,9 +3,16 @@
 //
 //   stage --out <dir>                          copy what ships, minus dependencies,
 //                                              into <dir>/<tree hash>; prints that path
-//   check --skill <name> --stream <f> [--dmi]  decide whether a GREEN run counts;
+//   check --skill <name> --stream <f> [--dmi] [--any-model]
+//                                              decide whether a GREEN run counts;
 //                                              prints the hash of the text it loaded
+//                                              and the run's model
+//   baseline --stream <f>                      decide whether a RED run counts;
+//                                              prints the run's model and final text
 //   hash --skill <name>                        shipped-text SHA-256 of a skill
+//
+// check and baseline accept only a run whose init message reports the model
+// in tests/skills/pinned-model.txt; --any-model lifts that for check alone.
 //
 // Exit codes: 0 valid, 1 the stream fails a condition, 2 usage or I/O error.
 
@@ -23,8 +30,32 @@ const BASE_PREFIX = "Base directory for this skill: ";
 const CONTENT_HASH = /^[0-9a-f]{64}$/;
 const ARGUMENTS_SUFFIX = "\n\nARGUMENTS: ";
 const PLUGIN_REFERENCE = /\$\{CLAUDE_PLUGIN_ROOT\}\/([A-Za-z0-9._/-]+)/g;
+/** A model id as the config schema accepts it. */
+export const MODEL_ID = /^[A-Za-z0-9._\[\]-]{1,100}$/;
+const PIN_FILE = join("tests", "skills", "pinned-model.txt");
 
 class UsageError extends Error {}
+
+/**
+ * The pressure-test model: the one line of `<root>/tests/skills/pinned-model.txt`,
+ * which must match MODEL_ID and end in exactly one newline.
+ * @param {string} root the repository root
+ * @returns {string}
+ */
+export function pinnedModel(root) {
+  const path = join(root, PIN_FILE);
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    throw new UsageError(`cannot read ${PIN_FILE}: ${error.message}`);
+  }
+  const line = /^([^\n]*)\n$/.exec(text)?.[1];
+  if (line === undefined || !MODEL_ID.test(line)) {
+    throw new UsageError(`${PIN_FILE} must hold one model id line ending in a newline`);
+  }
+  return line;
+}
 
 /**
  * Copies each shipped directory that exists under `root` into
@@ -190,24 +221,16 @@ const contentOf = (message) => (Array.isArray(message.message?.content) ? messag
 /**
  * Decides whether a stream-json run counts as a GREEN run of `ship-kit:<skill>`.
  * @param {string} text the stream, one JSON message per line
- * @param {{skill: string, dmi?: boolean, marker?: string | null}} options
- * @returns {{ok: true, text: string, pluginPath: string, loadedBodies: string[], skillArgs: string[]} | {ok: false, reason: string}}
+ * The init message must report a model, equal to `expectModel` when given.
+ * @param {{skill: string, dmi?: boolean, marker?: string | null, expectModel?: string}} options
+ * @returns {{ok: true, text: string, model: string, pluginPath: string, loadedBodies: string[], skillArgs: string[]} | {ok: false, reason: string}}
  */
-export function checkStream(text, { skill, dmi = false, marker = null }) {
+export function checkStream(text, { skill, dmi = false, marker = null, expectModel }) {
   const qualified = `ship-kit:${skill}`;
-  const messages = [];
-  for (const line of text.split("\n")) {
-    try {
-      const value = JSON.parse(line);
-      if (isObject(value)) messages.push(value);
-    } catch {
-      // Lines that are not JSON are ignored.
-    }
-  }
-  const inits = messages.flatMap((m, i) => (m.type === "system" && m.subtype === "init" ? [i] : []));
-  if (inits.length === 0) return { ok: false, reason: "no system/init message" };
-  if (inits.length > 1) return { ok: false, reason: "more than one system/init message" };
-  const init = messages[inits[0]];
+  const messages = parseMessages(text);
+  const found = singleInit(messages, expectModel);
+  if (!found.ok) return found;
+  const { init, index: initAt, model } = found;
   const lists = (key) => Array.isArray(init[key]) && init[key].includes(qualified);
   if (!lists("skills") && !lists("slash_commands")) {
     return { ok: false, reason: `init lists ${qualified} in neither skills nor slash_commands` };
@@ -224,7 +247,7 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
   if (failedRead) return { ok: false, reason: `the run could not read the staged plugin: ${failedRead}` };
   const skillDir = `${pluginPath}/skills/${skill}`;
   const loadedBodies = [];
-  for (const m of messages.slice(inits[0] + 1)) {
+  for (const m of messages.slice(initAt + 1)) {
     if (m.type !== "user" || !isTopLevel(m)) continue;
     for (const block of contentOf(m)) {
       if (!isObject(block) || block.type !== "text" || typeof block.text !== "string") continue;
@@ -239,17 +262,14 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
   }
   if (!dmi && loadedBodies.length === 0) return { ok: false, reason: `the stream shows no loaded skill body for ${qualified}` };
   const final = messages.at(-1);
-  if (final.type !== "result") return { ok: false, reason: "no final result message" };
-  if (final.subtype !== "success" || final.is_error === true) {
-    return { ok: false, reason: "final result message is not a success" };
-  }
-  if (typeof final.result !== "string") return { ok: false, reason: "final result message has no result text" };
+  const ended = finalSuccess(messages);
+  if (ended) return { ok: false, reason: ended };
   if (dmi) {
     if (!marker) return { ok: false, reason: `skills/${skill}/SKILL.md has no skill_marker line` };
     const returned = final.structured_output?.skill_marker;
     if (typeof returned !== "string") return { ok: false, reason: "final result has no structured_output.skill_marker" };
     if (returned !== marker) return { ok: false, reason: "structured_output.skill_marker differs from the SKILL.md marker" };
-  } else if (!invokedSkill(messages, inits[0], qualified)) {
+  } else if (!invokedSkill(messages, initAt, qualified)) {
     return { ok: false, reason: `no Skill tool call invoked ${qualified} successfully` };
   }
   const skillArgs = messages.flatMap((m) =>
@@ -261,7 +281,73 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
         )
       : [],
   );
-  return { ok: true, text: redactToken(final.result, marker ?? undefined), pluginPath, loadedBodies, skillArgs };
+  return { ok: true, text: redactToken(final.result, marker ?? undefined), model, pluginPath, loadedBodies, skillArgs };
+}
+
+/** @param {string} text a stream, one JSON message per line @returns {Record<string, any>[]} its object messages */
+function parseMessages(text) {
+  const messages = [];
+  for (const line of text.split("\n")) {
+    try {
+      const value = JSON.parse(line);
+      if (isObject(value)) messages.push(value);
+    } catch {
+      // Lines that are not JSON are ignored.
+    }
+  }
+  return messages;
+}
+
+/**
+ * The stream's one system/init message and the model it reports, which
+ * must equal `expectModel` when that is a string.
+ * @param {Record<string, any>[]} messages @param {string | undefined} expectModel
+ * @returns {{ok: true, init: Record<string, any>, index: number, model: string} | {ok: false, reason: string}}
+ */
+function singleInit(messages, expectModel) {
+  const inits = messages.flatMap((m, i) => (m.type === "system" && m.subtype === "init" ? [i] : []));
+  if (inits.length === 0) return { ok: false, reason: "no system/init message" };
+  if (inits.length > 1) return { ok: false, reason: "more than one system/init message" };
+  const init = messages[inits[0]];
+  if (typeof init.model !== "string") return { ok: false, reason: "init message names no model" };
+  if (typeof expectModel === "string" && init.model !== expectModel) {
+    return { ok: false, reason: `the run's model ${init.model} differs from the pinned model ${expectModel}` };
+  }
+  return { ok: true, init, index: inits[0], model: init.model };
+}
+
+/** @param {Record<string, any>[]} messages @returns {string | null} why the stream does not end in a success result, or null */
+function finalSuccess(messages) {
+  const final = messages.at(-1);
+  if (final?.type !== "result") return "no final result message";
+  if (final.subtype !== "success" || final.is_error === true) return "final result message is not a success";
+  if (typeof final.result !== "string") return "final result message has no result text";
+  return null;
+}
+
+/**
+ * Decides whether a stream-json run counts as a RED run: one init message
+ * reporting `expectModel`, no ship-kit plugin, skill or slash command in
+ * it (a run that loaded ship-kit is not a baseline), and a final success.
+ * @param {string} text the stream @param {{expectModel: string}} options
+ * @returns {{ok: true, text: string, model: string} | {ok: false, reason: string}}
+ */
+export function checkBaseline(text, { expectModel }) {
+  const messages = parseMessages(text);
+  const found = singleInit(messages, expectModel);
+  if (!found.ok) return found;
+  const { init, model } = found;
+  const listed = (key) => (Array.isArray(init[key]) ? init[key] : []);
+  if (listed("plugins").some((p) => isObject(p) && p.name === "ship-kit")) {
+    return { ok: false, reason: "init lists the ship-kit plugin" };
+  }
+  for (const key of ["skills", "slash_commands"]) {
+    const entry = listed(key).find((name) => typeof name === "string" && name.startsWith("ship-kit:"));
+    if (entry !== undefined) return { ok: false, reason: `init lists ${entry} in ${key}` };
+  }
+  const ended = finalSuccess(messages);
+  if (ended) return { ok: false, reason: ended };
+  return { ok: true, text: messages.at(-1).result, model };
 }
 
 /**
@@ -424,11 +510,13 @@ export function main(argv, io) {
       return 0;
     }
     if (verb === "check") {
-      const flags = parseFlags(rest, ["skill", "stream"], ["dmi"]);
+      const flags = parseFlags(rest, ["skill", "stream"], ["dmi", "any-model"]);
       const name = skillName(flags.skill);
       if (!flags.stream) throw new UsageError("--stream <file> is required");
       const marker = readMarker(readFileSync(join(skillDirOf(root, name), "SKILL.md"), "utf8"));
-      const verdict = checkStream(readFileSync(flags.stream, "utf8"), { skill: name, dmi: flags.dmi === true, marker });
+      const expectModel = flags["any-model"] === true ? undefined : pinnedModel(root);
+      const stream = readFileSync(flags.stream, "utf8");
+      const verdict = checkStream(stream, { skill: name, dmi: flags.dmi === true, marker, expectModel });
       if (!verdict.ok) {
         io.stderr.write(`invalid GREEN run: ${verdict.reason}\n`);
         return 1;
@@ -439,7 +527,19 @@ export function main(argv, io) {
         return 1;
       }
       const loaded = join(verdict.pluginPath, "skills", name);
-      io.stdout.write(`Shipped-text SHA-256: ${shippedTextHash(loaded)}\n\n${verdict.text}\n`);
+      io.stdout.write(`Shipped-text SHA-256: ${shippedTextHash(loaded)}\nModel: ${verdict.model}\n\n${verdict.text}\n`);
+      return 0;
+    }
+    if (verb === "baseline") {
+      const flags = parseFlags(rest, ["stream"], []);
+      if (!flags.stream) throw new UsageError("--stream <file> is required");
+      const expectModel = pinnedModel(root);
+      const verdict = checkBaseline(readFileSync(flags.stream, "utf8"), { expectModel });
+      if (!verdict.ok) {
+        io.stderr.write(`invalid RED run: ${verdict.reason}\n`);
+        return 1;
+      }
+      io.stdout.write(`Model: ${verdict.model}\n\n${verdict.text}\n`);
       return 0;
     }
     if (verb === "hash") {
@@ -447,7 +547,9 @@ export function main(argv, io) {
       io.stdout.write(shippedTextHash(skillDirOf(root, skillName(flags.skill))) + "\n");
       return 0;
     }
-    throw new UsageError("usage: pressure.mjs stage --out <dir> | check --skill <name> --stream <file> [--dmi] | hash --skill <name>");
+    throw new UsageError(
+      "usage: pressure.mjs stage --out <dir> | check --skill <name> --stream <file> [--dmi] [--any-model] | baseline --stream <file> | hash --skill <name>",
+    );
   } catch (error) {
     io.stderr.write(`${error.message}\n`);
     return 2;

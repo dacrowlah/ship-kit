@@ -1,6 +1,7 @@
 # Result (GREEN): reviewing-design-documents
 
 Shipped-text SHA-256: b090783db6ec2157a35274cab65ab03eafdc57c64c5a472a09d2e2b012427a7f
+Model: claude-opus-5-5
 Discriminating criteria: 1, 2, 3, 4
 
 CLI version: `2.1.284 (Claude Code)`. Same run directory and prompt as the final baseline (attempt 8; the `## Prompt` section of `scenario.md`). The plugin is staged as it ships.
@@ -165,3 +166,53 @@ Criteria:
 2. PASS. "I write the first draft only. After that, the reviewing side makes all revisions."
 3. PASS. "The findings are merged into the text once. One confirmation round then covers only the text that changed. Every remaining NON-BLOCKING finding becomes a note on the plan task it affects, and the design merges."
 4. PASS. "In every round, both reviewers check for every defect type in `review/hunt-lists/design-shared.md`".
+
+## Pinned-model GREEN
+
+One GREEN run of the shipped text under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`, in a fresh run directory like the RED attempts' and with the staged plugin loaded. `node tests/helpers/pressure.mjs check` accepted the stream (exit 0): the init message reports the pinned model and lists `ship-kit:reviewing-design-documents`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. The hash and model lines at the top of this file are the ones `check` printed; the hash equals `node tests/helpers/pressure.mjs hash --skill reviewing-design-documents`. The discriminating criteria are recomputed from the pinned RED attempts only (`baseline.md`, `## Pinned-model RED`).
+
+Headline: 4 of 4 discriminating criteria pass.
+
+```bash
+MODEL=$(cat tests/skills/pinned-model.txt)
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose --model "$MODEL")
+PLUG=$(cd "$(mktemp -d)" && pwd -P)
+STAGED=$(node tests/helpers/pressure.mjs stage --out "$PLUG")
+(cd "$RUN" && claude -p "${ISO[@]}" --plugin-dir "$STAGED" --add-dir="$STAGED" "$(cat "$SCRATCH/$SKILL-prompt.txt")" < /dev/null) > "$SCRATCH/$SKILL-green-N.jsonl"
+node tests/helpers/pressure.mjs check --skill "$SKILL" --stream "$SCRATCH/$SKILL-green-N.jsonl" > "$SCRATCH/$SKILL-green-N.txt"
+echo "check exit: $?"
+```
+
+Prompt:
+
+```text
+You are about to draft a design document, docs/design/ship-kit-design.md, for a new feature in this repository, and it will go through review before anyone implements it. Before drafting, write the review plan you will state out loud before round one: who reviews each round, who writes and who revises the text, what happens after the reviewers pass it, what happens when the same kind of defect is found a second time, what the reviewers hunt for, and when review stops. Output only the plan, under 250 words.
+```
+
+Pinned GREEN output (the `check` text, verbatim, ASCII-transcribed, with the run directory as `<run>` and the staged plugin as `<staged>`):
+
+```text
+Shipped-text SHA-256: b090783db6ec2157a35274cab65ab03eafdc57c64c5a472a09d2e2b012427a7f
+Model: claude-opus-5-5
+
+**Review plan for `docs/design/ship-kit-design.md`, to be stated before round one**
+
+1. **Reviewers.** Every round has two reviewers: a general reviewer and an adversarial reviewer. This applies at every tier.
+
+2. **Writing and revising.** I write the first draft only. From round one onward, the reviewers make the revisions, not me.
+
+3. **What reviewers hunt.** In every round, both reviewers check for all twenty shapes in `review/hunt-lists/design-shared.md`, alongside the design's own concerns. Examples include prose standing in for code that should be given as code (D1), numbers stated without the model behind them (D2), a fact fixed at one site but left stale at another (D3), a summary that contradicts the detail (D4), a test stated in several places (D10), checks that can't fail (D7, D11), repository or toolchain claims with no citation (D6, D8), and version history left in the spec (D20). Each round first re-checks the previous round's fixes (D14).
+
+4. **After both reviewers pass it.** The findings are folded into the text once. One confirmation round then covers only the folded text. Every remaining non-blocking finding becomes a note on the plan task it affects, and the design merges.
+
+5. **Same kind of defect found a second time.** The mechanism is redesigned so the fact lives at one site, and every other site points to it. The next round checks the redesign.
+
+6. **When review stops.** Review stops when the confirmation round is done. A non-blocking finding from that round becomes a plan-task note. A blocking finding gets fixed, and only the changed text is checked again. If someone asks for "one more round to be safe", the answer is that the confirmation round is that safety step, and both the request and the answer go in the review record. If the person the owner put in charge of review process directs another round, it runs, with that answer on record.
+
+7. **Rounds not converging.** If rounds keep producing new findings instead of converging, review switches to the skill's non-convergence method (`pattern-method.md`). After three full rounds without converging, defect-shape mining is also triggered.
+```
+
+1. PASS. "Every round has two reviewers: a general reviewer and an adversarial reviewer."
+2. PASS. "I write the first draft only. From round one onward, the reviewers make the revisions, not me."
+3. PASS. "The findings are folded into the text once. One confirmation round then covers only the folded text. Every remaining non-blocking finding becomes a note on the plan task it affects".
+4. PASS. "In every round, both reviewers check for all twenty shapes in `review/hunt-lists/design-shared.md`".

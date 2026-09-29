@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { shippedTextHash } from "../helpers/pressure.mjs";
+import { pinnedModel, shippedTextHash } from "../helpers/pressure.mjs";
 import { listSkills } from "../helpers/skills.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 export const ARTIFACTS = ["scenario.md", "baseline.md", "result.md"];
 const HASH_LINE = /^Shipped-text SHA-256: (.*)$/;
 const CRITERIA_LINE = /^Discriminating criteria: (.*)$/;
+const MODEL_LINE = /^Model: (.*)$/;
 const CODE_FILE = /\.(mjs|cjs|js)$/;
 const RELATIVE_IMPORTS = [
   /\bfrom\s*(["'])(\.\.?\/[^"']+)\1/g,
@@ -148,6 +149,33 @@ export function checkRecordHeaders(root) {
     );
     for (const n of criteria[0].split(", ")) {
       if (!known.has(n)) violations.push(`${where}: discriminating criterion ${n} is not a pass criterion in scenario.md`);
+    }
+  }
+  return violations;
+}
+
+/**
+ * baseline.md and result.md each name, outside fenced blocks, exactly one
+ * `Model: <id>` line, and `<id>` is the pinned model: `pressure.mjs check`
+ * and `baseline` accept only runs under the pin and print that line.
+ * @param {string} root @returns {string[]}
+ */
+export function checkModelLines(root) {
+  const violations = [];
+  const pinned = pinnedModel(root);
+  for (const skill of listSkills(root)) {
+    for (const file of ["baseline.md", "result.md"]) {
+      const where = `tests/skills/${skill.name}/${file}`;
+      const text = readRecord(root, skill.name, file);
+      if (text === null) continue;
+      const fence = unclosedFence(where, text);
+      if (fence.length > 0) {
+        violations.push(...fence);
+        continue;
+      }
+      const models = linesOutsideFences(text).flatMap((line) => MODEL_LINE.exec(line)?.slice(1) ?? []);
+      if (models.length !== 1) violations.push(`${where}: expected one Model line, found ${models.length}`);
+      else if (models[0] !== pinned) violations.push(`${where}: Model ${models[0]} is not the pinned model ${pinned}`);
     }
   }
   return violations;
@@ -410,7 +438,7 @@ const SKILL_MD = [
   '| "ship it tonight" | No. |',
   "",
 ].join("\n");
-const BASELINE = 'Attempt 1: "I will ship it tonight." and "it is fine ... trust me".\n';
+const BASELINE = 'Model: claude-opus-5-5\n\nAttempt 1: "I will ship it tonight." and "it is fine ... trust me".\n';
 
 /** @param {Record<string, string>} [over] repo-relative path -> content @returns {string} the fixture root */
 function fixture(over = {}) {
@@ -421,6 +449,7 @@ function fixture(over = {}) {
     "lib/b.mjs": "export const b = 1;\n",
     "tests/skills/mining-x/scenario.md": SCENARIO,
     "tests/skills/mining-x/baseline.md": BASELINE,
+    "tests/skills/pinned-model.txt": "claude-opus-5-5\n",
     ...over,
   };
   for (const [rel, text] of Object.entries(files)) {
@@ -431,7 +460,7 @@ function fixture(over = {}) {
     const hash = shippedTextHash(join(root, "skills", "mining-x"));
     writeFileSync(
       join(root, "tests/skills/mining-x/result.md"),
-      `# Result\n\nShipped-text SHA-256: ${hash}\nDiscriminating criteria: 1, 2\n\n\`\`\`\nShipped-text SHA-256: ${"0".repeat(64)}\n\`\`\`\n`,
+      `# Result\n\nShipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\nDiscriminating criteria: 1, 2\n\n\`\`\`\nShipped-text SHA-256: ${"0".repeat(64)}\nModel: other-model\n\`\`\`\n`,
     );
   }
   return root;
@@ -442,6 +471,7 @@ test("the fixture passes every records gate", () => {
   assert.deepEqual(checkRecordHeaders(root), []);
   assert.deepEqual(checkRunDirectories(root), []);
   assert.deepEqual(checkRationalizations(root), []);
+  assert.deepEqual(checkModelLines(root), []);
 });
 
 test("every result.md carries the current shipped-text hash", () => {
@@ -685,7 +715,7 @@ test("an unclosed code fence in a record fails instead of hiding what follows", 
   const scenario = fixture({ "tests/skills/mining-x/scenario.md": `${SCENARIO}\n~~~~\n## Run directory\n\n\`gone.mjs\`\n` });
   assert.deepEqual(checkRunDirectories(scenario), [`tests/skills/mining-x/scenario.md: code fence opened at line ${SCENARIO.split("\n").length + 1} is never closed`]);
   const baseline = fixture({ "tests/skills/mining-x/baseline.md": `${BASELINE}\`\`\`\n` });
-  assert.deepEqual(checkRationalizations(baseline), ["tests/skills/mining-x/baseline.md: code fence opened at line 2 is never closed"]);
+  assert.deepEqual(checkRationalizations(baseline), ["tests/skills/mining-x/baseline.md: code fence opened at line 4 is never closed"]);
   // An info string holding a backtick does not open a fence; a shorter closer does not close one.
   assert.deepEqual(fenceMap("```not-closed`\ntext").unclosed, null);
   assert.deepEqual(fenceMap("````\n```\n````\nafter").lines.map((l) => l.fenced), [true, true, true, false]);
@@ -726,4 +756,34 @@ test("a quote from an earlier attempt's recorded prompt is not observed", () => 
   // Output after the prompt fence still counts.
   assert.deepEqual(checkRationalizations(row('"I pick C"', "Prompt:")), []);
   assert.deepEqual(attemptSections("Prompt:\n\n~~~\nsecret\n~~~\nafter\n"), ["Prompt: after "]);
+});
+
+test("every record names the pinned model", () => {
+  assert.deepEqual(checkModelLines(REPO), []);
+});
+
+test("a record with no model line fails", () => {
+  const root = fixture({ "tests/skills/mining-x/baseline.md": BASELINE.replace("Model: claude-opus-5-5\n", "") });
+  assert.deepEqual(checkModelLines(root), ["tests/skills/mining-x/baseline.md: expected one Model line, found 0"]);
+});
+
+test("a record under a model other than the pin fails", () => {
+  const hash = shippedTextHash(join(fixture(), "skills", "mining-x"));
+  const root = fixture({ "tests/skills/mining-x/result.md": `Shipped-text SHA-256: ${hash}\nModel: other-model\nDiscriminating criteria: 1\n` });
+  assert.deepEqual(checkModelLines(root), ["tests/skills/mining-x/result.md: Model other-model is not the pinned model claude-opus-5-5"]);
+  const moved = fixture({ "tests/skills/pinned-model.txt": "other-model\n" });
+  assert.deepEqual(checkModelLines(moved), [
+    "tests/skills/mining-x/baseline.md: Model claude-opus-5-5 is not the pinned model other-model",
+    "tests/skills/mining-x/result.md: Model claude-opus-5-5 is not the pinned model other-model",
+  ]);
+});
+
+test("a model line inside a fence does not count", () => {
+  const fenced = fixture({ "tests/skills/mining-x/baseline.md": BASELINE.replace("Model: claude-opus-5-5\n", "```\nModel: claude-opus-5-5\n```\n") });
+  assert.deepEqual(checkModelLines(fenced), ["tests/skills/mining-x/baseline.md: expected one Model line, found 0"]);
+  const twice = fixture({ "tests/skills/mining-x/baseline.md": `Model: claude-opus-5-5\n${BASELINE}` });
+  assert.deepEqual(checkModelLines(twice), ["tests/skills/mining-x/baseline.md: expected one Model line, found 2"]);
+  const unclosed = fixture({ "tests/skills/mining-x/baseline.md": `${BASELINE}\`\`\`\nModel: x\n` });
+  assert.deepEqual(checkModelLines(unclosed), ["tests/skills/mining-x/baseline.md: code fence opened at line 4 is never closed"]);
+  assert.throws(() => checkModelLines(fixture({ "tests/skills/pinned-model.txt": "a b\n" })), /pinned-model\.txt/);
 });
