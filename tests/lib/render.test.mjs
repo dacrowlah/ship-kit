@@ -137,3 +137,94 @@ test("mutation guard: a fragment is indented from the run: line, not the placeho
   assert.equal(out, ["        run: |", "          echo hi", ""].join("\n"));
   assert.notEqual(out, ["        run: |", "  echo hi", ""].join("\n"));
 });
+
+// --- Expression openers: the chokepoint for config-derived values ---
+// Design 6.5 picked `<<key>>` so placeholders never collide with `${{ }}`;
+// no legitimate value needs an expression, and a value that carried one
+// into a workflow would hand its author a live GitHub Actions expression.
+
+const OPENER = "$" + "{{";
+
+test("an inline value containing an expression opener is refused, naming the key", () => {
+  assert.throws(
+    () => render("name: <<n>>\n", { n: `${OPENER} github.event.pull_request.title }}` }),
+    (error) => error instanceof RenderError && error.message.includes("<<n>>") && error.message.includes(OPENER),
+  );
+});
+
+test("an expression opener anywhere inside a longer inline value is refused", () => {
+  assert.throws(() => render("name: <<n>>\n", { n: `echo hi ${OPENER} x }} tail` }), RenderError);
+});
+
+test("a whole-line value containing an expression opener is refused", () => {
+  assert.throws(() => render("jobs:\n<<boot_job>>\n", { boot_job: `  boot:\n    if: ${OPENER} x }}` }), RenderError);
+});
+
+test("a fragment value containing an expression opener is refused, on any of its lines", () => {
+  const template = ["        run: |", "<<gate_script>>", ""].join("\n");
+  assert.throws(() => render(template, { gate_script: `echo one\necho ${OPENER} x }}` }), RenderError);
+});
+
+test("an expression opener in a value that is not used by the template still reports the unused key", () => {
+  assert.throws(
+    () => render("name: <<n>>\n", { n: "x", other: OPENER }),
+    (error) => error instanceof RenderError && error.message.includes("<<other>>"),
+  );
+});
+
+test("a value with a lone dollar, brace or closing braces is not an expression opener", () => {
+  assert.equal(render("a: <<n>>\n", { n: "$HOME {x} }} $( ) {{" }), "a: $HOME {x} }} $( ) {{\n");
+});
+
+test("two values that meet at an opener are refused: neither holds one alone, the output does", () => {
+  assert.throws(
+    () => render("run: echo <<a>><<b>>\n", { a: "$", b: "{{ github.event.pull_request.title }}" }),
+    (error) => error instanceof RenderError && error.message.includes(OPENER),
+  );
+});
+
+test("a value that completes an opener against the template's own literal text is refused", () => {
+  assert.throws(() => render("run: echo $<<b>>\n", { b: "{{ x }}" }), RenderError);
+  assert.throws(() => render("run: echo <<a>>{{ x }}\n", { a: "$" }), RenderError);
+  assert.throws(() => render("run: echo $<<a>>{ x }}\n", { a: "{" }), RenderError);
+});
+
+test("a fragment line that ends in a dollar followed by a fragment line starting with braces is not an opener", () => {
+  // Lines are separated by a newline, so no opener forms across them.
+  const template = ["        run: |", "<<gate_script>>", ""].join("\n");
+  assert.equal(render(template, { gate_script: "echo $\n{{ x }}" }), ["        run: |", "          echo $", "          {{ x }}", ""].join("\n"));
+});
+
+test("the template's own expressions are rendered untouched, including one that wraps a placeholder", () => {
+  const template = [
+    "group: ci-${{ github.event.pull_request.number }}",
+    "secrets:",
+    "  <<input>>: ${{ secrets.<<secret>> }}",
+    "",
+  ].join("\n");
+  assert.equal(
+    render(template, { input: "claude_code_oauth_token", secret: "CLAUDE_CODE_OAUTH_TOKEN" }),
+    [
+      "group: ci-${{ github.event.pull_request.number }}",
+      "secrets:",
+      "  claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("a template expression does not excuse a second one a value adds", () => {
+  const template = "a: ${{ x }} <<n>>\n";
+  assert.throws(() => render(template, { n: `${OPENER} y }}` }), RenderError);
+  assert.throws(() => render("a: ${{ x }} $<<n>>\n", { n: "{{ y }}" }), RenderError);
+});
+
+test("a value that is not a string is refused", () => {
+  for (const value of [1, null, undefined, true, ["a"], { toString: () => "ok" }]) {
+    assert.throws(
+      () => render("a: <<n>>\n", { n: value }),
+      (error) => error instanceof RenderError && error.message.includes("<<n>>"),
+      String(value),
+    );
+  }
+});

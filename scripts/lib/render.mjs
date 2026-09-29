@@ -20,6 +20,19 @@
 // The template is read once for which keys it names (before any
 // substitution), which is what "unreplaced" and "unused" are checked
 // against; the rendering pass itself never re-reads its own output.
+//
+// A rendered file can never hold an expression opener the template does not
+// already hold. Design 6.5 picked `<<key>>` so placeholders never collide
+// with the workflow expression syntax, and no legitimate value needs an
+// expression: the only expressions in a template are its own text, some of
+// them wrapping a placeholder. So this is the one place every template and
+// every config-derived value passes through, and it refuses two things:
+// a value that contains an opener, and an output that holds more openers
+// than the template does (two values, or a value and the template's own
+// text, meeting at the opener: `$` then `{{`). Values must also be strings,
+// since anything else could stringify to an opener after this check.
+
+const OPENER = "${{";
 
 export class RenderError extends Error {
   constructor(message) {
@@ -34,6 +47,11 @@ export const PLACEHOLDER = /<<([a-z][a-z0-9_]*)>>/g;
 const WHOLE_LINE = new RegExp(`^${PLACEHOLDER.source}$`);
 const INDENTED_WHOLE_LINE = new RegExp(`^(\\s+)${PLACEHOLDER.source}$`);
 const RUN_LINE = /^(\s*)(- )?run: \|$/;
+
+/** @param {string} text @returns {number} how many non-overlapping expression openers text holds */
+function openersIn(text) {
+  return text.split(OPENER).length - 1;
+}
 
 /** @param {string} text @returns {Set<string>} every placeholder key named anywhere in text */
 function placeholderKeysIn(text) {
@@ -83,6 +101,16 @@ export function render(template, values) {
     }
   }
 
+  for (const key of templateKeys) {
+    const value = values[key];
+    if (typeof value !== "string") {
+      throw new RenderError(`value <<${key}>> must be a string`);
+    }
+    if (value.includes(OPENER)) {
+      throw new RenderError(`value <<${key}>> contains ${OPENER}, which no value may carry`);
+    }
+  }
+
   // split("\n") turns a trailing newline into a final "" element that
   // represents no content of its own; drop it so it is not rendered as a
   // real blank line, since the join below always adds exactly one trailing
@@ -122,5 +150,9 @@ export function render(template, values) {
     );
   });
 
-  return `${output.join("\n")}\n`;
+  const rendered = `${output.join("\n")}\n`;
+  if (openersIn(rendered) > openersIn(normalized)) {
+    throw new RenderError(`rendering formed ${OPENER} where the template has none: values met at an expression opener`);
+  }
+  return rendered;
 }

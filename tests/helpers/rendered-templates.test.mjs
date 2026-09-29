@@ -1,29 +1,36 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { PLACEHOLDER } from "../../scripts/lib/render.mjs";
-import { callerValues, loadFixture } from "../callers/render-caller.mjs";
+import { TEMPLATE_MANIFEST, callerValues } from "../../scripts/setup/render-files.mjs";
+import { callerArgs, loadFixture } from "../callers/render-caller.mjs";
 import {
   REGISTRY,
   assertFullyRendered,
   assertNotEmpty,
   assertTemplateLinesRendered,
-  checkRegistryMatchesDisk,
+  checkManifestMatchesDisk,
+  checkRegistryMatchesManifest,
   renderedTemplateVariants,
-  repoTemplateYamlFiles,
+  templateExpressionViolations,
+  templateFilesOnDisk,
 } from "./rendered-templates.mjs";
 
 const REVIEW = "templates/callers/review.yml";
-const CALLER_VALUES = () => callerValues(loadFixture(new URL("../fixtures/caller-values.json", import.meta.url)));
+const CALLER_VALUES = () => callerValues(callerArgs(loadFixture(new URL("../fixtures/caller-values.json", import.meta.url))));
+const workflow = (path) => ({ path, role: "workflow" });
 
 /**
- * A registry + reader for one fake template that exists only in memory. The
- * reader serves that text for that path only and throws for any other, so a
- * pipeline that read some other path would fail here.
+ * A manifest + registry + reader for one fake template that exists only in
+ * memory. The reader serves that text for that path only and throws for any
+ * other, so a pipeline that read some other path would fail here.
  */
 function fake(path, template, variants) {
   return {
-    glob: () => [path],
+    manifest: [workflow(path)],
+    listFiles: () => [path],
     registry: { [path]: variants },
     read: (requested) => {
       if (requested !== path) throw new Error(`read of an unexpected path: ${requested}`);
@@ -32,8 +39,119 @@ function fake(path, template, variants) {
   };
 }
 
-test("repoTemplateYamlFiles finds the real caller template", () => {
-  assert.ok(repoTemplateYamlFiles().includes(REVIEW));
+/** A scratch directory holding the given files (path -> text), removed by the callback's caller. */
+function withTree(files, body) {
+  const dir = mkdtempSync(join(tmpdir(), "ship-kit-templates-"));
+  try {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    return body(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("templateFilesOnDisk finds the real caller template", () => {
+  assert.ok(templateFilesOnDisk().includes(REVIEW));
+});
+
+test("templateFilesOnDisk lists dot directories, dot files, other extensions and other letter cases", () => {
+  withTree(
+    {
+      "templates/callers/a.yml": "a: 1\n",
+      "templates/.github/workflows/evil.yml": "a: 1\n",
+      "templates/callers/.hidden.yml": "a: 1\n",
+      "templates/callers/Loud.YML": "a: 1\n",
+      "templates/files/thing.yml.tmpl": "a: 1\n",
+      "templates/files/no-extension": "a: 1\n",
+    },
+    (dir) => {
+      assert.deepEqual(templateFilesOnDisk(join(dir, "templates")).map((path) => path.slice(dir.length + 1)), [
+        "templates/.github/workflows/evil.yml",
+        "templates/callers/.hidden.yml",
+        "templates/callers/Loud.YML",
+        "templates/callers/a.yml",
+        "templates/files/no-extension",
+        "templates/files/thing.yml.tmpl",
+      ]);
+    },
+  );
+});
+
+test("templateFilesOnDisk refuses a symlink instead of following or skipping it", () => {
+  withTree({ "templates/callers/a.yml": "a: 1\n", "outside.yml": "run: ${{ x }}\n" }, (dir) => {
+    symlinkSync(join(dir, "outside.yml"), join(dir, "templates", "callers", "link.yml"));
+    assert.throws(() => templateFilesOnDisk(join(dir, "templates")), /link\.yml is neither a regular file nor a directory/);
+  });
+});
+
+test("the real templates/ directory and TEMPLATE_MANIFEST list the same files", () => {
+  checkManifestMatchesDisk(templateFilesOnDisk(), TEMPLATE_MANIFEST);
+});
+
+test("checkManifestMatchesDisk refuses a file the manifest does not list, whatever its name", () => {
+  for (const unlisted of [
+    "templates/callers/second.yml",
+    "templates/.github/workflows/evil.yml",
+    "templates/callers/.evil.yml",
+    "templates/callers/Review.YML",
+    "templates/files/evil.yml.tmpl",
+    "templates/files/no-extension",
+  ]) {
+    assert.throws(() => checkManifestMatchesDisk([REVIEW, unlisted], [{ path: REVIEW }]), new RegExp(`does not list: ${unlisted.replaceAll(".", "\\.")}`), unlisted);
+  }
+});
+
+test("checkManifestMatchesDisk refuses a manifest entry whose file is not on disk", () => {
+  assert.throws(() => checkManifestMatchesDisk([REVIEW], [{ path: REVIEW }, { path: "templates/callers/gone.yml" }]), /not on disk: templates\/callers\/gone\.yml/);
+});
+
+test("checkManifestMatchesDisk compares exact spelling: a different letter case is a different file", () => {
+  assert.throws(() => checkManifestMatchesDisk(["templates/callers/Review.yml"], [{ path: REVIEW }]), /does not list: templates\/callers\/Review\.yml/);
+});
+
+test("checkManifestMatchesDisk accepts a matching listing", () => {
+  checkManifestMatchesDisk([REVIEW], [{ path: REVIEW }]);
+});
+
+test("the registry supplies values only: no entry carries a free-form render function", () => {
+  for (const [path, variants] of Object.entries(REGISTRY)) {
+    for (const variant of variants) {
+      assert.deepEqual(Object.keys(variant).sort(), ["name", "values"], path);
+    }
+  }
+});
+
+test("the registry covers every workflow entry of the real manifest, and nothing else", () => {
+  checkRegistryMatchesManifest(TEMPLATE_MANIFEST, REGISTRY);
+  assert.deepEqual(
+    Object.keys(REGISTRY).sort(),
+    TEMPLATE_MANIFEST.filter((item) => item.role === "workflow").map((item) => item.path).sort(),
+  );
+});
+
+test("checkRegistryMatchesManifest refuses a workflow entry with no registered values", () => {
+  assert.throws(
+    () => checkRegistryMatchesManifest([workflow(REVIEW), workflow("templates/callers/second.yml")], { [REVIEW]: [] }),
+    /no values registered .* templates\/callers\/second\.yml/,
+  );
+});
+
+test("checkRegistryMatchesManifest refuses values for a path the manifest does not list as a workflow", () => {
+  assert.throws(
+    () => checkRegistryMatchesManifest([workflow(REVIEW)], { [REVIEW]: [], "templates/callers/gone.yml": [] }),
+    /registers values for a path the manifest does not list as a workflow: templates\/callers\/gone\.yml/,
+  );
+  assert.throws(
+    () => checkRegistryMatchesManifest([workflow(REVIEW), { path: "templates/files/config.json", role: "file" }], { [REVIEW]: [], "templates/files/config.json": [] }),
+    /does not list as a workflow: templates\/files\/config\.json/,
+  );
+});
+
+test("checkRegistryMatchesManifest accepts a matching registry", () => {
+  checkRegistryMatchesManifest([workflow(REVIEW), { path: "templates/blocks/gate-step.sh", role: "fragment" }], { [REVIEW]: [] });
 });
 
 test("renderedTemplateVariants returns both registered variants of the real template, rendered from its own file", () => {
@@ -49,34 +167,42 @@ test("renderedTemplateVariants returns both registered variants of the real temp
   assert.ok(boot.text.includes("  boot:\n    uses: ./.github/workflows/boot.yml"));
 });
 
-test("the registry supplies values only: no entry carries a free-form render function", () => {
-  for (const [path, variants] of Object.entries(REGISTRY)) {
-    for (const variant of variants) {
-      assert.deepEqual(Object.keys(variant).sort(), ["name", "values"], path);
-    }
-  }
+test("renderedTemplateVariants refuses when the disk holds a template the manifest does not list", () => {
+  assert.throws(() => renderedTemplateVariants({ listFiles: () => [REVIEW, "templates/unknown.yml"] }), /does not list: templates\/unknown\.yml/);
 });
 
-test("checkRegistryMatchesDisk refuses a template file on disk with no registered values", () => {
+test("renderedTemplateVariants refuses a manifest workflow entry the registry does not know", () => {
+  const manifest = [...TEMPLATE_MANIFEST, workflow("templates/callers/second.yml")];
   assert.throws(
-    () => checkRegistryMatchesDisk([REVIEW, "templates/blocks/new-thing.yml"], { [REVIEW]: [] }),
-    /no values registered .* templates\/blocks\/new-thing\.yml/,
+    () => renderedTemplateVariants({ manifest, listFiles: () => manifest.map((item) => item.path) }),
+    /no values registered .* templates\/callers\/second\.yml/,
   );
 });
 
-test("checkRegistryMatchesDisk refuses registered values whose template no longer exists", () => {
-  assert.throws(
-    () => checkRegistryMatchesDisk([REVIEW], { [REVIEW]: [], "templates/callers/gone.yml": [] }),
-    /registers values for a template that no longer exists.*templates\/callers\/gone\.yml/,
-  );
+test("templateExpressionViolations is clean for the real manifest", () => {
+  assert.deepEqual(templateExpressionViolations(), []);
 });
 
-test("checkRegistryMatchesDisk accepts a matching registry and disk listing", () => {
-  checkRegistryMatchesDisk([REVIEW], { [REVIEW]: [] });
-});
-
-test("renderedTemplateVariants refuses when the glob finds a file the registry does not know", () => {
-  assert.throws(() => renderedTemplateVariants({ glob: () => [REVIEW, "templates/unknown.yml"] }), /no values registered/);
+test("templateExpressionViolations flags an expression opener in a fragment, block, file or seed, by line, and skips workflows", () => {
+  const texts = {
+    "templates/blocks/f.sh": "echo ok\necho ${{ github.event.pull_request.title }}\n",
+    "templates/blocks/b.md": "text ${{ x }}\n",
+    "templates/files/c.json": "{}\n",
+    "templates/files/s.md": "x\r\n${{ y }}\r\n",
+    "templates/callers/w.yml": "run: ${{ z }}\n",
+  };
+  const manifest = [
+    { path: "templates/blocks/f.sh", role: "fragment" },
+    { path: "templates/blocks/b.md", role: "block" },
+    { path: "templates/files/c.json", role: "file" },
+    { path: "templates/files/s.md", role: "seed" },
+    { path: "templates/callers/w.yml", role: "workflow" },
+  ];
+  assert.deepEqual(templateExpressionViolations({ manifest, read: (path) => texts[path] }), [
+    "templates/blocks/f.sh:2: fragment template line contains an expression",
+    "templates/blocks/b.md:1: block template line contains an expression",
+    "templates/files/s.md:2: seed template line contains an expression",
+  ]);
 });
 
 test("values written for the caller template cannot be registered against a different template", () => {

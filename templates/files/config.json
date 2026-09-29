@@ -1,0 +1,4 @@
+{
+  "schemaVersion": 1,
+  "shipKit": { "version": "<<ship_kit_version>>", "sha": "<<ship_kit_sha>>" }
+}
