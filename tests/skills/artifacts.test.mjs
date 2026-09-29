@@ -154,6 +154,113 @@ export function checkRecordHeaders(root) {
   return violations;
 }
 
+/** The fewest GREEN runs of the shipped text under the pin a skill needs, every one passing. */
+export const MIN_GREEN_RUNS = 3;
+const GREEN_RUNS_HEADING = "## GREEN runs";
+const RUN_HEADING = /^### Run ([1-9][0-9]*)$/;
+const VERDICT_LINE = /^([1-9][0-9]*)\. (PASS|FAIL)\b/;
+const OUTPUT_HASH = "Shipped-text SHA-256: ";
+
+/**
+ * The runs of a record's one `## GREEN runs` section, which ends at the next
+ * `# ` or `## ` heading outside fences. Each `### ` heading outside fences
+ * in it opens a run and must read `### Run <n>`, numbered from 1 in order;
+ * lines before the first run belong to none.
+ * @param {string} text result.md
+ * @returns {{runs: {text: string, fenced: boolean, block: number}[][], problems: string[]}}
+ */
+export function greenRuns(text) {
+  const { lines } = fenceMap(text);
+  const starts = lines.flatMap((line, i) => (!line.fenced && line.text === GREEN_RUNS_HEADING ? [i] : []));
+  if (starts.length !== 1) return { runs: [], problems: [starts.length === 0 ? "no ## GREEN runs section" : "more than one ## GREEN runs section"] };
+  const rest = lines.slice(starts[0] + 1);
+  const end = rest.findIndex((line) => !line.fenced && /^#{1,2} /.test(line.text));
+  const runs = [];
+  const problems = [];
+  for (const line of end === -1 ? rest : rest.slice(0, end)) {
+    if (!line.fenced && line.text.startsWith("### ")) {
+      const expected = `### Run ${runs.length + 1}`;
+      if (RUN_HEADING.exec(line.text)?.[0] !== expected) problems.push(`heading "${line.text}" in ## GREEN runs is not "${expected}"`);
+      runs.push([]);
+    } else if (runs.length > 0) runs.at(-1).push(line);
+  }
+  return { runs, problems };
+}
+
+/**
+ * What is wrong with one GREEN run: it must hold exactly one fenced block
+ * whose first two lines are the `Shipped-text SHA-256:` and `Model:` lines
+ * `check` printed, equal to the skill's current hash and the pin, and one
+ * `<n>. PASS` or `<n>. FAIL` line outside fences for every discriminating
+ * criterion, each PASS.
+ * @param {{text: string, fenced: boolean, block: number}[]} run
+ * @param {{hash: string, model: string, criteria: string[]}} expected
+ * @returns {string[]}
+ */
+function greenRunProblems(run, { hash, model, criteria }) {
+  const problems = [];
+  const blocks = new Map();
+  for (const line of run.filter((l) => l.fenced)) blocks.set(line.block, [...(blocks.get(line.block) ?? []), line.text]);
+  const outputs = [...blocks.values()].filter((block) => block.length > 1 && block[1].startsWith(OUTPUT_HASH));
+  if (outputs.length !== 1) {
+    problems.push(`expected one fenced check output starting with a Shipped-text SHA-256 line, found ${outputs.length}`);
+  } else {
+    const [, hashLine, modelLine] = outputs[0];
+    if (hashLine !== `${OUTPUT_HASH}${hash}`) problems.push("the check output's hash is not the current shipped-text hash; rerun GREEN on the shipped text");
+    const runModel = MODEL_LINE.exec(modelLine ?? "")?.[1];
+    if (runModel === undefined) problems.push("the check output's second line is not a Model line");
+    else if (runModel !== model) problems.push(`Model ${runModel} is not the pinned model ${model}`);
+  }
+  const verdicts = run.flatMap((l) => {
+    const match = l.fenced ? null : VERDICT_LINE.exec(l.text);
+    return match ? [{ criterion: match[1], verdict: match[2] }] : [];
+  });
+  for (const criterion of criteria) {
+    const found = verdicts.filter((v) => v.criterion === criterion).map((v) => v.verdict);
+    if (found.length !== 1) problems.push(`expected one PASS or FAIL line for discriminating criterion ${criterion}, found ${found.length}`);
+    else if (found[0] !== "PASS") problems.push(`discriminating criterion ${criterion} is ${found[0]}, not PASS`);
+  }
+  return problems;
+}
+
+/**
+ * result.md's one `## GREEN runs` section holds at least MIN_GREEN_RUNS
+ * runs, and every run in it is of the skill's current shipped text under
+ * the pinned model and passes every discriminating criterion. Runs under
+ * any other heading are history and never count.
+ * @param {string} root @returns {string[]}
+ */
+export function checkGreenRuns(root) {
+  const violations = [];
+  const model = pinnedModel(root);
+  for (const skill of listSkills(root)) {
+    const where = `tests/skills/${skill.name}/result.md`;
+    const result = readRecord(root, skill.name, "result.md");
+    if (result === null) continue;
+    const fence = unclosedFence(where, result);
+    if (fence.length > 0) {
+      violations.push(...fence);
+      continue;
+    }
+    const criteria = linesOutsideFences(result).flatMap((line) => CRITERIA_LINE.exec(line)?.slice(1) ?? []);
+    if (criteria.length !== 1 || !/^[1-9][0-9]*(, [1-9][0-9]*)*$/.test(criteria[0])) {
+      violations.push(`${where}: GREEN runs cannot be checked without one well-formed Discriminating criteria line`);
+      continue;
+    }
+    const { runs, problems } = greenRuns(result);
+    violations.push(...problems.map((problem) => `${where}: ${problem}`));
+    if (problems.length > 0) continue;
+    if (runs.length < MIN_GREEN_RUNS) {
+      violations.push(
+        `${where}: ## GREEN runs holds ${runs.length} runs; a skill needs at least ${MIN_GREEN_RUNS}, each passing every discriminating criterion`,
+      );
+    }
+    const expected = { hash: shippedTextHash(skill.dir), model, criteria: criteria[0].split(", ") };
+    runs.forEach((run, i) => violations.push(...greenRunProblems(run, expected).map((problem) => `${where}: Run ${i + 1}: ${problem}`)));
+  }
+  return violations;
+}
+
 /**
  * baseline.md and result.md each name, outside fenced blocks, exactly one
  * `Model: <id>` line, and `<id>` is the pinned model: `pressure.mjs check`
@@ -460,7 +567,7 @@ function fixture(over = {}) {
     const hash = shippedTextHash(join(root, "skills", "mining-x"));
     writeFileSync(
       join(root, "tests/skills/mining-x/result.md"),
-      `# Result\n\nShipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\nDiscriminating criteria: 1, 2\n\n\`\`\`\nShipped-text SHA-256: ${"0".repeat(64)}\nModel: other-model\n\`\`\`\n`,
+      `# Result\n\nShipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\nDiscriminating criteria: 1, 2\n\n\`\`\`\nShipped-text SHA-256: ${"0".repeat(64)}\nModel: other-model\n\`\`\`\n\n${greenSection(passingRuns(hash, 3))}`,
     );
   }
   return root;
@@ -515,6 +622,183 @@ test("every result.md names its discriminating criteria", () => {
     "tests/skills/mining-x/result.md: discriminating criterion 3 is not a pass criterion in scenario.md",
   ]);
   assert.deepEqual(checkRecordHeaders(result("Discriminating criteria: 2\n")), []);
+});
+
+/**
+ * One `### Run <n>` entry: the check output in a fence whose first lines
+ * are `hash` and `model`, then one verdict line per criterion.
+ * @param {number} n @param {{hash: string, model?: string, verdicts?: Record<string, string>}} options
+ */
+function greenRun(n, { hash, model = "claude-opus-5-5", verdicts = { 1: "PASS", 2: "PASS" } }) {
+  return [
+    `### Run ${n}`,
+    "",
+    "`check` exited 0.",
+    "",
+    `Run ${n} output, verbatim:`,
+    "",
+    "````text",
+    `Shipped-text SHA-256: ${hash}`,
+    `Model: ${model}`,
+    "",
+    "1. PASS inside the output does not count.",
+    "````",
+    "",
+    ...Object.entries(verdicts).map(([criterion, verdict]) => `${criterion}. ${verdict}. Evidence.`),
+    "",
+  ].join("\n");
+}
+
+/** @param {string[]} runs @param {string} [heading] @returns {string} a GREEN runs section holding the runs */
+function greenSection(runs, heading = "## GREEN runs") {
+  return `${heading}\n\nPrompt:\n\n\`\`\`text\nDo the thing.\n\`\`\`\n\n${runs.join("\n")}`;
+}
+
+/** @param {string} root @returns {string} the fixture skill's current shipped-text hash */
+const fixtureHash = (root) => shippedTextHash(join(root, "skills", "mining-x"));
+
+/** A fixture whose result.md holds `body` under the header lines. @param {(hash: string) => string} body @param {string} [criteria] */
+function withResult(body, criteria = "1, 2") {
+  const hash = fixtureHash(fixture());
+  return fixture({
+    "tests/skills/mining-x/result.md": `Shipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\nDiscriminating criteria: ${criteria}\n\n${body(hash)}`,
+  });
+}
+
+/** @param {string} hash @param {number} count @param {object} [over] options for every run @returns {string[]} */
+const passingRuns = (hash, count, over = {}) => Array.from({ length: count }, (_, i) => greenRun(i + 1, { hash, ...over }));
+
+const WHERE = "tests/skills/mining-x/result.md";
+
+test("every result.md holds three passing GREEN runs of the shipped text under the pin", () => {
+  assert.deepEqual(checkGreenRuns(REPO), []);
+});
+
+test("three GREEN runs that pass every discriminating criterion pass", () => {
+  assert.deepEqual(checkGreenRuns(fixture()), []);
+  assert.deepEqual(checkGreenRuns(withResult((hash) => greenSection(passingRuns(hash, 4)))), []);
+  // Only discriminating criteria must be PASS; another criterion may fail or be absent.
+  assert.deepEqual(checkGreenRuns(withResult((hash) => greenSection(passingRuns(hash, 3, { verdicts: { 1: "PASS", 2: "FAIL" } })), "1")), []);
+});
+
+test("two GREEN runs fail", () => {
+  assert.deepEqual(checkGreenRuns(withResult((hash) => greenSection(passingRuns(hash, 2)))), [
+    `${WHERE}: ## GREEN runs holds 2 runs; a skill needs at least 3, each passing every discriminating criterion`,
+  ]);
+  assert.deepEqual(checkGreenRuns(withResult(() => greenSection([]))), [
+    `${WHERE}: ## GREEN runs holds 0 runs; a skill needs at least 3, each passing every discriminating criterion`,
+  ]);
+});
+
+test("three GREEN runs with one FAIL fail", () => {
+  const root = withResult((hash) =>
+    greenSection([greenRun(1, { hash }), greenRun(2, { hash, verdicts: { 1: "PASS", 2: "FAIL" } }), greenRun(3, { hash })]),
+  );
+  assert.deepEqual(checkGreenRuns(root), [`${WHERE}: Run 2: discriminating criterion 2 is FAIL, not PASS`]);
+});
+
+test("three GREEN runs on a stale hash fail", () => {
+  const root = fixture();
+  writeFileSync(join(root, "skills/mining-x/SKILL.md"), `${SKILL_MD}One more line.\n`);
+  const stale = (n) => `${WHERE}: Run ${n}: the check output's hash is not the current shipped-text hash; rerun GREEN on the shipped text`;
+  assert.deepEqual(checkGreenRuns(root), [stale(1), stale(2), stale(3)]);
+});
+
+test("three GREEN runs under another model fail", () => {
+  const root = withResult((hash) => greenSection(passingRuns(hash, 3, { model: "other-model" })));
+  const other = (n) => `${WHERE}: Run ${n}: Model other-model is not the pinned model claude-opus-5-5`;
+  assert.deepEqual(checkGreenRuns(root), [other(1), other(2), other(3)]);
+  const moved = fixture({ "tests/skills/pinned-model.txt": "other-model\n" });
+  assert.deepEqual(checkGreenRuns(moved), [1, 2, 3].map((n) => `${WHERE}: Run ${n}: Model claude-opus-5-5 is not the pinned model other-model`));
+});
+
+test("only runs under the one ## GREEN runs section count", () => {
+  const earlier = (hash) => `${greenSection(passingRuns(hash, 3), "## Earlier GREEN runs")}\n${greenSection(passingRuns(hash, 2))}`;
+  assert.deepEqual(checkGreenRuns(withResult(earlier)), [
+    `${WHERE}: ## GREEN runs holds 2 runs; a skill needs at least 3, each passing every discriminating criterion`,
+  ]);
+  assert.deepEqual(checkGreenRuns(withResult((hash) => greenSection(passingRuns(hash, 3), "## Earlier GREEN runs"))), [
+    `${WHERE}: no ## GREEN runs section`,
+  ]);
+  assert.deepEqual(checkGreenRuns(withResult((hash) => `\`\`\`\`\`\n${greenSection(passingRuns(hash, 3))}\`\`\`\`\`\n`)), [
+    `${WHERE}: no ## GREEN runs section`,
+  ]);
+  assert.deepEqual(checkGreenRuns(withResult((hash) => `${greenSection(passingRuns(hash, 3))}\n${greenSection(passingRuns(hash, 3))}`)), [
+    `${WHERE}: more than one ## GREEN runs section`,
+  ]);
+  // A later level-1 or level-2 heading ends the section; its runs do not count.
+  assert.deepEqual(checkGreenRuns(withResult((hash) => `${greenSection(passingRuns(hash, 2))}\n## Notes\n\n${greenRun(3, { hash })}`)), [
+    `${WHERE}: ## GREEN runs holds 2 runs; a skill needs at least 3, each passing every discriminating criterion`,
+  ]);
+});
+
+test("each run marks every discriminating criterion once, outside fences", () => {
+  const runs = (second) => (hash) => greenSection([greenRun(1, { hash }), second(hash), greenRun(3, { hash })]);
+  assert.deepEqual(checkGreenRuns(withResult(runs((hash) => greenRun(2, { hash, verdicts: { 1: "PASS" } })))), [
+    `${WHERE}: Run 2: expected one PASS or FAIL line for discriminating criterion 2, found 0`,
+  ]);
+  const twice = (hash) => `${greenRun(2, { hash })}2. FAIL. Second thoughts.\n`;
+  assert.deepEqual(checkGreenRuns(withResult(runs(twice))), [
+    `${WHERE}: Run 2: expected one PASS or FAIL line for discriminating criterion 2, found 2`,
+  ]);
+  // The fenced output of greenRun holds "1. PASS ..."; criterion 1 missing outside the fence is still missing.
+  assert.deepEqual(checkGreenRuns(withResult(runs((hash) => greenRun(2, { hash, verdicts: { 2: "PASS" } })))), [
+    `${WHERE}: Run 2: expected one PASS or FAIL line for discriminating criterion 1, found 0`,
+  ]);
+  const fenced = (hash) => `${greenRun(2, { hash, verdicts: { 1: "PASS" } })}\n\`\`\`\n2. PASS. Fenced.\n\`\`\`\n`;
+  assert.deepEqual(checkGreenRuns(withResult(runs(fenced))), [
+    `${WHERE}: Run 2: expected one PASS or FAIL line for discriminating criterion 2, found 0`,
+  ]);
+  // Lines before the first run belong to no run.
+  const preamble = (hash) => greenSection(["1. PASS. Preamble.\n2. PASS. Preamble.\n", ...passingRuns(hash, 3, { verdicts: { 1: "PASS" } })]);
+  assert.deepEqual(
+    checkGreenRuns(withResult(preamble)),
+    [1, 2, 3].map((n) => `${WHERE}: Run ${n}: expected one PASS or FAIL line for discriminating criterion 2, found 0`),
+  );
+});
+
+test("runs are headed ### Run 1, ### Run 2, ... in order", () => {
+  const heads = (headings) => (hash) => greenSection(headings.map((h, i) => greenRun(i + 1, { hash }).replace(/^### Run \d+/, h)));
+  assert.deepEqual(checkGreenRuns(withResult(heads(["### Run 1", "### Run 3", "### Run 2"]))), [
+    `${WHERE}: heading "### Run 3" in ## GREEN runs is not "### Run 2"`,
+    `${WHERE}: heading "### Run 2" in ## GREEN runs is not "### Run 3"`,
+  ]);
+  assert.deepEqual(checkGreenRuns(withResult(heads(["### Run 1", "### Run 2", "### Run 3", "### Notes"]))), [
+    `${WHERE}: heading "### Notes" in ## GREEN runs is not "### Run 4"`,
+  ]);
+  // A deeper heading belongs to the run it sits in.
+  const deeper = (hash) => `${greenSection(passingRuns(hash, 3))}\n#### Grading notes\n\nNone.\n`;
+  assert.deepEqual(checkGreenRuns(withResult(deeper)), []);
+});
+
+test("each run holds exactly one fenced check output with the hash and model lines", () => {
+  const second = (edit) => (hash) => greenSection([greenRun(1, { hash }), edit(greenRun(2, { hash }), hash), greenRun(3, { hash })]);
+  const unfenced = (run) => run.replace("````text\n", "").replace("1. PASS inside the output does not count.\n````\n", "");
+  assert.deepEqual(checkGreenRuns(withResult(second(unfenced))), [
+    `${WHERE}: Run 2: expected one fenced check output starting with a Shipped-text SHA-256 line, found 0`,
+  ]);
+  const doubled = (run, hash) => `${run}\n\`\`\`text\nShipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\n\`\`\`\n`;
+  assert.deepEqual(checkGreenRuns(withResult(second(doubled))), [
+    `${WHERE}: Run 2: expected one fenced check output starting with a Shipped-text SHA-256 line, found 2`,
+  ]);
+  const noModel = (run) => run.replace("Model: claude-opus-5-5\n", "");
+  assert.deepEqual(checkGreenRuns(withResult(second(noModel))), [
+    `${WHERE}: Run 2: the check output's second line is not a Model line`,
+  ]);
+  const unclosed = (hash) => `${greenSection(passingRuns(hash, 3))}\n\`\`\`text\nopen\n`;
+  const root = withResult(unclosed);
+  const line = readFileSync(join(root, WHERE), "utf8").split("\n").length - 2;
+  assert.deepEqual(checkGreenRuns(root), [`${WHERE}: code fence opened at line ${line} is never closed`]);
+});
+
+test("the GREEN-runs gate fails closed without a well-formed Discriminating criteria line", () => {
+  const hash = fixtureHash(fixture());
+  const runs = greenSection(passingRuns(hash, 3));
+  const root = (header) => fixture({ [WHERE]: `Shipped-text SHA-256: ${hash}\nModel: claude-opus-5-5\n${header}\n${runs}` });
+  const refused = `${WHERE}: GREEN runs cannot be checked without one well-formed Discriminating criteria line`;
+  assert.deepEqual(checkGreenRuns(root("")), [refused]);
+  assert.deepEqual(checkGreenRuns(root("Discriminating criteria: none\n")), [refused]);
+  assert.deepEqual(checkGreenRuns(root("Discriminating criteria: 1\nDiscriminating criteria: 2\n")), [refused]);
 });
 
 test("every scenario lists its run directory", () => {

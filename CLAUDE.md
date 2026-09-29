@@ -102,6 +102,29 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
   `baseline.md` and `result.md` each record once. The records gate fails a
   record with no `Model:` line or one that is not the pinned model, and
   `Discriminating criteria` counts only RED attempts under the pin.
+- RED takes at least two attempts, each accepted by `baseline`. GREEN
+  takes three runs of the shipped text under the pinned model, each
+  accepted by `check`, and a skill is GREEN only when every
+  discriminating criterion passes in all three. `result.md` records them
+  in its one `## GREEN runs` section under `### Run 1`, `### Run 2`,
+  `### Run 3` (and on, numbered in order). Each run holds the `check`
+  output verbatim in one fenced block, whose first two lines are the
+  `Shipped-text SHA-256:` and `Model:` lines `check` printed, and, outside
+  fences, one line per discriminating criterion, `<n>. PASS` or `<n>.
+  FAIL`, followed by its evidence. Every run of the shipped text that
+  `check` accepts is recorded there; a run it refuses (a login or harness
+  error, a run that never loaded the skill) is discarded and rerun.
+- When a GREEN run fails a discriminating criterion, the skill is not
+  done. Either close the loophole in a REFACTOR round, which changes the
+  shipped text, and make three fresh GREEN runs of the new text, or stop
+  and report the true pass rate (for example, criterion 1 held in 2 of 3
+  runs) as blocked. Never claim GREEN on fewer than three passing runs,
+  and never leave a run out to reach three. Runs of earlier text move
+  under another heading, such as `## Earlier GREEN runs`, and never
+  count. The records gate fails a `## GREEN runs` section with fewer than
+  three runs, a run whose hash is not the current shipped-text hash or
+  whose model is not the pin, and a discriminating criterion that a run
+  does not mark PASS exactly once.
 - Every rationalization-table row quotes an excuse observed in a RED or
   GREEN run, found verbatim in `baseline.md` or `result.md`, never prompt
   text. A record puts each prompt it holds in a fenced block whose label,
@@ -121,7 +144,8 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
   message), and `result.md` records the value `check` printed. The recorded
   GREEN hash must equal `node tests/helpers/pressure.mjs hash --skill
   <name>` over the repository's shipped text, which the records gate
-  compares, so any edit to that text reruns GREEN before merge.
+  compares, so any edit to that text reruns all three GREEN runs before
+  merge.
 
 ### Commands
 
@@ -371,8 +395,9 @@ update the rule in this file in the same PR as the code it affects.
 
 Moving the pressure-test model is a reviewed change. The PR that edits
 `tests/skills/pinned-model.txt`, including one that follows a new default
-model, reruns every skill's pressure test, RED and GREEN, under the new
-pin and updates each record's `Model:` line and discriminating criteria;
+model, reruns every skill's pressure test under the new pin (at least two
+RED attempts and three GREEN runs, as the method above requires) and
+updates each record's `Model:` line and discriminating criteria;
 the records gate fails the PR until every record names the new pin. The
 same PR moves the seat default (`review.model` in the config schema and the
 design's 5.1 example), which is a user-visible change classified under
