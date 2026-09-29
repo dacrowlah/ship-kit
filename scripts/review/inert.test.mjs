@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  fence, credentialLike, anyCredential, truncate, TRUNCATED,
+  fence, fenceWithin, credentialLike, anyCredential, truncate, MIN_FENCED, TRUNCATED,
 } from "./inert.mjs";
 
 const BT = "`";
@@ -236,4 +236,51 @@ test("truncate refuses a max below the marker length or not an integer", () => {
   assert.throws(() => truncate("abc", 1.5), RangeError);
   assert.throws(() => truncate("abc", Number.NaN), RangeError);
   assert.throws(() => truncate(5, 100), TypeError);
+});
+
+/** True when the block opens and closes with the same bar and no inner line could close it. */
+function balanced(block) {
+  const lines = block.split("\n");
+  const bar = lines[0];
+  if (!/^`{3,}$/.test(bar) || lines.at(-1) !== bar) return false;
+  return lines.slice(1, -1).every((line) => !(/^`+$/.test(line) && line.length >= bar.length));
+}
+
+test("fenceWithin is fence(text) when that fits", () => {
+  assert.equal(fenceWithin("hello\nworld", 100), fence("hello\nworld"));
+  const text = "x".repeat(92);
+  assert.equal(fenceWithin(text, 100), fence(text));
+  assert.equal(fenceWithin(text, 100).length, 100);
+});
+
+test("fenceWithin truncates before fencing and never exceeds max", () => {
+  const texts = [
+    Array.from({ length: 400 }, (_, i) => `line ${i} ${"y".repeat(i % 17)}`).join("\n"),
+    Array.from({ length: 300 }, (_, i) => BT.repeat(i + 1)).join("\n"),
+    Array.from({ length: 300 }, (_, i) => BT.repeat(300 - i)).join("\n"),
+    `short\n${BT.repeat(40)}\n${"z".repeat(5000)}`,
+    `${BT.repeat(2)}\u200B${BT.repeat(2)}\n${"w\n".repeat(200)}`,
+    "one very long line without any newline ".repeat(200),
+  ];
+  for (const text of texts) {
+    for (const max of [MIN_FENCED, 65, 80, 100, 257, 1000, 4096, 20000]) {
+      const block = fenceWithin(text, max);
+      assert.ok(block.length <= max, `length ${block.length} over ${max}`);
+      assert.ok(balanced(block), `unbalanced at ${max}`);
+      const lines = block.split("\n");
+      const inner = lines.slice(1, -1).join("\n");
+      if (block !== fence(text)) assert.ok(inner.endsWith(TRUNCATED), `not marked truncated at ${max}`);
+    }
+  }
+});
+
+test("a long backtick run the budget cannot hold truncates to the marker alone", () => {
+  const text = `${BT.repeat(40)}\n${"y".repeat(100)}`;
+  assert.equal(fenceWithin(text, MIN_FENCED), fence(TRUNCATED));
+});
+
+test("fenceWithin refuses a max below MIN_FENCED and non-strings", () => {
+  assert.throws(() => fenceWithin("x", MIN_FENCED - 1), RangeError);
+  assert.throws(() => fenceWithin("x", 100.5), RangeError);
+  assert.throws(() => fenceWithin(null, 100), TypeError);
 });
