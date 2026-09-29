@@ -8,10 +8,15 @@ import { makeFakeGh, json } from "./fake-gh.mjs";
 const SCRIPT = fileURLToPath(new URL("../../scripts/watch/watch-merge-deploy.sh", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
+// Every test drives poll to 0 via the "0" positional arg, so the script
+// itself never sleeps for real. The timeout below only guards against a
+// genuine hang (an infinite loop or a fake-gh route that never resolves)
+// and stays generous so ordinary CPU contention never trips it.
 function run(args, queue, extraEnv = {}) {
   const gh = makeFakeGh(queue);
   const result = spawnSync("bash", [SCRIPT, ...args], {
     encoding: "utf8",
+    timeout: 60_000,
     env: { ...process.env, PATH: `${gh.dir}:${process.env.PATH}`, ...extraEnv },
   });
   return { ...result, calls: existsSync(`${gh.dir}/calls.log`) ? gh.calls() : [] };

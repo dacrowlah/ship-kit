@@ -40,9 +40,17 @@ function run(args, checksQueue, opts = {}) {
     { match: ["api", `repos/${repoName}/branches/${encodedBaseName}/protection/required_status_checks`], queue: [protectionResponse] },
     { match: ["pr", "checks"], queue: checksQueue },
   ]);
+  // Every test drives poll and settle to 0 (via the "0" positional arg
+  // and WATCH_SETTLE_SECONDS below), so the script itself never sleeps for
+  // real; the only wall-clock cost left is process-spawn overhead (bash,
+  // the fake gh, and the script's own `node -e` helpers), which scales
+  // with machine load rather than with anything this suite controls. The
+  // timeout below exists solely to catch a genuine hang (an infinite loop
+  // or a fake-gh route that never resolves) and must stay generous enough
+  // to never fire under ordinary CPU contention.
   const result = spawnSync("bash", [SCRIPT, ...args], {
     encoding: "utf8",
-    timeout: 10_000,
+    timeout: 60_000,
     env: { ...process.env, PATH: `${gh.dir}:${process.env.PATH}`, WATCH_SETTLE_SECONDS: "0", ...extraEnv },
   });
   const calls = existsSync(`${gh.dir}/calls.log`) ? gh.calls() : [];
