@@ -59,9 +59,31 @@ export function parseApproval(body) {
   return match ? match[1].toLowerCase() : null;
 }
 
+// The legacy `permission` value the API reports for each built-in role:
+// `maintain` reads as `write` and `triage` as `read`.
+const LEGACY_PERMISSION = Object.freeze({ admin: "admin", maintain: "write", write: "write", triage: "read", read: "read", none: "none" });
+
+/**
+ * The permission to rank: `roleName` when it agrees with `permission` (its
+ * legacy value equals `permission`), otherwise the lower of the two, so a
+ * custom role named like a built-in one never raises the rank. Absent
+ * `roleName` means `permission`; any unknown value ranks "none".
+ * @param {unknown} roleName
+ * @param {unknown} permission
+ * @returns {string}
+ */
+function effectivePermission(roleName, permission) {
+  const base = rankOf(permission) === null ? "none" : permission;
+  if (roleName == null) return base;
+  if (rankOf(roleName) === null) return "none";
+  if (LEGACY_PERMISSION[roleName] === base) return roleName;
+  return PERMISSION_RANK[roleName] < PERMISSION_RANK[base] ? roleName : base;
+}
+
 /**
  * @param {{gh: {get: (path: string) => {status: number, json: unknown}}, repo: string}} options
- * @returns {(login: unknown) => string} a permission name, "none" on any failure; cached per login
+ * @returns {(login: unknown) => string} a permission name, "none" on any failure or any
+ *   status other than 200; cached per login
  */
 export function makePermissionOf({ gh, repo }) {
   const { owner, name } = repoSlug(repo);
@@ -72,8 +94,7 @@ export function makePermissionOf({ gh, repo }) {
     try {
       const { status, json } = gh.get(api`repos/${owner}/${name}/collaborators/${login}/permission`);
       if (status !== 200 || json === null || typeof json !== "object") return "none";
-      const value = json.role_name != null ? json.role_name : json.permission;
-      return rankOf(value) === null ? "none" : value;
+      return effectivePermission(json.role_name, json.permission);
     } catch {
       return "none";
     }

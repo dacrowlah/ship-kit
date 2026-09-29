@@ -61,7 +61,7 @@ function permissionRoute(login, status, body, extra = {}) {
   return {
     args: ["api", "--include", `repos/acme/widgets/collaborators/${login}/permission`],
     stdout: included(status, body),
-    code: status === 200 ? 0 : 1,
+    code: status >= 200 && status < 300 ? 0 : 1,
     ...extra,
   };
 }
@@ -350,6 +350,48 @@ test("role_name maintain with permission write ranks as maintain against minAppr
   const permissionOf = makePermissionOf({ gh, repo: REPO });
   const comments = [comment(`/ship-kit-review ${HEAD}`, "lead")];
   assert.deepEqual(decideAuthor(fork({ sender: "writer", comments, minApprover: "maintain", permissionOf })), { run: true, basis: "approved" });
+});
+
+test("a role_name that disagrees with permission ranks as the lower of the two", () => {
+  const { gh } = ghWith([
+    permissionRoute("readadmin", 200, { permission: "read", role_name: "admin" }),
+    permissionRoute("readwrite", 200, { permission: "read", role_name: "write" }),
+    permissionRoute("readmaintain", 200, { permission: "read", role_name: "maintain" }),
+    permissionRoute("writeadmin", 200, { permission: "write", role_name: "admin" }),
+    permissionRoute("adminread", 200, { permission: "admin", role_name: "read" }),
+    permissionRoute("tri", 200, { permission: "read", role_name: "triage" }),
+    permissionRoute("same", 200, { permission: "admin", role_name: "admin" }),
+    permissionRoute("nobase", 200, { role_name: "admin" }),
+  ]);
+  const permissionOf = makePermissionOf({ gh, repo: REPO });
+  assert.equal(permissionOf("readadmin"), "read");
+  assert.equal(permissionOf("readwrite"), "read");
+  assert.equal(permissionOf("readmaintain"), "read");
+  assert.equal(permissionOf("writeadmin"), "write");
+  assert.equal(permissionOf("adminread"), "read");
+  assert.equal(permissionOf("tri"), "triage");
+  assert.equal(permissionOf("same"), "admin");
+  assert.equal(permissionOf("nobase"), "none");
+});
+
+test("a read-based role named admin cannot approve", () => {
+  const { gh } = ghWith([
+    permissionRoute("writer", 200, { permission: "write" }),
+    permissionRoute("fake-admin", 200, { permission: "read", role_name: "admin" }),
+  ]);
+  const permissionOf = makePermissionOf({ gh, repo: REPO });
+  const comments = [comment(`/ship-kit-review ${HEAD}`, "fake-admin")];
+  assertRefused(decideAuthor(fork({ sender: "writer", comments, permissionOf })));
+});
+
+test("only HTTP 200 from the permission API counts; another 2xx ranks none", () => {
+  const { gh } = ghWith([
+    permissionRoute("created", 201, { permission: "admin" }),
+    permissionRoute("partial", 203, { permission: "admin" }),
+    permissionRoute("empty", 204, ""),
+  ]);
+  const permissionOf = makePermissionOf({ gh, repo: REPO });
+  for (const login of ["created", "partial", "empty"]) assert.equal(permissionOf(login), "none", login);
 });
 
 test("an unknown role or permission value ranks none", () => {
