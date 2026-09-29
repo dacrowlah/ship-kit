@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Pressure-test tooling (CLAUDE.md, Skills, "Pressure-test method").
 //
-//   stage --out <dir>                          copy what ships, minus dependencies
+//   stage --out <dir>                          copy what ships, minus dependencies,
+//                                              into <dir>/<tree hash>; prints that path
 //   check --skill <name> --stream <f> [--dmi]  decide whether a GREEN run counts;
 //                                              prints the hash of the text it loaded
 //   hash --skill <name>                        shipped-text SHA-256 of a skill
@@ -9,8 +10,8 @@
 // Exit codes: 0 valid, 1 the stream fails a condition, 2 usage or I/O error.
 
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -18,15 +19,19 @@ export const STAGED = [".claude-plugin", "skills", "scripts", "review", "schemas
 const MARKER_PREFIX = "skill_marker: ";
 const MARKER_VALUE = /^[a-z0-9][a-z0-9-]*@[^\s:]+:([0-9a-f]{16})$/;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]*$/;
+const BASE_PREFIX = "Base directory for this skill: ";
+const CONTENT_HASH = /^[0-9a-f]{64}$/;
 const PLUGIN_REFERENCE = /\$\{CLAUDE_PLUGIN_ROOT\}\/([A-Za-z0-9._/-]+)/g;
 
 class UsageError extends Error {}
 
 /**
- * Copies each shipped directory that exists under `root` into `out` and
- * deletes `dependencies` from the copy's plugin.json. `out` must be empty
- * or absent and outside `root`.
+ * Copies each shipped directory that exists under `root` into
+ * `<out>/<staged tree hash>` and deletes `dependencies` from the copy's
+ * plugin.json. `out` must be empty or absent and outside `root`. The path
+ * names its content, so different text never stages at the same path.
  * @param {{root: string, out: string}} options
+ * @returns {string} the staged plugin directory
  */
 export function stage({ root, out }) {
   const source = realpathSync(root);
@@ -45,11 +50,61 @@ export function stage({ root, out }) {
   const json = JSON.parse(readFileSync(manifest, "utf8"));
   const sources = STAGED.map((name) => join(source, name)).filter(present);
   for (const from of sources) refuseEscapingLinks(from, sources);
+  const partial = join(target, ".partial");
   for (const from of sources) {
-    cpSync(from, join(target, relative(source, from)), { recursive: true, verbatimSymlinks: true });
+    cpSync(from, join(partial, relative(source, from)), { recursive: true, verbatimSymlinks: true });
   }
   delete json.dependencies;
-  writeFileSync(join(target, ".claude-plugin", "plugin.json"), JSON.stringify(json, null, 2) + "\n");
+  writeFileSync(join(partial, ".claude-plugin", "plugin.json"), JSON.stringify(json, null, 2) + "\n");
+  const staged = join(target, stagedTreeHash(partial));
+  renameSync(partial, staged);
+  return staged;
+}
+
+/**
+ * SHA-256 over a staged tree: every regular file (path, byte length,
+ * bytes) and every symlink (path, target), sorted by path.
+ * @param {string} dir
+ * @returns {string} hex digest
+ */
+export function stagedTreeHash(dir) {
+  const entries = [];
+  const walk = (path) => {
+    const stat = lstatSync(path);
+    const name = relative(dir, path).split(sep).join("/");
+    if (stat.isDirectory()) for (const child of readdirSync(path)) walk(join(path, child));
+    else if (stat.isSymbolicLink()) entries.push([name, `L\n${name}\n${readlinkSync(path)}\n`, null]);
+    else if (stat.isFile()) entries.push([name, null, readFileSync(path)]);
+    else throw new UsageError(`${path} is neither a file, a directory nor a symlink`);
+  };
+  walk(dir);
+  const hash = createHash("sha256");
+  for (const [name, link, bytes] of entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (link !== null) hash.update(link);
+    else hash.update(`F\n${name}\n${bytes.length}\n`).update(bytes);
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * True when `loaded`, the skill body a run showed after "Base directory
+ * for this skill:", equals SKILL.md without its frontmatter once the
+ * plugin-root and skill-dir variables are substituted as Claude Code does.
+ * @param {string} skillText SKILL.md content @param {string} loaded
+ * @param {{pluginPath: string, skill: string}} options
+ */
+export function loadedBodyMatches(skillText, loaded, { pluginPath, skill }) {
+  let body = skillText.replace(/\r\n/g, "\n");
+  if (body.startsWith("---\n")) {
+    const end = body.indexOf("\n---\n", 3);
+    body = end === -1 ? "" : body.slice(end + 5);
+  }
+  const expected = body
+    .split("${CLAUDE_PLUGIN_ROOT}")
+    .join(pluginPath)
+    .split("${CLAUDE_SKILL_DIR}")
+    .join(`${pluginPath}/skills/${skill}`);
+  return expected.trim() === loaded.replace(/\r\n/g, "\n").trim();
 }
 
 /** @param {string} parent @param {string} path @returns {boolean} path is parent or below it */
@@ -126,7 +181,7 @@ const contentOf = (message) => (Array.isArray(message.message?.content) ? messag
  * Decides whether a stream-json run counts as a GREEN run of `ship-kit:<skill>`.
  * @param {string} text the stream, one JSON message per line
  * @param {{skill: string, dmi?: boolean, marker?: string | null}} options
- * @returns {{ok: true, text: string, pluginPath: string} | {ok: false, reason: string}}
+ * @returns {{ok: true, text: string, pluginPath: string, loadedBodies: string[]} | {ok: false, reason: string}}
  */
 export function checkStream(text, { skill, dmi = false, marker = null }) {
   const qualified = `ship-kit:${skill}`;
@@ -151,6 +206,26 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
   if (plugins.length !== 1 || typeof plugins[0].path !== "string" || !isAbsolute(plugins[0].path)) {
     return { ok: false, reason: "init lists no single ship-kit plugin with an absolute path" };
   }
+  const pluginPath = plugins[0].path;
+  if (posix.normalize(pluginPath) !== pluginPath || !CONTENT_HASH.test(basename(pluginPath))) {
+    return { ok: false, reason: "the ship-kit plugin path is not a content-addressed stage" };
+  }
+  const skillDir = `${pluginPath}/skills/${skill}`;
+  const loadedBodies = [];
+  for (const m of messages.slice(inits[0] + 1)) {
+    if (m.type !== "user" || !isTopLevel(m)) continue;
+    for (const block of contentOf(m)) {
+      if (!isObject(block) || block.type !== "text" || typeof block.text !== "string") continue;
+      if (!block.text.startsWith(BASE_PREFIX)) continue;
+      const [head, ...rest] = block.text.split("\n\n");
+      const dir = head.slice(BASE_PREFIX.length);
+      if (dir === skillDir) loadedBodies.push(rest.join("\n\n"));
+      else if (dir.endsWith(`/skills/${skill}`)) {
+        return { ok: false, reason: `the run loaded ${qualified} from another directory` };
+      }
+    }
+  }
+  if (!dmi && loadedBodies.length === 0) return { ok: false, reason: `the stream shows no loaded skill body for ${qualified}` };
   const final = messages.at(-1);
   if (final.type !== "result") return { ok: false, reason: "no final result message" };
   if (final.subtype !== "success" || final.is_error === true) {
@@ -165,7 +240,7 @@ export function checkStream(text, { skill, dmi = false, marker = null }) {
   } else if (!invokedSkill(messages, inits[0], qualified)) {
     return { ok: false, reason: `no Skill tool call invoked ${qualified} successfully` };
   }
-  return { ok: true, text: redactToken(final.result, marker ?? undefined), pluginPath: plugins[0].path };
+  return { ok: true, text: redactToken(final.result, marker ?? undefined), pluginPath, loadedBodies };
 }
 
 /**
@@ -226,7 +301,7 @@ export function shippedTextHash(dir) {
   for (const content of [...entries.values()]) {
     for (const [, reference] of content.matchAll(PLUGIN_REFERENCE)) {
       const clean = posix.normalize(reference.replace(/[.]+$/, ""));
-      if (clean.startsWith("..") || !existsSync(join(root, clean))) continue;
+      if (clean === "." || clean.startsWith("..") || !existsSync(join(root, clean))) continue;
       const target = join(root, clean);
       const shared = new Map();
       if (lstatSync(target).isDirectory()) collectFiles(target, root, shared);
@@ -242,6 +317,25 @@ export function shippedTextHash(dir) {
     hash.update(bytes);
   }
   return hash.digest("hex");
+}
+
+/**
+ * Checks the staged copy a valid stream names: it still hashes to its
+ * path's name, and every body the run loaded equals its SKILL.md.
+ * @param {{pluginPath: string, loadedBodies: string[]}} verdict @param {string} skill
+ * @returns {string | null} the failed condition, or null
+ */
+function verifyStaged({ pluginPath, loadedBodies }, skill) {
+  const skillFile = join(pluginPath, "skills", skill, "SKILL.md");
+  if (!existsSync(skillFile)) return `the staged plugin the run loaded has no skills/${skill}/SKILL.md`;
+  if (stagedTreeHash(pluginPath) !== basename(pluginPath)) {
+    return `the staged copy at ${pluginPath} does not match its content hash`;
+  }
+  const text = readFileSync(skillFile, "utf8");
+  if (!loadedBodies.every((body) => loadedBodyMatches(text, body, { pluginPath, skill }))) {
+    return "the loaded skill body differs from the staged SKILL.md";
+  }
+  return null;
 }
 
 /**
@@ -285,8 +379,7 @@ export function main(argv, io) {
     if (verb === "stage") {
       const flags = parseFlags(rest, ["out"], []);
       if (!flags.out) throw new UsageError("--out <dir> is required");
-      stage({ root, out: flags.out });
-      io.stdout.write(`staged ${flags.out}\n`);
+      io.stdout.write(`${stage({ root, out: flags.out })}\n`);
       return 0;
     }
     if (verb === "check") {
@@ -299,11 +392,12 @@ export function main(argv, io) {
         io.stderr.write(`invalid GREEN run: ${verdict.reason}\n`);
         return 1;
       }
-      const loaded = join(verdict.pluginPath, "skills", name);
-      if (!existsSync(join(loaded, "SKILL.md"))) {
-        io.stderr.write(`invalid GREEN run: the staged plugin the run loaded has no skills/${name}/SKILL.md\n`);
+      const staged = verifyStaged(verdict, name);
+      if (staged) {
+        io.stderr.write(`invalid GREEN run: ${staged}\n`);
         return 1;
       }
+      const loaded = join(verdict.pluginPath, "skills", name);
       io.stdout.write(`Shipped-text SHA-256: ${shippedTextHash(loaded)}\n\n${verdict.text}\n`);
       return 0;
     }

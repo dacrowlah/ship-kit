@@ -1,25 +1,35 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { isolatedEnv } from "../../scripts/assert-test-globs.mjs";
-import { checkStream, main, readMarker, shippedTextHash, stage } from "./pressure.mjs";
+import { checkStream, loadedBodyMatches, main, readMarker, shippedTextHash, stage, stagedTreeHash } from "./pressure.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const SCRIPT = join(HERE, "pressure.mjs");
 const RAW_INVOKED = readFileSync(join(HERE, "fixtures", "stream-invoked.jsonl"), "utf8");
 const RAW_LISTED = readFileSync(join(HERE, "fixtures", "stream-listed-not-invoked.jsonl"), "utf8");
-/** Points the fixture's redacted ship-kit plugin path at `path`. @returns {string} */
+/** Points every redacted `<plugin-dir>` in a fixture at `path`. @returns {string} */
 const loadedFrom = (text, path) => {
-  const out = text.split('"path":"<plugin-dir>"').join(`"path":${JSON.stringify(path)}`);
+  const out = text.split("<plugin-dir>").join(path);
   assert.notEqual(out, text, "the fixture names the redacted plugin path");
   return out;
 };
-const STAGED_PATH = "/staged/plugin";
+const STAGED_PATH = `/staged/${"a".repeat(64)}`;
+const BASE_PREFIX = "Base directory for this skill: ";
+/** The skill body the real run loaded, as the fixture shows it. */
+const LOADED_BODY = RAW_INVOKED.split("\n")
+  .filter(Boolean)
+  .map((line) => JSON.parse(line))
+  .flatMap((m) => (m.type === "user" && Array.isArray(m.message?.content) ? m.message.content : []))
+  .find((c) => c.type === "text" && c.text.startsWith(`${BASE_PREFIX}<plugin-dir>/skills/`))
+  .text.split("\n\n")
+  .slice(1)
+  .join("\n\n");
 const INVOKED = loadedFrom(RAW_INVOKED, STAGED_PATH);
 const LISTED = loadedFrom(RAW_LISTED, STAGED_PATH);
 const SKILL = "proving-tests-can-fail";
@@ -85,6 +95,20 @@ function pluginRoot() {
   mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "docs", "design.md"), "answers\n");
   return root;
+}
+
+/**
+ * A plugin source whose proving-tests-can-fail SKILL.md has the body the
+ * fixture run loaded (plus `extra`), staged content-addressed.
+ * @returns {{root: string, out: string, plugin: string}}
+ */
+function stagedFixtureSkill(extra = "") {
+  const root = pluginRoot();
+  mkdirSync(join(root, "skills", SKILL), { recursive: true });
+  const text = `---\nname: ${SKILL}\ndescription: Use when testing.\n---\n\n${LOADED_BODY}${extra}`;
+  writeFileSync(join(root, "skills", SKILL, "SKILL.md"), text);
+  const out = join(tmp("pressure-out-"), "plug");
+  return { root, out, plugin: stage({ root, out }) };
 }
 
 // --- check ---------------------------------------------------------------
@@ -417,24 +441,27 @@ test("stage strips dependencies only in the copy", () => {
   const root = pluginRoot();
   const before = readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8");
   const out = join(tmp("pressure-out-"), "plug");
-  stage({ root, out });
-  const staged = JSON.parse(readFileSync(join(out, ".claude-plugin", "plugin.json"), "utf8"));
+  const plugin = stage({ root, out });
+  assert.equal(dirname(plugin), out);
+  assert.equal(basename(plugin), stagedTreeHash(plugin), "the stage is named by its content");
+  assert.deepEqual(readdirSync(out), [basename(plugin)], "no partial copy is left");
+  const staged = JSON.parse(readFileSync(join(plugin, ".claude-plugin", "plugin.json"), "utf8"));
   assert.equal("dependencies" in staged, false);
   assert.equal(staged.name, "ship-kit");
   assert.equal(staged.version, "0.1.0");
   assert.equal(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"), before);
-  assert.equal(readFileSync(join(out, "skills", "a-skill", "SKILL.md"), "utf8"), "skill\n");
-  assert.equal(readFileSync(join(out, ".claude-plugin", "marketplace.json"), "utf8"), "{}\n");
-  assert.equal(existsSync(join(out, "scripts", "x.mjs")), true);
-  assert.equal(existsSync(join(out, "docs")), false, "docs never reach the staged plugin");
-  assert.equal(existsSync(join(out, "review")), false, "absent directories are skipped");
+  assert.equal(readFileSync(join(plugin, "skills", "a-skill", "SKILL.md"), "utf8"), "skill\n");
+  assert.equal(readFileSync(join(plugin, ".claude-plugin", "marketplace.json"), "utf8"), "{}\n");
+  assert.equal(existsSync(join(plugin, "scripts", "x.mjs")), true);
+  assert.equal(existsSync(join(plugin, "docs")), false, "docs never reach the staged plugin");
+  assert.equal(existsSync(join(plugin, "review")), false, "absent directories are skipped");
 });
 
 test("stage accepts an existing empty out", () => {
   const root = pluginRoot();
   const out = tmp("pressure-out-");
-  stage({ root, out });
-  assert.equal(existsSync(join(out, ".claude-plugin", "plugin.json")), true);
+  const plugin = stage({ root, out });
+  assert.equal(existsSync(join(plugin, ".claude-plugin", "plugin.json")), true);
 });
 
 test("stage refuses a non-empty out", () => {
@@ -472,10 +499,9 @@ test("stage refuses an out whose name only starts with two dots inside the tree"
 test("stage keeps a relative symlink inside the staged directories verbatim", () => {
   const root = pluginRoot();
   symlinkSync("../../scripts/x.mjs", join(root, "skills", "a-skill", "x.mjs"));
-  const out = join(tmp("pressure-out-"), "plug");
-  stage({ root, out });
-  assert.equal(readlinkSync(join(out, "skills", "a-skill", "x.mjs")), "../../scripts/x.mjs");
-  assert.equal(readFileSync(join(out, "skills", "a-skill", "x.mjs"), "utf8"), "x\n");
+  const plugin = stage({ root, out: join(tmp("pressure-out-"), "plug") });
+  assert.equal(readlinkSync(join(plugin, "skills", "a-skill", "x.mjs")), "../../scripts/x.mjs");
+  assert.equal(readFileSync(join(plugin, "skills", "a-skill", "x.mjs"), "utf8"), "x\n");
 });
 
 test("stage refuses a symlink that leaves the staged directories", () => {
@@ -501,7 +527,10 @@ test("stage through main reports success", () => {
   const out = join(tmp("pressure-out-"), "plug");
   const result = run(["stage", "--out", out], { root });
   assert.equal(result.code, 0, result.err);
-  assert.equal(existsSync(join(out, ".claude-plugin", "plugin.json")), true);
+  const plugin = result.out.trimEnd();
+  assert.equal(result.out, `${plugin}\n`, "prints only the staged path");
+  assert.equal(dirname(plugin), out);
+  assert.equal(existsSync(join(plugin, ".claude-plugin", "plugin.json")), true);
 });
 
 // --- main / CLI -----------------------------------------------------------
@@ -524,8 +553,7 @@ function streamFile(text) {
 const checked = (plugin, text) => `Shipped-text SHA-256: ${shippedTextHash(join(plugin, "skills", SKILL))}\n\n${text}\n`;
 
 test("check through main prints the text on success and the reason on failure", () => {
-  const root = repoWithSkill("---\nname: x\n---\nbody\n");
-  const plugin = repoWithSkill("---\nname: x\n---\nbody\n");
+  const { root, plugin } = stagedFixtureSkill();
   const ok = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, plugin))], { root });
   assert.equal(ok.code, 0, ok.err);
   assert.equal(ok.out, checked(plugin, finalResult(INVOKED)));
@@ -536,17 +564,20 @@ test("check through main prints the text on success and the reason on failure", 
 });
 
 test("check --dmi through main reads the marker from SKILL.md", () => {
-  const root = repoWithSkill(`---\nname: x\n---\nskill_marker: ${MARKER}\n`);
-  const stream = withResult(INVOKED, (m) => ({
+  // A slash-command run shows no "Base directory" body in its stream
+  // (observed at Claude Code 2.1.284), so the dmi stream carries none.
+  const { root, plugin } = stagedFixtureSkill(`\nskill_marker: ${MARKER}\n`);
+  const bodyless = parse(loadedFrom(RAW_INVOKED, plugin)).filter(
+    (m) => !(m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX)),
+  );
+  const stream = withResult(join_(bodyless), (m) => ({
     ...m,
     result: `marker ${MARKER}`,
     structured_output: { skill_marker: MARKER },
   }));
-  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(stream.split(STAGED_PATH).join(root)), "--dmi"], {
-    root,
-  });
+  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(stream), "--dmi"], { root });
   assert.equal(ok.code, 0, ok.err);
-  assert.equal(ok.out, checked(root, `marker ${SKILL}@0.1.0:<token>`));
+  assert.equal(ok.out, checked(plugin, `marker ${SKILL}@0.1.0:<token>`));
   const noMarker = repoWithSkill("---\nname: x\n---\n");
   const refused = run(["check", "--skill", SKILL, "--stream", streamFile(stream), "--dmi"], { root: noMarker });
   assert.equal(refused.code, 1);
@@ -554,14 +585,14 @@ test("check --dmi through main reads the marker from SKILL.md", () => {
 });
 
 test("check prints the hash of the text the run loaded, not of the repository", () => {
-  const root = repoWithSkill("---\nname: x\n---\nrepository text\n");
-  const plugin = repoWithSkill("---\nname: x\n---\nstaged text\n");
+  const { root, plugin } = stagedFixtureSkill();
+  writeFileSync(join(root, "skills", SKILL, "SKILL.md"), "---\nname: x\n---\nrepository text since staging\n");
   const ok = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, plugin))], { root });
   assert.equal(ok.code, 0, ok.err);
   const printed = ok.out.split("\n")[0];
   assert.equal(printed, `Shipped-text SHA-256: ${shippedTextHash(join(plugin, "skills", SKILL))}`);
   assert.notEqual(printed, `Shipped-text SHA-256: ${shippedTextHash(join(root, "skills", SKILL))}`);
-  const gone = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, join(plugin, "gone")))], {
+  const gone = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, join(dirname(plugin), "f".repeat(64))))], {
     root,
   });
   assert.equal(gone.code, 1);
@@ -612,4 +643,165 @@ test("the command line runs main against the repository", () => {
   assert.equal(child.stdout, shippedTextHash(join(REPO, "skills", SKILL)) + "\n");
   const bad = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8", env: isolatedEnv() });
   assert.equal(bad.status, 2);
+});
+
+// --- binding to the staged text the run loaded ----------------------------
+
+test("the fixture's loaded body is the staged SKILL.md body, and check accepts it", () => {
+  const { root, plugin } = stagedFixtureSkill();
+  assert.match(plugin, /[\\/][0-9a-f]{64}$/);
+  const result = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, plugin))], { root });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(result.out, checked(plugin, finalResult(INVOKED)));
+});
+
+test("re-staging edited text at the same out fails an old stream", () => {
+  const { root, out, plugin } = stagedFixtureSkill();
+  const stream = streamFile(loadedFrom(RAW_INVOKED, plugin));
+  assert.equal(run(["check", "--skill", SKILL, "--stream", stream], { root }).code, 0);
+  writeFileSync(join(root, "skills", SKILL, "SKILL.md"), readFileSync(join(root, "skills", SKILL, "SKILL.md"), "utf8") + "\nNew rule.\n");
+  rmSync(out, { recursive: true, force: true });
+  const again = stage({ root, out });
+  assert.notEqual(again, plugin, "different text stages at a different path");
+  const result = run(["check", "--skill", SKILL, "--stream", stream], { root });
+  assert.equal(result.code, 1);
+  assert.equal(result.out, "");
+});
+
+test("a staged copy edited in place fails the check", () => {
+  const { root, plugin } = stagedFixtureSkill();
+  const stream = streamFile(loadedFrom(RAW_INVOKED, plugin));
+  writeFileSync(join(plugin, "skills", "a-skill", "SKILL.md"), "edited\n");
+  const result = run(["check", "--skill", SKILL, "--stream", stream], { root });
+  assert.equal(result.code, 1);
+  assert.match(result.err, /does not match its content hash/);
+});
+
+test("a stream whose loaded body differs from the staged copy fails", () => {
+  const { root, plugin } = stagedFixtureSkill();
+  const edited = loadedFrom(RAW_INVOKED, plugin).replace("# Proving tests can fail", "# Proving tests can pass");
+  const result = run(["check", "--skill", SKILL, "--stream", streamFile(edited)], { root });
+  assert.equal(result.code, 1);
+  assert.match(result.err, /loaded skill body differs from the staged SKILL\.md/);
+  const older = stagedFixtureSkill("\nA rule the run never saw.\n");
+  const stale = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, older.plugin))], {
+    root: older.root,
+  });
+  assert.equal(stale.code, 1);
+  assert.match(stale.err, /loaded skill body differs/);
+});
+
+test("a stream that shows no loaded skill body fails", () => {
+  const messages = parse(INVOKED).filter(
+    (m) => !(m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX)),
+  );
+  const verdict = checkStream(join_(messages), { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /no loaded skill body/);
+});
+
+test("a loaded body shown inside a subagent does not count", () => {
+  const messages = parse(INVOKED);
+  messages.find((m) => m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX)).parent_tool_use_id = "toolu_parent";
+  const verdict = checkStream(join_(messages), { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /no loaded skill body/);
+});
+
+test("a body the model wrote itself does not count as loaded", () => {
+  const messages = parse(INVOKED);
+  messages.find((m) => m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX)).type = "assistant";
+  const verdict = checkStream(join_(messages), { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /no loaded skill body/);
+});
+
+test("a loaded body from another directory for the skill fails", () => {
+  const messages = parse(INVOKED);
+  const body = messages.find((m) => m.type === "user" && JSON.stringify(m).includes(BASE_PREFIX));
+  const copy = JSON.parse(JSON.stringify(body).replace(`${BASE_PREFIX}${STAGED_PATH}/skills/`, `${BASE_PREFIX}/elsewhere/skills/`));
+  messages.splice(messages.indexOf(body) + 1, 0, copy);
+  const verdict = checkStream(join_(messages), { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /from another directory/);
+});
+
+test("the plugin path must be a normalized content-addressed stage", () => {
+  for (const path of ["/staged/plugin", `/staged/x/../${"a".repeat(64)}`, `/staged/${"A".repeat(64)}`]) {
+    const verdict = checkStream(loadedFrom(RAW_INVOKED, path), { skill: SKILL, dmi: false });
+    assert.equal(verdict.ok, false, path);
+    assert.match(verdict.reason, /content-addressed stage/);
+  }
+});
+
+test("loaded bodies are compared after the plugin-root and skill-dir substitutions", () => {
+  const body = "Run `${CLAUDE_PLUGIN_ROOT}/scripts/x.mjs` from ${CLAUDE_SKILL_DIR}.";
+  const skillText = `---\nname: s\n---\n\n${body}\n`;
+  const plugin = "/p/" + "b".repeat(64);
+  const loaded = `Run \`${plugin}/scripts/x.mjs\` from ${plugin}/skills/s.`;
+  assert.equal(loadedBodyMatches(skillText, loaded, { pluginPath: plugin, skill: "s" }), true);
+  assert.equal(loadedBodyMatches(skillText, body, { pluginPath: plugin, skill: "s" }), false);
+  assert.equal(loadedBodyMatches("no frontmatter\n", "no frontmatter", { pluginPath: plugin, skill: "s" }), true);
+});
+
+test("the staged tree hash covers paths, bytes and symlink targets", () => {
+  const make = (edit) => {
+    const dir = tmp("pressure-tree-");
+    mkdirSync(join(dir, "a"));
+    writeFileSync(join(dir, "a", "f"), "x");
+    symlinkSync("f", join(dir, "a", "l"));
+    edit?.(dir);
+    return stagedTreeHash(dir);
+  };
+  const base = make();
+  assert.equal(base, make());
+  assert.notEqual(base, make((d) => writeFileSync(join(d, "a", "f"), "y")));
+  assert.notEqual(base, make((d) => writeFileSync(join(d, "a", "g"), "")));
+  assert.notEqual(base, make((d) => (rmSync(join(d, "a", "l")), symlinkSync("g", join(d, "a", "l")))));
+  assert.notEqual(base, make((d) => (rmSync(join(d, "a", "f")), writeFileSync(join(d, "f"), "x"))));
+  assert.notEqual(base, make((d) => (rmSync(join(d, "a", "f")), writeFileSync(join(d, "a", "e"), "x"))), "a rename counts");
+});
+
+// --- guards the re-review found unheld ------------------------------------
+
+test("a Skill tool_result outside a top-level user message does not count", () => {
+  const asAssistant = parse(INVOKED);
+  skillCallParts(asAssistant).result.type = "assistant";
+  assert.equal(checkStream(join_(asAssistant), { skill: SKILL, dmi: false }).ok, false);
+  const nested = parse(INVOKED);
+  skillCallParts(nested).result.parent_tool_use_id = "toolu_parent";
+  assert.equal(checkStream(join_(nested), { skill: SKILL, dmi: false }).ok, false);
+});
+
+test("stage refuses an absolute symlink even when it points inside the staged directories", () => {
+  const root = realpathSync(pluginRoot());
+  symlinkSync(join(root, "scripts", "x.mjs"), join(root, "skills", "a-skill", "abs.mjs"));
+  const result = run(["stage", "--out", join(tmp("pressure-out-"), "plug")], { root });
+  assert.equal(result.code, 2);
+  assert.match(result.err, /symlink leaving the staged directories/);
+});
+
+test("stage refuses a staged top-level directory that is a symlink to another staged one", () => {
+  const root = pluginRoot();
+  symlinkSync("skills", join(root, "review"));
+  const result = run(["stage", "--out", join(tmp("pressure-out-"), "plug")], { root });
+  assert.equal(result.code, 2);
+  assert.match(result.err, /symlink leaving the staged directories/);
+});
+
+test("hash never reads outside the plugin root or the whole root", () => {
+  const outsideName = `outside-${process.pid}-${Date.now()}.md`;
+  const skill = { "SKILL.md": `\${CLAUDE_PLUGIN_ROOT}/../${outsideName} \${CLAUDE_PLUGIN_ROOT}/. \${CLAUDE_PLUGIN_ROOT}/..\n` };
+  const dir = skillDir(skill, { "top.md": "t\n" });
+  const root = join(dir, "..", "..");
+  const outside = join(root, "..", outsideName);
+  writeFileSync(outside, "one\n");
+  const before = shippedTextHash(dir);
+  writeFileSync(outside, "two\n");
+  writeFileSync(join(root, "top.md"), "changed\n");
+  try {
+    assert.equal(shippedTextHash(dir), before);
+  } finally {
+    rmSync(outside);
+  }
 });

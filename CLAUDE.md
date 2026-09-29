@@ -74,14 +74,19 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
 - GREEN loads the copy made by `node tests/helpers/pressure.mjs stage --out
   <dir>`, which deletes `dependencies` from the staged `plugin.json` only.
   Isolated runs have no superpowers, and a plugin whose dependency is
-  missing is dropped, so without this GREEN silently equals RED.
+  missing is dropped, so without this GREEN silently equals RED. The copy
+  lands in `<dir>/<hash of the staged tree>`, the path `stage` prints and
+  `--plugin-dir` takes, so different text never stages at the same path.
 - A GREEN run counts only when `node tests/helpers/pressure.mjs check
   --skill <name> --stream <file>` exits 0: the init message lists
   `ship-kit:<name>` and one ship-kit plugin path, the run invoked it (a
   top-level `Skill` call naming it whose one `tool_result` follows it and
   is not an error; for a seat skill run by its slash command, `--dmi` and
   a returned `skill_marker` equal to the SKILL.md marker), and the stream
-  ends in a `success` result. Other runs are discarded.
+  ends in a `success` result. The staged copy must still hash to its
+  path's name, and every skill body the stream shows loaded ("Base
+  directory for this skill: ...") must equal that copy's SKILL.md without
+  frontmatter; a model-invoked run must show one. Other runs are discarded.
 - `result.md` records `Discriminating criteria: <numbers>`, the criteria
   that failed in at least one RED attempt; only those count in a headline.
 - Every rationalization-table row quotes an excuse observed in a RED or
