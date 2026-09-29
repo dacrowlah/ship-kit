@@ -30,8 +30,8 @@ const BASE_PREFIX = "Base directory for this skill: ";
 const CONTENT_HASH = /^[0-9a-f]{64}$/;
 const ARGUMENTS_SUFFIX = "\n\nARGUMENTS: ";
 const PLUGIN_REFERENCE = /\$\{CLAUDE_PLUGIN_ROOT\}\/([A-Za-z0-9._/-]+)/g;
-/** A model id as the config schema accepts it. */
-export const MODEL_ID = /^[A-Za-z0-9._\[\]-]{1,100}$/;
+/** A model id as the config schema accepts it: it never starts with a dash, so it cannot read as a flag. */
+export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,99}$/;
 const PIN_FILE = join("tests", "skills", "pinned-model.txt");
 
 class UsageError extends Error {}

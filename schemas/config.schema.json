@@ -211,6 +211,11 @@
           },
           "default": []
         },
+        "model": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
+          "default": "claude-opus-5-5"
+        },
         "seats": {
           "type": "object",
           "additionalProperties": false,
@@ -232,7 +237,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },
@@ -255,7 +260,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },
@@ -278,7 +283,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },
@@ -301,7 +306,7 @@
                     "null",
                     "string"
                   ],
-                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}$",
                   "default": null
                 }
               },
