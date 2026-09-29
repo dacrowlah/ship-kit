@@ -560,13 +560,16 @@ test("merge times are compared as instants, whatever offset they are written wit
   assert.deepEqual(r.result.stoppedAt, { pr: 1, reason: REASONS.falsePositive });
 });
 
-test("PRs merged at the same instant are walked highest number first", () => {
+test("PRs merged at the same instant are walked highest number first, whatever order the listing gives", () => {
   const w = new World();
   w.addPr(1, { mergedAt: "2026-09-05T00:00:00Z", labels: ["ship-kit-false-positive"] });
   w.addPr(2, { mergedAt: "2026-09-05T00:00:00Z" });
-  const r = record(w);
-  assert.deepEqual(r.result.streak, streakOf(2));
-  assert.deepEqual(r.result.stoppedAt, { pr: 1, reason: REASONS.falsePositive });
+  for (const listing of [[...w.prs], [...w.prs].reverse()]) {
+    w.listing = listing;
+    const r = record(w);
+    assert.deepEqual(r.result.streak, streakOf(2), JSON.stringify(listing.map((p) => p.number)));
+    assert.deepEqual(r.result.stoppedAt, { pr: 1, reason: REASONS.falsePositive });
+  }
 });
 
 test("a count equal to --limit sets truncated; one less does not", () => {
