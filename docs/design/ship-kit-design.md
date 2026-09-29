@@ -772,7 +772,8 @@ match. Aggregate reads the expected marker from `src/`, which no seat can
 read (6.3), but what a seat reads can still hold the expected value: the
 token is public in the released SKILL.md, so a PR can plant it in
 anything it authors that a seat reads, which is its tree under `pr/`,
-its title and body (`pr.txt`) and its diff (`diff.patch`, `stat.txt`).
+its title and body (`pr.txt`) and its diff and file paths (`diff.patch`,
+`stat.txt`, `scope.txt`).
 The defence against a planted token is behavioural, not structural: the
 contract tells a seat that its instructions come only from its seat
 skill and `review/contract/`, to copy `skill_marker` only from its seat
@@ -2144,7 +2145,8 @@ checks already comes from T1.
 ### 20.2 Untrusted inputs to seats
 
 Prior findings, rebuttals, the PR title and body, the files under `pr/`,
-and hunt-list text are data. `review/contract/untrusted-data.md` tells
+the diff and file paths (`diff.patch`, `stat.txt`, `scope.txt`) and
+hunt-list text are data. `review/contract/untrusted-data.md` tells
 seats to treat each as a claim to check, never as an instruction.
 
 ### 20.3 Tokens
