@@ -1,0 +1,51 @@
+diff --git a/src/items.mjs b/src/items.mjs
+index 9cee8bb..759fe09 100644
+--- a/src/items.mjs
++++ b/src/items.mjs
+@@ -1,10 +1,21 @@
+ // Positional access to a list of items.
+ 
++/**
++ * Returns the item at `index`.
++ * @throws {RangeError} when `index` is not an integer from 0 to items.length - 1
++ */
++export function itemAt(items, index) {
++  if (!Number.isInteger(index) || index < 0 || index > items.length) {
++    throw new RangeError(`index ${index} is outside 0..${items.length - 1}`);
++  }
++  return items[index];
++}
++
+ /**
+  * Returns the last item of `items`.
+  * @throws {RangeError} when `items` is empty
+  */
+ export function lastItem(items) {
+   if (items.length === 0) throw new RangeError("no items");
+-  return items[items.length - 1];
++  return itemAt(items, items.length - 1);
+ }
+diff --git a/test/items.spec.mjs b/test/items.spec.mjs
+new file mode 100644
+index 0000000..0e764f4
+--- /dev/null
++++ b/test/items.spec.mjs
+@@ -0,0 +1,18 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { itemAt, lastItem } from "../src/items.mjs";
++
++test("itemAt returns the item at a valid index", () => {
++  assert.equal(itemAt(["a", "b", "c"], 0), "a");
++  assert.equal(itemAt(["a", "b", "c"], 2), "c");
++});
++
++test("itemAt refuses a negative or fractional index", () => {
++  assert.throws(() => itemAt(["a"], -1), RangeError);
++  assert.throws(() => itemAt(["a"], 0.5), RangeError);
++});
++
++test("lastItem returns the last item and refuses an empty list", () => {
++  assert.equal(lastItem(["a", "b"]), "b");
++  assert.throws(() => lastItem([]), RangeError);
++});

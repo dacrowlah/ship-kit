@@ -1,0 +1,4 @@
+Mode: design-doc, incremental since the last complete review of this seat.
+Seat 1 of 1 reviews every changed file:
+docs/design/items.md
+Prior findings assigned to this seat: p1.
