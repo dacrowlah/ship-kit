@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { readRunSpec, skillsWithRecords } from "../helpers/drift.mjs";
 import { pinnedModel, shippedTextHash } from "../helpers/pressure.mjs";
-import { fenceMap, isRepoFile, linesOutsideFences, section, sections } from "../helpers/records.mjs";
+import { fenceMap, greenRuns, isRepoFile, linesOutsideFences, section, sections } from "../helpers/records.mjs";
 import { listSkills, parseFrontmatter } from "../helpers/skills.mjs";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -101,65 +101,28 @@ export function checkRecordHeaders(root) {
 
 /** The fewest GREEN runs of the shipped text under the pin a skill needs, every one passing. */
 export const MIN_GREEN_RUNS = 3;
-const GREEN_RUNS_HEADING = "## GREEN runs";
-const RUN_HEADING = /^### Run ([1-9][0-9]*)$/;
-const VERDICT_LINE = /^([1-9][0-9]*)\. (PASS|FAIL)\b/;
-const OUTPUT_HASH = "Shipped-text SHA-256: ";
 
 /**
- * The runs of a record's one `## GREEN runs` section, which ends at the next
- * `# ` or `## ` heading outside fences. Each `### ` heading outside fences
- * in it opens a run and must read `### Run <n>`, numbered from 1 in order;
- * lines before the first run belong to none.
- * @param {string} text result.md
- * @returns {{runs: {text: string, fenced: boolean, block: number}[][], problems: string[]}}
- */
-export function greenRuns(text) {
-  const { lines } = fenceMap(text);
-  const starts = lines.flatMap((line, i) => (!line.fenced && line.text === GREEN_RUNS_HEADING ? [i] : []));
-  if (starts.length !== 1) return { runs: [], problems: [starts.length === 0 ? "no ## GREEN runs section" : "more than one ## GREEN runs section"] };
-  const rest = lines.slice(starts[0] + 1);
-  const end = rest.findIndex((line) => !line.fenced && /^#{1,2} /.test(line.text));
-  const runs = [];
-  const problems = [];
-  for (const line of end === -1 ? rest : rest.slice(0, end)) {
-    if (!line.fenced && line.text.startsWith("### ")) {
-      const expected = `### Run ${runs.length + 1}`;
-      if (RUN_HEADING.exec(line.text)?.[0] !== expected) problems.push(`heading "${line.text}" in ## GREEN runs is not "${expected}"`);
-      runs.push([]);
-    } else if (runs.length > 0) runs.at(-1).push(line);
-  }
-  return { runs, problems };
-}
-
-/**
- * What is wrong with one GREEN run: it must hold exactly one fenced block
- * whose first two lines are the `Shipped-text SHA-256:` and `Model:` lines
- * `check` printed, equal to the skill's current hash and the pin, and one
- * `<n>. PASS` or `<n>. FAIL` line outside fences for every discriminating
- * criterion, each PASS.
- * @param {{text: string, fenced: boolean, block: number}[]} run
+ * What is wrong with one GREEN run (read by `greenRuns`): it must hold
+ * exactly one fenced `check` output whose first two lines are the
+ * `Shipped-text SHA-256:` and `Model:` lines, equal to the skill's current
+ * hash and the pin, and exactly one PASS or FAIL line for every
+ * discriminating criterion, each PASS.
+ * @param {{outputs: string[][], verdicts: {criterion: string, verdict: string}[]}} run
  * @param {{hash: string, model: string, criteria: string[]}} expected
  * @returns {string[]}
  */
-function greenRunProblems(run, { hash, model, criteria }) {
+function greenRunProblems({ outputs, verdicts }, { hash, model, criteria }) {
   const problems = [];
-  const blocks = new Map();
-  for (const line of run.filter((l) => l.fenced)) blocks.set(line.block, [...(blocks.get(line.block) ?? []), line.text]);
-  const outputs = [...blocks.values()].filter((block) => block.length > 1 && block[1].startsWith(OUTPUT_HASH));
   if (outputs.length !== 1) {
     problems.push(`expected one fenced check output starting with a Shipped-text SHA-256 line, found ${outputs.length}`);
   } else {
-    const [, hashLine, modelLine] = outputs[0];
-    if (hashLine !== `${OUTPUT_HASH}${hash}`) problems.push("the check output's hash is not the current shipped-text hash; rerun GREEN on the shipped text");
+    const [hashLine, modelLine] = outputs[0];
+    if (HASH_LINE.exec(hashLine)?.[1] !== hash) problems.push("the check output's hash is not the current shipped-text hash; rerun GREEN on the shipped text");
     const runModel = MODEL_LINE.exec(modelLine ?? "")?.[1];
     if (runModel === undefined) problems.push("the check output's second line is not a Model line");
     else if (runModel !== model) problems.push(`Model ${runModel} is not the pinned model ${model}`);
   }
-  const verdicts = run.flatMap((l) => {
-    const match = l.fenced ? null : VERDICT_LINE.exec(l.text);
-    return match ? [{ criterion: match[1], verdict: match[2] }] : [];
-  });
   for (const criterion of criteria) {
     const found = verdicts.filter((v) => v.criterion === criterion).map((v) => v.verdict);
     if (found.length !== 1) problems.push(`expected one PASS or FAIL line for discriminating criterion ${criterion}, found ${found.length}`);
