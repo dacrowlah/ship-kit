@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { isolatedEnv } from "../assert-test-globs.mjs";
 import { loadConfig } from "../lib/config.mjs";
 import { makeGh } from "../lib/gh.mjs";
 import { included } from "../../tests/helpers/fake-gh-api.mjs";
-import { Unreadable, defaultDeps, evaluate, main, managedChecks, readRequired } from "./required-checks.mjs";
+import { Unreadable, defaultDeps, evaluate, isMain, main, managedChecks, readRequired } from "./required-checks.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./required-checks.mjs", import.meta.url));
 const OWNER = "octo";
@@ -20,6 +20,7 @@ const PR = "7";
 const GENERAL = "ship-kit general review";
 const ADVERSARIAL = "ship-kit adversarial review";
 const COVERAGE = "ship-kit patch coverage";
+const GENERAL_CALLER = ".github/workflows/ship-kit-general.yml";
 const ACTIONS = { id: 15368, slug: "github-actions" };
 const SUITE_TO_RUN = 1_000_000;
 
@@ -74,41 +75,62 @@ const OTHER_RULES = [
   { type: "pull_request", parameters: { required_approving_review_count: 0 }, ruleset_id: 1 },
 ];
 
+/** The branch object as GitHub returns it to any reader; `summary` is classic protection's. */
+function branchObject(name, { enabled = false, contexts = [], checks = [] } = {}) {
+  return {
+    name,
+    protected: true,
+    protection: { enabled, required_status_checks: { enforcement_level: enabled ? "non_admins" : "off", contexts, checks } },
+  };
+}
+
 /** The managed caller path for a check name, or the path of an ordinary workflow. */
 function callerFor(name) {
   return MANAGED.get(name) ?? ".github/workflows/ci.yml";
 }
 
+/** A pull request entry of a workflow run's `pull_requests`. */
+function prEntry(baseRef, number = 7) {
+  return { number, base: { ref: baseRef, repo: { name: NAME } }, head: { ref: "feature", sha: SHA } };
+}
+
 /**
  * A scripted GitHub. By default every Actions check run in `all` belongs to
  * a pull_request_target run of the caller its name implies (the managed
- * caller, or ci.yml for any other name), and is a job of that run. `suites`
- * and `jobs` override those answers per check suite id and check run id;
+ * caller, or ci.yml for any other name) for a pull request into the default
+ * branch, is a job of that run, and the default branch holds every managed
+ * caller. `suites`, `runDetails`, `jobs` and `callers` override those
+ * answers per check suite id, workflow run id, check run id and caller path;
  * `routes` overrides any call by its argument list.
  */
 function world(spec = {}) {
   const branch = spec.branch ?? "main";
+  const repo = spec.repo ?? REPO;
   const b = encodeURIComponent(branch);
-  const base = `repos/${OWNER}/${NAME}`;
+  const base = `repos/${repo}`;
   const latest = spec.latest ?? [];
   const all = spec.all ?? latest;
   const routes = new Map();
   const put = (args, response) => routes.set(JSON.stringify(args), response);
 
   put(["repo", "view", "--json", "nameWithOwner,defaultBranchRef"],
-    { stdout: JSON.stringify(spec.repoView ?? { nameWithOwner: REPO, defaultBranchRef: { name: branch } }) });
-  put(["pr", "view", PR, "-R", REPO, "--json", "headRefOid,baseRefName"],
+    { stdout: JSON.stringify(spec.repoView ?? { nameWithOwner: repo, defaultBranchRef: { name: branch } }) });
+  put(["pr", "view", PR, "-R", repo, "--json", "headRefOid,baseRefName"],
     { stdout: JSON.stringify(spec.pr ?? { headRefOid: SHA, baseRefName: branch }) });
-  put(getArgs(`${base}/branches/${b}`), spec.branchLookup ?? http(200, { name: branch, protected: true }));
+  put(getArgs(`${base}/branches/${b}`), spec.branchLookup ?? http(200, branchObject(branch)));
   put(pageArgs(`${base}/rules/branches/${b}`), spec.rulesRoute ?? { stdout: JSON.stringify([spec.rules ?? []]) });
   put(getArgs(`${base}/branches/${b}/protection/required_status_checks`),
-    spec.classic ?? http(404, { message: "Branch not protected" }));
+    spec.classic ?? http(404, { message: "Branch not protected", status: "404" }));
   put(pageArgs(`${base}/commits/${SHA}/check-runs?filter=latest`), spec.latestRoute ?? slurp("check_runs", latest));
   put(pageArgs(`${base}/commits/${SHA}/check-runs?filter=all`), spec.allRoute ?? slurp("check_runs", all));
   put(pageArgs(`${base}/commits/${SHA}/status`),
     spec.statusRoute ?? slurp("statuses", spec.statuses ?? [], { state: "pending", sha: SHA }));
+  for (const path of MANAGED.values()) {
+    put(getArgs(`${base}/contents/${path}?ref=${b}`), spec.callers?.[path] ?? http(200, { type: "file", path, sha: "c".repeat(40) }));
+  }
 
   const suites = spec.suites ?? {};
+  const runDetails = spec.runDetails ?? {};
   const jobs = spec.jobs ?? {};
   for (const run of all) {
     const suite = run && run.check_suite ? run.check_suite.id : undefined;
@@ -117,9 +139,14 @@ function world(spec = {}) {
     if (!routes.has(JSON.stringify(runsArgs))) {
       const answer = suites[suite] ?? [{
         id: suite + SUITE_TO_RUN, check_suite_id: suite, event: "pull_request_target",
-        path: callerFor(run.name), repository: { full_name: REPO },
+        path: callerFor(run.name), repository: { full_name: repo },
       }];
       put(runsArgs, Array.isArray(answer) ? slurp("workflow_runs", answer) : answer);
+      for (const listed of Array.isArray(answer) ? answer : []) {
+        if (!listed || !Number.isSafeInteger(listed.id)) continue;
+        put(getArgs(`${base}/actions/runs/${listed.id}`), runDetails[listed.id]
+          ?? http(200, { head_sha: SHA, pull_requests: [prEntry(branch)], ...listed }));
+      }
     }
     put(getArgs(`${base}/actions/jobs/${run.id}`), jobs[run.id] ?? http(200, { id: run.id, run_id: suite + SUITE_TO_RUN, name: run.name }));
   }
@@ -178,6 +205,8 @@ function required(spec) {
 }
 
 const unreadable = (pattern) => (error) => error instanceof Unreadable && pattern.test(error.message);
+/** The refusal for a managed context whose evidence passes every check GitHub allows. */
+const unprovable = (context = GENERAL) => unreadable(new RegExp(`cannot prove that .*${JSON.stringify(context).replace(/[()]/g, "\\$&")}.* came from the default branch's caller`));
 
 // --- managedChecks ---------------------------------------------------------
 
@@ -185,7 +214,7 @@ test("managedChecks maps every render.checks name except coverage to its caller 
   assert.deepEqual([...MANAGED.entries()].sort(), [
     [ADVERSARIAL, ".github/workflows/ship-kit-adversarial.yml"],
     ["ship-kit change class", ".github/workflows/ship-kit-change-class.yml"],
-    [GENERAL, ".github/workflows/ship-kit-general.yml"],
+    [GENERAL, GENERAL_CALLER],
     ["ship-kit security review", ".github/workflows/ship-kit-security.yml"],
     ["ship-kit test-integrity review", ".github/workflows/ship-kit-test-integrity.yml"],
   ]);
@@ -199,7 +228,7 @@ test("managedChecks follows renamed checks", () => {
   }));
   assert.equal(loaded.ok, true, loaded.reason);
   const managed = managedChecks(loaded.config);
-  assert.equal(managed.get("review (general)"), ".github/workflows/ship-kit-general.yml");
+  assert.equal(managed.get("review (general)"), GENERAL_CALLER);
   assert.equal(managed.has(GENERAL), false);
 });
 
@@ -219,9 +248,48 @@ test("both: the union of rulesets and classic protection, sorted and unique", ()
   assert.deepEqual(required({ rules: [rsc("gitleaks", "ci"), rsc("lint")], classic }), ["build", "ci", "gitleaks", "lint"]);
 });
 
-test("classic 404 with a ruleset contributes nothing", () => {
-  const classic = http(404, { message: "Branch not protected" });
+test("classic 404 \"Branch not protected\" with a ruleset contributes nothing", () => {
+  const classic = http(404, { message: "Branch not protected", status: "404" });
   assert.deepEqual(required({ rules: [rsc("ci")], classic }), ["ci"]);
+});
+
+test("the branch object's classic contexts join the union", () => {
+  const branchLookup = http(200, branchObject("main", { enabled: true, contexts: ["build", "lint"], checks: [{ context: "deploy", app_id: null }] }));
+  const classic = http(200, { contexts: ["build"], checks: [] });
+  assert.deepEqual(required({ rules: [rsc("ci")], branchLookup, classic }), ["build", "ci", "deploy", "lint"]);
+});
+
+test("HOLE A: a classic 404 other than \"Branch not protected\" is unreadable (exit 3), as a reader without admin rights gets it", () => {
+  // As GitHub answers a non-admin reader of a branch with classic required
+  // checks: the branch object lists them, the protection endpoint says 404.
+  const branchLookup = http(200, branchObject("main", { enabled: true, contexts: ["build"], checks: [{ context: "build", app_id: null }] }));
+  const classic = http(404, { message: "Not Found", status: "404" });
+  assert.throws(() => required({ rules: [rsc("ci")], branchLookup, classic }), unreadable(/classic protection returned HTTP 404 \("Not Found"\)/));
+  const r = runMain({ rules: [rsc("ci")], classic, branchLookup, latest: [checkRun(1, "ci"), checkRun(2, "build", { conclusion: "failure" })] });
+  assert.equal(r.code, 3, r.out + r.err);
+  assert.match(r.err, /admin/);
+  for (const body of [{ message: "branch not protected" }, {}, "<html>"]) {
+    assert.throws(() => required({ rules: [rsc("ci")], classic: http(404, body) }), unreadable(/HTTP 404/), JSON.stringify(body));
+  }
+});
+
+test("\"Branch not protected\" while the branch reports classic protection enabled is unreadable", () => {
+  const branchLookup = http(200, branchObject("main", { enabled: true, contexts: [], checks: [] }));
+  assert.throws(() => required({ rules: [rsc("ci")], branchLookup }), unreadable(/reports classic protection enabled/));
+});
+
+test("a branch object without a usable protection summary is unreadable", () => {
+  const bad = [
+    ["no protection", { name: "main" }],
+    ["protection not an object", { name: "main", protection: true }],
+    ["enabled not a boolean", { name: "main", protection: { enabled: "yes", required_status_checks: { contexts: [], checks: [] } } }],
+    ["no required_status_checks", { name: "main", protection: { enabled: false } }],
+    ["contexts missing", { name: "main", protection: { enabled: false, required_status_checks: { checks: [] } } }],
+    ["a check without a context", { name: "main", protection: { enabled: true, required_status_checks: { contexts: [], checks: [{}] } } }],
+  ];
+  for (const [label, body] of bad) {
+    assert.throws(() => required({ rules: [rsc("ci")], branchLookup: http(200, body) }), unreadable(/branch protection summary/), label);
+  }
 });
 
 test("a required_status_checks rule on the second page of rules is read", () => {
@@ -307,7 +375,7 @@ test("the rules read for a missing or mis-encoded branch is refused, even when r
   // that is no branch, so only the branch lookup shows the name was wrong.
   const rules = [rsc("lint")];
   assert.throws(() => required({ rules, branchLookup: http(404, { message: "Branch not found" }) }), unreadable(/branch lookup.*HTTP 404/));
-  assert.throws(() => required({ rules, branchLookup: http(200, { name: "Main" }) }), unreadable(/resolved to "Main"/));
+  assert.throws(() => required({ rules, branchLookup: http(200, branchObject("Main")) }), unreadable(/resolved to "Main"/));
   assert.throws(() => required({ rules, branchLookup: http(200, ["main"]) }), unreadable(/branch lookup/));
   assert.throws(() => required({ rules, branchLookup: { code: 1, stdout: "", stderr: "timeout" } }), unreadable(/branch lookup/));
   const r = runMain({ rules, branchLookup: http(404, { message: "Branch not found" }), latest: [checkRun(1, "lint")] });
@@ -406,39 +474,104 @@ test("evaluate refuses a head SHA that is not 40 lower-case hex", () => {
   }
 });
 
-test("evaluate rejects a bad managed map or default branch", () => {
+test("evaluate rejects a missing or bad managed map, or a bad default branch", () => {
   const w = world();
   const call = (extra) => evaluate({ gh: w.gh, repo: REPO, sha: SHA, contexts: ["ci"], managed: MANAGED, defaultBranch: "main", ...extra });
+  assert.throws(() => call({ managed: null }), TypeError);
   assert.throws(() => call({ managed: {} }), TypeError);
   assert.throws(() => call({ managed: new Map([["x", ".github/workflows/other.yml"]]) }), TypeError);
+  assert.throws(() => call({ managed: new Map([["x", `x${GENERAL_CALLER}`]]) }), TypeError);
+  assert.throws(() => call({ managed: new Map([["x", `${GENERAL_CALLER}x`]]) }), TypeError);
   assert.throws(() => call({ managed: new Map([["x", 5]]) }), TypeError);
   assert.throws(() => call({ defaultBranch: "" }), TypeError);
 });
 
 // --- evaluate: provenance -----------------------------------------------------
 
-test("a managed context whose check runs all come from its caller is green", () => {
+test("a managed context whose check runs pass every check is still unprovable (exit 3): nothing ties a run to its base", () => {
   const latest = [checkRun(10, GENERAL, { suite: 501 })];
-  const { results } = judge({ latest }, [GENERAL]);
-  assert.deepEqual(states(results), { [GENERAL]: "green" });
-  assert.match(results[0].reason, /ship-kit-general\.yml/);
+  assert.throws(() => judge({ latest }, [GENERAL, "ci"]), unprovable());
+  const r = runMain({ rules: [rsc("ci", GENERAL, ADVERSARIAL)], latest: [...latest, checkRun(1, "ci"), checkRun(11, ADVERSARIAL, { suite: 502 })] });
+  assert.equal(r.code, 3, r.out + r.err);
+  assert.match(r.err, /cannot prove that "ship-kit adversarial review", "ship-kit general review" came from the default branch's caller/);
+  assert.match(r.err, /a human merges/);
+  assert.equal(r.out, "");
 });
 
-test("the caller path may carry @refs/heads/<default branch>", () => {
+test("a managed context that is failing or pending reports its state, with provenance checked", () => {
+  const failing = [checkRun(10, GENERAL, { suite: 501, conclusion: "failure" })];
+  assert.deepEqual(states(judge({ latest: failing }, [GENERAL]).results), { [GENERAL]: "failing" });
+  const pending = [checkRun(10, GENERAL, { suite: 501, status: "in_progress", conclusion: null })];
+  const { results, calls } = judge({ latest: pending }, [GENERAL]);
+  assert.deepEqual(states(results), { [GENERAL]: "pending" });
+  assert.ok(calls.some((a) => a.join(" ").includes("actions/jobs/10")));
+});
+
+test("the caller path may carry @refs/heads/<default branch>; any other ref is forged", () => {
   const latest = [checkRun(10, GENERAL, { suite: 501 })];
-  const suites = { 501: [{ id: 77, check_suite_id: 501, event: "pull_request_target", path: ".github/workflows/ship-kit-general.yml@refs/heads/main", repository: { full_name: REPO } }] };
+  const suites = { 501: [{ id: 77, check_suite_id: 501, event: "pull_request_target", path: `${GENERAL_CALLER}@refs/heads/main`, repository: { full_name: REPO } }] };
   const jobs = { 10: http(200, { id: 10, run_id: 77, name: GENERAL }) };
-  assert.deepEqual(states(judge({ latest, suites, jobs }, [GENERAL]).results), { [GENERAL]: "green" });
-  const other = { 501: [{ ...suites[501][0], path: ".github/workflows/ship-kit-general.yml@refs/heads/feature" }] };
+  assert.throws(() => judge({ latest, suites, jobs }, [GENERAL]), unprovable());
+  const other = { 501: [{ ...suites[501][0], path: `${GENERAL_CALLER}@refs/heads/feature` }] };
   assert.deepEqual(states(judge({ latest, suites: other, jobs }, [GENERAL]).results), { [GENERAL]: "forged" });
 });
 
-test("a failed first attempt fixed by a full re-run is green on latest", () => {
+test("a failed first attempt fixed by a full re-run is judged on latest: not failing, not forged", () => {
   // Both attempts are jobs of one workflow run in one check suite.
   const attempt1 = checkRun(10, GENERAL, { suite: 501, conclusion: "failure" });
   const attempt2 = checkRun(11, GENERAL, { suite: 501 });
-  const { results } = judge({ latest: [attempt2], all: [attempt1, attempt2] }, [GENERAL]);
-  assert.deepEqual(states(results), { [GENERAL]: "green" });
+  assert.throws(() => judge({ latest: [attempt2], all: [attempt1, attempt2] }, [GENERAL]), unprovable());
+  const ci1 = checkRun(1, "ci", { conclusion: "failure" });
+  const ci2 = checkRun(2, "ci");
+  assert.deepEqual(states(judge({ latest: [ci2], all: [ci1, ci2] }, ["ci"]).results), { ci: "green" });
+});
+
+test("HOLE B: a pull_request_target run of the caller's path for a pull request into another base is forged", () => {
+  // pull_request_target runs the base branch's copy of the workflow, and the
+  // run's path carries no ref, so the copy on any branch shares the path.
+  const forged = checkRun(19, GENERAL, { suite: 499 });
+  const suites = { 499: [{ id: 66, check_suite_id: 499, event: "pull_request_target", path: GENERAL_CALLER, repository: { full_name: REPO } }] };
+  const runDetails = { 66: http(200, { ...suites[499][0], head_sha: SHA, pull_requests: [prEntry("evil", 8)] }) };
+  const jobs = { 19: http(200, { id: 19, run_id: 66, name: GENERAL }) };
+  const { results } = judge({ latest: [forged], suites, runDetails, jobs }, [GENERAL]);
+  assert.deepEqual(states(results), { [GENERAL]: "forged" });
+  assert.match(results[0].reason, /pull request into "evil"/);
+  const r = runMain({ rules: [rsc(GENERAL)], latest: [forged], suites, runDetails, jobs });
+  assert.equal(r.code, 1, r.out + r.err);
+  assert.match(r.out, /^forged "ship-kit general review"/m);
+});
+
+test("a run listing any pull request into another base is forged, even beside one into the default branch", () => {
+  const latest = [checkRun(10, GENERAL, { suite: 501 })];
+  const detail = (pullRequests) => ({ 1000501: http(200, { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, head_sha: SHA, pull_requests: pullRequests }) });
+  for (const pullRequests of [[prEntry("main"), prEntry("evil", 8)], [{ number: 8 }], [null]]) {
+    const { results } = judge({ latest, runDetails: detail(pullRequests) }, [GENERAL]);
+    assert.deepEqual(states(results), { [GENERAL]: "forged" }, JSON.stringify(pullRequests));
+  }
+  // A fork head, or a closed pull request, lists none: still unprovable.
+  assert.throws(() => judge({ latest, runDetails: detail([]) }, [GENERAL]), unprovable());
+});
+
+test("a workflow run for another head, another id or without a pull_requests list is forged", () => {
+  const latest = [checkRun(10, GENERAL, { suite: 501 })];
+  const base = { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, head_sha: SHA, pull_requests: [prEntry("main")] };
+  for (const body of [{ ...base, head_sha: "f".repeat(40) }, { ...base, id: 5 }, { ...base, pull_requests: null }, ["run"]]) {
+    const { results } = judge({ latest, runDetails: { 1000501: http(200, body) } }, [GENERAL]);
+    assert.deepEqual(states(results), { [GENERAL]: "forged" }, JSON.stringify(body));
+  }
+  assert.throws(() => judge({ latest, runDetails: { 1000501: http(502, { message: "bad" }) } }, [GENERAL]), unreadable(/workflow run 1000501 lookup returned HTTP 502/));
+});
+
+test("a check named for a seat whose caller is not on the default branch is forged", () => {
+  const latest = [checkRun(10, GENERAL, { suite: 501 })];
+  const callers = { [GENERAL_CALLER]: http(404, { message: "Not Found" }) };
+  const { results } = judge({ latest, callers }, [GENERAL]);
+  assert.deepEqual(states(results), { [GENERAL]: "forged" });
+  assert.match(results[0].reason, /default branch has no .*ship-kit-general\.yml/);
+  for (const body of [[{ type: "file" }], { type: "dir", path: GENERAL_CALLER }, { type: "file", path: "other.yml" }]) {
+    assert.deepEqual(states(judge({ latest, callers: { [GENERAL_CALLER]: http(200, body) } }, [GENERAL]).results), { [GENERAL]: "forged" }, JSON.stringify(body));
+  }
+  assert.throws(() => judge({ latest, callers: { [GENERAL_CALLER]: http(500, { message: "x" }) } }, [GENERAL]), unreadable(/caller lookup.*HTTP 500/));
 });
 
 test("a same-named check from a second workflow is forged (exit 1), even when it is older", () => {
@@ -493,7 +626,7 @@ test("a managed context whose check runs all pass provenance plus a same-named s
 
 test("a managed context with no check run and no status is missing, never green", () => {
   const { results, calls } = judge({ latest: [checkRun(1, "ci")] }, [GENERAL]);
-  assert.deepEqual(states(results), { [GENERAL]: "missing" });
+  assert.deepEqual(results, [{ context: GENERAL, state: "missing", reason: "" }]);
   assert.ok(calls.some((a) => a.join(" ").includes("filter=all")));
   const r = runMain({ rules: [rsc(GENERAL)], latest: [checkRun(1, "ci")] });
   assert.equal(r.code, 1);
@@ -503,7 +636,7 @@ test("a managed check run seen only in the full listing still needs provenance",
   const stray = checkRun(30, GENERAL, { suite: 504 });
   const suites = { 504: [{ id: 68, check_suite_id: 504, event: "push", path: ".github/workflows/x.yml", repository: { full_name: REPO } }] };
   assert.deepEqual(states(judge({ latest: [], all: [stray], suites }, [GENERAL]).results), { [GENERAL]: "forged" });
-  assert.deepEqual(states(judge({ latest: [], all: [stray] }, [GENERAL]).results), { [GENERAL]: "missing" });
+  assert.deepEqual(judge({ latest: [], all: [stray] }, [GENERAL]).results, [{ context: GENERAL, state: "missing", reason: "" }]);
 });
 
 test("a managed check run on filter=latest but absent from filter=all is forged", () => {
@@ -519,24 +652,24 @@ test("provenance refuses a check suite with zero workflow runs (a non-Actions su
 });
 
 test("provenance refuses a check suite with more than one workflow run", () => {
-  const one = { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: ".github/workflows/ship-kit-general.yml", repository: { full_name: REPO } };
+  const one = { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, repository: { full_name: REPO } };
   const { results } = judge({ latest: [checkRun(10, GENERAL, { suite: 501 })], suites: { 501: [one, { ...one, id: 5 }] } }, [GENERAL]);
   assert.deepEqual(states(results), { [GENERAL]: "forged" });
 });
 
 test("provenance refuses a listed workflow run of another check suite or repository", () => {
-  const base = { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: ".github/workflows/ship-kit-general.yml", repository: { full_name: REPO } };
+  const base = { id: 1000501, check_suite_id: 501, event: "pull_request_target", path: GENERAL_CALLER, repository: { full_name: REPO } };
   for (const run of [{ ...base, check_suite_id: 9 }, { ...base, repository: { full_name: "someone/else" } }, { ...base, repository: null }, { ...base, id: "x" }, "run"]) {
     const { results } = judge({ latest: [checkRun(10, GENERAL, { suite: 501 })], suites: { 501: [run] } }, [GENERAL]);
     assert.deepEqual(states(results), { [GENERAL]: "forged" }, JSON.stringify(run));
   }
   const upper = { ...base, repository: { full_name: REPO.toUpperCase() } };
-  assert.deepEqual(states(judge({ latest: [checkRun(10, GENERAL, { suite: 501 })], suites: { 501: [upper] } }, [GENERAL]).results), { [GENERAL]: "green" });
+  assert.throws(() => judge({ latest: [checkRun(10, GENERAL, { suite: 501 })], suites: { 501: [upper] } }, [GENERAL]), unprovable());
 });
 
 test("provenance refuses a run whose event is not pull_request_target", () => {
   for (const event of ["pull_request", "push", "workflow_dispatch", "issue_comment", undefined]) {
-    const suites = { 501: [{ id: 1000501, check_suite_id: 501, event, path: ".github/workflows/ship-kit-general.yml", repository: { full_name: REPO } }] };
+    const suites = { 501: [{ id: 1000501, check_suite_id: 501, event, path: GENERAL_CALLER, repository: { full_name: REPO } }] };
     const { results } = judge({ latest: [checkRun(10, GENERAL, { suite: 501 })], suites }, [GENERAL]);
     assert.deepEqual(states(results), { [GENERAL]: "forged" }, String(event));
   }
@@ -566,11 +699,14 @@ test("a failed provenance lookup is unreadable, never green", () => {
   assert.throws(() => judge({ latest, allRoute: failed("gh: HTTP 502") }, [GENERAL]), unreadable(/check runs/));
 });
 
-test("provenance lookups are shared: one runs listing per check suite", () => {
+test("provenance lookups are shared: one runs listing and one run lookup per check suite, one caller lookup per seat", () => {
   const latest = [checkRun(10, GENERAL, { suite: 501 }), checkRun(11, GENERAL, { suite: 501 })];
-  const { results, calls } = judge({ latest }, [GENERAL]);
-  assert.deepEqual(states(results), { [GENERAL]: "green" });
-  assert.equal(calls.filter((a) => a.join(" ").includes("check_suite_id=501")).length, 1);
+  const w = world({ latest });
+  assert.throws(() => evaluate({ gh: w.gh, repo: REPO, sha: SHA, contexts: [GENERAL], managed: MANAGED, defaultBranch: "main" }), unprovable());
+  const count = (text) => w.calls.filter((a) => a.join(" ").includes(text)).length;
+  assert.equal(count("check_suite_id=501"), 1);
+  assert.equal(count("actions/runs/1000501"), 1);
+  assert.equal(count("contents/"), 1);
 });
 
 test("a context that is not managed is judged on its state alone", () => {
@@ -582,34 +718,20 @@ test("a context that is not managed is judged on its state alone", () => {
   assert.equal(calls.some((a) => a.join(" ").includes("actions/")), false);
 });
 
-test("the coverage context is exempt from provenance when the config is readable", () => {
+test("the coverage context is exempt from provenance", () => {
   const latest = [checkRun(1, COVERAGE, { suite: 600 })];
   const suites = { 600: [{ id: 3, check_suite_id: 600, event: "pull_request", path: ".github/workflows/test.yml", repository: { full_name: REPO } }] };
   assert.deepEqual(states(judge({ latest, suites }, [COVERAGE]).results), { [COVERAGE]: "green" });
 });
 
-test("an unreadable config makes every ship-kit-named context forged and judges the rest", () => {
-  const latest = [checkRun(10, GENERAL, { suite: 501 }), checkRun(1, "ci"), checkRun(2, COVERAGE)];
-  const { results } = judge({ latest }, [COVERAGE, GENERAL, "Ship-Kit custom", "ci", "missing-one"], null);
-  assert.deepEqual(states(results), {
-    [COVERAGE]: "forged", [GENERAL]: "forged", "Ship-Kit custom": "forged", ci: "green", "missing-one": "missing",
-  });
-  assert.match(results[0].reason, /config/);
-});
-
 // --- main -------------------------------------------------------------------
 
 test("main exits 0 when every required context is green, and prints one line per context", () => {
-  const latest = [checkRun(1, "ci"), checkRun(2, "gitleaks"), checkRun(10, GENERAL, { suite: 501 }), checkRun(11, ADVERSARIAL, { suite: 502 })];
-  const r = runMain({ rules: [rsc("gitleaks", "ci", GENERAL, ADVERSARIAL)], latest });
+  const latest = [checkRun(1, "ci"), checkRun(2, "gitleaks"), checkRun(3, COVERAGE)];
+  const r = runMain({ rules: [rsc("gitleaks", "ci", COVERAGE)], latest });
   assert.equal(r.code, 0, r.err);
   assert.equal(r.err, "");
-  const lines = r.out.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(0, 4).map((l) => l.split(" -- ")[0]), [
-    'green "ci"', 'green "gitleaks"', `green "${ADVERSARIAL}"`, `green "${GENERAL}"`,
-  ]);
-  assert.match(lines[2], /provenance: pull_request_target run of \.github\/workflows\/ship-kit-adversarial\.yml/);
-  assert.equal(lines[4], `4 of 4 required checks green on ${SHA}`);
+  assert.equal(r.out, `green "ci"\ngreen "gitleaks"\ngreen "${COVERAGE}"\n3 of 3 required checks green on ${SHA}\n`);
 });
 
 test("main exits 1 when any context is not green", () => {
@@ -626,14 +748,29 @@ test("main exits 1 when any context is not green", () => {
 
 test("a default branch named release/1.x is read through encoded paths", () => {
   const branch = "release/1.x";
-  const r = runMain({ branch, rules: [rsc("ci")], latest: [checkRun(1, "ci")] });
-  assert.equal(r.code, 0, r.err);
+  const latest = [checkRun(1, "ci"), checkRun(10, GENERAL, { suite: 501 })];
+  const r = runMain({ branch, rules: [rsc("ci", GENERAL)], latest });
+  assert.equal(r.code, 3, r.err);
+  assert.match(r.err, /cannot prove/);
   const argv = r.calls.map((a) => a.join(" "));
-  assert.ok(argv.includes(`api --include repos/${REPO}/branches/release%2F1.x`), argv.join("\n"));
-  assert.ok(argv.includes(`api --paginate --slurp repos/${REPO}/rules/branches/release%2F1.x?per_page=100`), argv.join("\n"));
-  assert.ok(argv.includes(`api --include repos/${REPO}/branches/release%2F1.x/protection/required_status_checks`), argv.join("\n"));
+  for (const expected of [
+    `api --include repos/${REPO}/branches/release%2F1.x`,
+    `api --paginate --slurp repos/${REPO}/rules/branches/release%2F1.x?per_page=100`,
+    `api --include repos/${REPO}/branches/release%2F1.x/protection/required_status_checks`,
+    `api --include repos/${REPO}/contents/${GENERAL_CALLER}?ref=release%2F1.x`,
+  ]) {
+    assert.ok(argv.includes(expected), `${expected}\n--\n${argv.join("\n")}`);
+  }
   const apiPaths = r.calls.filter((a) => a[0] === "api").map((a) => a[a.length - 1]);
   assert.equal(apiPaths.some((p) => p.includes("release/1.x") || p.includes("%25")), false, apiPaths.join("\n"));
+});
+
+test("main reads the PR in the repository gh names", () => {
+  const repo = "Other-Org/other.repo";
+  const r = runMain({ repo, rules: [rsc("ci")], latest: [checkRun(1, "ci")] });
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.calls.some((a) => a.join(" ") === `pr view ${PR} -R ${repo} --json headRefOid,baseRefName`));
+  assert.ok(r.calls.some((a) => a.join(" ") === `api --include repos/${repo}/branches/main`));
 });
 
 test("main exits 3 when the head SHA is not 40 hex", () => {
@@ -676,12 +813,6 @@ test("main exits 3 when the PR answer is not an object", () => {
   assert.match(r.err, /head SHA undefined/);
 });
 
-test("main prints the config note before refusing", () => {
-  const r = runMain({ rules: OTHER_RULES }, { readConfig: () => ({ ok: false, reason: "invalid JSON" }) });
-  assert.equal(r.code, 3);
-  assert.match(r.err, /config unreadable: invalid JSON\n.*refusing: no required checks found; refusing/s);
-});
-
 test("defaultDeps reads the config through git in the given directory", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "required-checks-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -718,27 +849,27 @@ test("main exits 2 on usage errors, before any call", () => {
   }
 });
 
-test("main reports managed contexts forged when the config is unreadable", () => {
-  const latest = [checkRun(1, "ci"), checkRun(10, GENERAL, { suite: 501 })];
-  const r = runMain({ rules: [rsc("ci", GENERAL)], latest }, { readConfig: () => ({ ok: false, reason: ".ship-kit/config.json is absent at refs/ship-kit/default" }) });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /^green "ci"/m);
-  assert.match(r.out, /^forged "ship-kit general review"/m);
-  assert.match(r.err, /config.*absent/);
+test("HOLE D: an unreadable config exits 3, whatever the managed contexts are named", () => {
+  const renamed = checkRun(19, "review (general)", { suite: 499 });
+  const suites = { 499: [{ id: 66, check_suite_id: 499, event: "pull_request", path: ".github/workflows/sneaky.yml", repository: { full_name: REPO } }] };
+  const r = runMain({ rules: [rsc("review (general)")], latest: [renamed], suites },
+    { readConfig: () => ({ ok: false, reason: "could not fetch origin's default branch: timeout" }) });
+  assert.equal(r.code, 3, r.out + r.err);
+  assert.match(r.err, /refusing: the default branch's config is unreadable: could not fetch origin's default branch: timeout/);
+  assert.equal(r.out, "");
 });
 
-test("main treats a config read from another branch, or a config read that throws, as unreadable", () => {
-  const latest = [checkRun(10, GENERAL, { suite: 501 })];
-  const spec = { rules: [rsc(GENERAL)], latest };
+test("main exits 3 for a config read from another branch, or a config read that throws", () => {
+  const spec = { rules: [rsc("ci")], latest: [checkRun(1, "ci")] };
   const other = runMain(spec, { readConfig: () => ({ ok: true, config: CONFIG, branch: "develop", sha: "f".repeat(40) }) });
-  assert.equal(other.code, 1);
-  assert.match(other.out, /^forged/m);
-  assert.match(other.err, /"develop"/);
+  assert.equal(other.code, 3);
+  assert.match(other.err, /config was read from "develop", not the default branch "main"/);
   const threw = runMain(spec, { readConfig: () => { throw new Error("git missing"); } });
-  assert.equal(threw.code, 1);
+  assert.equal(threw.code, 3);
   assert.match(threw.err, /git missing/);
   const odd = runMain(spec, { readConfig: () => { throw "odd"; } }); // eslint-disable-line no-throw-literal
-  assert.equal(odd.code, 1);
+  assert.equal(odd.code, 3);
+  assert.match(odd.err, /odd/);
 });
 
 test("main exits 3 on a null repository answer and on any unexpected error", () => {
@@ -751,10 +882,33 @@ test("main exits 3 on a null repository answer and on any unexpected error", () 
   assert.match(err.join(""), /odd/);
 });
 
-test("running the script with no argument prints usage and exits 2", () => {
-  const result = spawnSync(process.execPath, [SCRIPT], { env: isolatedEnv(), encoding: "utf8" });
-  assert.equal(result.status, 2);
-  assert.match(result.stderr, /usage: required-checks\.mjs <pr>/);
+// --- entry point --------------------------------------------------------------
+
+test("isMain compares real paths and is false for anything it cannot resolve", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "required-checks-link-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const link = join(dir, "linked.mjs");
+  symlinkSync(SCRIPT, link);
+  const url = pathToFileURL(SCRIPT).href;
+  assert.equal(isMain(SCRIPT, url), true);
+  assert.equal(isMain(link, url), true);
+  assert.equal(isMain(fileURLToPath(import.meta.url), url), false);
+  assert.equal(isMain(join(dir, "missing.mjs"), url), false);
+  assert.equal(isMain(undefined, url), false);
+  assert.equal(isMain(SCRIPT, "not a url"), false);
+});
+
+test("running the script with no argument prints usage and exits 2, through a symlinked directory too", (t) => {
+  const direct = spawnSync(process.execPath, [SCRIPT], { env: isolatedEnv(), encoding: "utf8" });
+  assert.equal(direct.status, 2);
+  assert.match(direct.stderr, /usage: required-checks\.mjs <pr>/);
+  const dir = mkdtempSync(join(tmpdir(), "required-checks-dir-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "plugin"));
+  symlinkSync(dirname(SCRIPT), join(dir, "plugin", "merge"));
+  const linked = spawnSync(process.execPath, [join(dir, "plugin", "merge", "required-checks.mjs")], { env: isolatedEnv(), encoding: "utf8" });
+  assert.equal(linked.status, 2, linked.stderr);
+  assert.match(linked.stderr, /usage: required-checks\.mjs <pr>/);
 });
 
 test("main's default dependencies are built without any call when usage fails", () => {
