@@ -104,7 +104,7 @@ them before the dependent release ships.
 | F26 | `gh pr merge --admin` only skips gh's own client-side refusal for merge states `BLOCKED` and `BEHIND`; it then calls the same merge mutation, passing `--match-head-commit` as `expectedHeadOid`, and GitHub decides whether the caller may bypass. A branch ruleset's bypass list names actors (including a repository role) with `bypass_mode` `always`, `pull_request` (bypass only when merging a PR; branch rulesets only) or `exempt`; a bypass actor bypasses the rules of that ruleset. Rulesets and classic protection targeting one branch aggregate, and every applicable rule applies. | cli/cli `pkg/cmd/pr/merge/merge.go` at v2.101.0 (`blockedReason`, `expectedHeadOid`); REST description schema `repository-ruleset-bypass-actor`; docs.github.com creating rulesets (bypass, "For pull requests only") and about rulesets (rule layering) | Verified |
 | F27 | `GET /repos/{o}/{r}/collaborators/{user}/permission` returns the user's base permission and is enabled for GitHub App tokens. Which job-token permission it needs, and its answer for a private repo, are not stated. | REST description (`x-github.enabledForGitHubApps: true`) | First sentence verified; the rest UNVERIFIED, settled by the canary (public repository), the private-repo exit check for the maintainer before the tag, and its fork part for a read-only collaborator after the tag (22.8, `tests/live/private-repo-check.md`); a failed call counts as "no write access" (6.3) |
 | F28 | `permissions.blockReadsOutsideWorkingDirectories: true` makes Read, Grep, Glob and LSP refuse paths outside the working directories in every permission mode (Claude Code v2.1.257 or later); `Read` deny rules apply to Grep and Glob on a best-effort basis; `--disallowedTools "mcp__*"` removes every MCP tool. | code.claude.com/docs/en/settings-reference; permissions; cli-reference | Verified |
-| F29 | With two branch rulesets on one branch, (a) requiring the contexts with the strict up-to-date policy off and no bypass actor, and (b) requiring the same contexts with strict on and the repository admin role as a `pull_request`-mode bypass actor, an admin merge of a PR that is behind but green is accepted, and an admin merge of a PR with a red, pending or missing required context is refused by (a). The docs state that rules aggregate and that a bypass actor bypasses the rules of its ruleset (F26), but not how a per-ruleset bypass interacts with aggregation. | docs.github.com about rulesets (rule layering), creating rulesets (bypass) | UNVERIFIED. Settled by the live test `tests/live/ruleset-bypass.md` on ship-kit's own repository (22.8). Before release 2 is tagged, with one account: create both rulesets on a scratch branch pattern and record GitHub's answer to `gh pr merge --admin --match-head-commit` for (1') a behind PR with all contexts green, (2) a behind PR with one context failing, (3) one pending, (4) one missing; then add a review ruleset requiring an approval, with no bypass, and record (5) a behind, green PR without the required approval. After the tag, as release 2's last item, with a second account: record (1) a behind PR with all contexts green and approved. Record the `mergeStateStatus` the bypass actor sees for (1') and (1). Expected: (1') and (1) merge, (2) to (5) refused. If any of (2) to (5) merges, setup never adds the bypass to (b), admin merge is unavailable, and 16.4 says so |
+| F29 | With two branch rulesets on one branch, (a) requiring the contexts with the strict up-to-date policy off and no bypass actor, and (b) requiring the same contexts with strict on and the repository admin role as a `pull_request`-mode bypass actor, an admin merge of a PR that is behind but green is accepted, and an admin merge of a PR with a red, pending or missing required context is refused by (a). The docs state that rules aggregate and that a bypass actor bypasses the rules of its ruleset (F26), but not how a per-ruleset bypass interacts with aggregation. | docs.github.com about rulesets (rule layering), creating rulesets (bypass) | UNVERIFIED; release 2 (0.2.0) ships with F29 unverified, like F14 and F17, because nothing in release 2 grants a bypass actor or runs an admin merge. Settled by the live test `tests/live/ruleset-bypass.md`, run before PR 6.2 (22.6, 22.8) in a throwaway public repository under the maintainer's account, not on ship-kit: create both rulesets on a scratch branch and record GitHub's answer to `gh pr merge --admin --match-head-commit` for (1') a behind PR with all contexts green, (2) a behind PR with one context failing, (3) one pending, (4) one missing; then add a review ruleset requiring an approval, with no bypass, and record (5) a behind, green PR without the required approval and, with a second account approving, (1) a behind PR with all contexts green and approved. Record the `mergeStateStatus` the bypass actor sees for (1') and (1). Expected: (1') and (1) merge, (2) to (5) refused. If any of (2) to (5) merges, setup never adds the bypass to (b), admin merge is unavailable, and 16.4 says so |
 
 ---
 
@@ -328,7 +328,7 @@ halves with different lifetimes:
       "design": ".ship-kit/hunt-lists/design.md"
     },
     "override": { "label": "ship-kit-override", "minPermission": "write" },
-    "promotion": { "cleanRuns": 5, "falsePositiveLabel": "ship-kit-false-positive" }
+    "promotion": { "cleanRuns": 5, "falsePositiveLabel": "ship-kit-false-positive", "confirmedLabel": "ship-kit-confirmed" }
   },
   "coverage": {
     "mode": "shadow",
@@ -437,10 +437,11 @@ Two booleans, both answers to setup questions (19.3):
   `measuring-coverage-baseline` (12.4) and `mining-defect-shapes` (18.3,
   from release 2). A normal merge counts because it publishes to the
   default branch, which is a push by another route.
-- `agents.adminMerge` (default `false`), asked after it, governs the one
-  admin step, `gh pr merge --admin` inside `/ship-kit:merge` (16.4). When
-  it is not `true`, agents never use `--admin` or change protection; they
-  report that an admin merge is needed and stop.
+- `agents.adminMerge` (default `false`), asked after it only when the
+  repository chooses the strict up-to-date policy (19.3 step 4), governs
+  the one admin step, `gh pr merge --admin` inside `/ship-kit:merge`
+  (16.4). When it is not `true`, agents never use `--admin` or change
+  protection; they report that an admin merge is needed and stop.
 
 **These are a behavioural contract, not a security boundary.** A local
 agent runs with the user's own `gh` credentials, and nothing on the
@@ -768,13 +769,21 @@ characters that appear nowhere else in the repository.
 `plugin.json`, regenerates every token; `tests/skills/marker.test.mjs`
 fails when a marker's version differs from `plugin.json` or two tokens
 match. Aggregate reads the expected marker from `src/`, which no seat can
-read (6.3), and the seat's readable directories hold no expected value.
+read (6.3). The seat's readable directories can still hold the expected
+value: the token is public in the released SKILL.md, so a PR can plant
+it anywhere in its own tree, which the seat reads under `pr/`. What keeps
+a planted token from answering for an unloaded skill is the contract's
+wording, not the directory layout: a seat takes every verdict field from
+its seat skill and `review/contract/`, never from PR content, and copies
+`skill_marker` only from its seat skill's text
+(`review/contract/output.md`, `review/contract/untrusted-data.md`).
 
 Why both fields, and why this closes a seat that never loaded its skill:
 the nonce alone is not enough, because it sits in `review/contract/output.md`,
 which a model given only the literal prompt text and the schema could
-find by listing the directory it was named. The marker token exists only
-in the SKILL.md text, which reaches the model only when the skill loads;
+find by listing the directory it was named. Among the files a seat takes
+instructions from, the marker token exists only in the SKILL.md text,
+which reaches the model only when the skill loads;
 the ship-kit version string alone would not do, because the adopting
 repo's config and caller comments carry it. A seat that loaded an older
 ship-kit (F25) returns that release's token. The nonce adds that this
@@ -1139,7 +1148,10 @@ markers on merged PRs, newest first, and counts consecutive PRs where the
 seat ran complete and the PR does not carry
 `review.promotion.falsePositiveLabel`. The maintainer adds that label when
 judging a shadow finding false; the judgment stays human, the record
-stays mechanical. At `review.promotion.cleanRuns` (default 5, the owner's
+stays mechanical. The maintainer adds `review.promotion.confirmedLabel`
+(default `ship-kit-confirmed`) when judging a seat's blocking finding
+real, so that PR still counts as clean; the false-positive label wins over
+it. At `review.promotion.cleanRuns` (default 5, the owner's
 bar) the skill proposes a one-line config change to `required` as a PR,
 committing and pushing it under 5.4.
 The same skill promotes the coverage gate (12.4).
@@ -1874,12 +1886,20 @@ covering the lines between. The config carries `shipKit.version` and
    ignored (`git check-ignore`).
 4. **Ask** for every config key the detection could not settle (5.1's
    per-repo list), including "Allow agents to commit and push without
-   asking?" (default yes, stored as `agents.commitAndPush`) and, as its
-   own question after it, "Allow agents to admin-merge a PR when every
-   required check is green on its head and the only thing GitHub refuses
-   is that the branch is not up to date?" (default no, stored as
-   `agents.adminMerge`) (5.4, 16.4). Both are explained as instructions
-   the skills follow, not as access control (5.4).
+   asking?" (default yes, stored as `agents.commitAndPush`), then
+   "Should a pull request be up to date with the default branch before it
+   can merge (the strict policy)?" (default no; it decides whether step 8
+   offers the up-to-date ruleset and is not stored in the config) and,
+   only on a yes, as its own question after it, "Allow agents to
+   admin-merge a PR when every required check is green on its head and
+   the only thing GitHub refuses is that the branch is not up to date?"
+   (default no, stored as `agents.adminMerge`) (5.4, 16.4), introduced by
+   one sentence: with strict off, a green PR that is behind the default
+   branch merges normally, so the maintainer's own merges need no admin
+   bypass. On a no to the strict question, the admin-merge question is
+   not asked and `agents.adminMerge` keeps its default `false`. Both
+   agent questions are explained as instructions the skills follow, not
+   as access control (5.4).
 5. **Render** everything into a staging dir under the git dir: config,
    callers, preflight, pre-push, seed hunt lists, CLAUDE.md block, coverage
    block, `.claude/settings.json` merge, `.gitignore` negations.
@@ -1899,25 +1919,28 @@ covering the lines between. The config carries `shipKit.version` and
      require code-owner review;
    - create the override and false-positive labels;
    - protect the default branch with branch rulesets, recommended over
-     classic protection (PR 2.5 offers the checks and review rulesets;
-     PR 6.2 adds the up-to-date ruleset and the offer to migrate classic
-     protection):
+     classic protection. By default setup recommends and offers two
+     rulesets, and no up-to-date ruleset:
      - **checks**: the `required_status_checks` rule with the required
        contexts (6.6), strict up-to-date policy **off**, no bypass actor;
      - **review**: the pull-request rule (approvals, code-owner review)
-       and any other rules, no bypass actor;
-     - **up-to-date**, only when the repo wants the strict policy: the
-       same contexts with strict **on**. It has the repository admin role
-       as a bypass actor in `pull_request` mode (F26) only when
-       `agents.adminMerge` is true, and no bypass actor otherwise. Setup
-       names it `ship-kit up-to-date` (16.4 looks it up by that name).
+       and any other rules, no bypass actor.
+     With strict off, a green PR that is behind the default branch merges
+     normally, so the maintainer's own merges need no admin bypass. Only
+     when the repository chose the strict policy (step 4) does setup also
+     offer:
+     - **up-to-date**: the same contexts with strict **on**, named
+       `ship-kit up-to-date` (16.4 looks it up by that name), with no
+       bypass actor; from PR 6.2 setup adds the repository admin role as
+       a bypass actor in `pull_request` mode (F26) when
+       `agents.adminMerge` is true. PR 6.2 also adds the offer to migrate
+       classic protection.
      Because no ruleset holding the contexts or the reviews has a bypass
      actor, bypassing the up-to-date ruleset skips only the up-to-date
-     requirement (F29, whose single-account live cases gate release 2 and
-     whose approved-PR case runs after the tag as release 2's last item
-     (22.8); if any case fails,
-     setup never adds the bypass, still creates the ruleset when the repo
-     wants the strict policy, and admin merge is unavailable). A
+     requirement (F29, whose live test runs before PR 6.2 in a throwaway
+     public repository (22.8); if any case fails, setup never adds the
+     bypass, still creates the ruleset when the repo wants the strict
+     policy, and admin merge is unavailable). A
      maintainer who keeps classic protection keeps normal agent merges;
      admin merge is then unavailable (16.4). A maintainer who adds a
      bypass actor to the checks or review ruleset widens what GitHub lets
@@ -1935,7 +1958,13 @@ covering the lines between. The config carries `shipKit.version` and
      token without the Administration permission can still use its
      user's role bypass is undocumented;
    - in an organization on GitHub Enterprise Cloud, the option of an
-     organization ruleset that requires the callers as workflows (F20).
+     organization ruleset that requires the callers as workflows (F20);
+   - for an organization-owned repository, GitHub merge queue as the
+     principled alternative to the strict policy: it tests each PR
+     against the current default branch with no bypass (merge queues are
+     available to organization-owned repositories only, public ones or
+     private ones on GitHub Enterprise Cloud); ship-kit's callers run on
+     `pull_request_target`, not `merge_group`, and the README says so.
 
 Setup never commits or pushes. Because callers run from the default
 branch (F18), the callers a setup or update PR adds or changes first run on
@@ -2286,7 +2315,7 @@ While ship-kit is 0.x, a breaking change bumps the minor version.
 | 2.2 | `scripts/review/{review-mode,plan,aggregate}.mjs` ported and generalized (trusted-SHA inputs, `$RUNNER_TEMP` layout, nonce and marker checks, `trustState`), suites ported | scripts not yet called by any workflow | M | 2 |
 | 2.3 | `reviewing-for-correctness`, `hunting-defect-shapes` (each with its `skill_marker` line), `review/contract/*`, `tests/skills/marker.test.mjs` | dmi skills, invisible until named | L | 2 |
 | 2.4 | `.github/workflows/review.yml` (6.3), `templates/callers/review.yml`, `templates/blocks/gate-step.sh`, gate test, `review-yml` test, ship-kit's canary caller; passes `check-template-secrets` | untagged; only ship-kit's non-required canary calls it | L | 3 |
-| 2.5 | `skills/setup` + `scripts/setup/*` (pin resolution, install, check, update, settings merge, gitignore, both agent questions, the manual steps in 19.3 with the checks and review rulesets and no bypass actor) + `scripts/lib/agent-policy.mjs` (incl. `--admin`) + `scripts/merge/required-checks.mjs` (used by detection) + CLAUDE.md block template + fixture tests | writes only after a shown diff; refuses an untagged plugin | M | 4 |
+| 2.5 | `skills/setup` + `scripts/setup/*` (pin resolution, install, check, update, settings merge, gitignore, the agent questions (the admin-merge one only when the strict policy is chosen, 19.3 step 4), the manual steps in 19.3 with the checks and review rulesets and, only when the strict policy is chosen, the up-to-date ruleset, none with a bypass actor) + `scripts/lib/agent-policy.mjs` (incl. `--admin`) + `scripts/merge/required-checks.mjs` (used by detection) + CLAUDE.md block template + fixture tests | writes only after a shown diff; refuses an untagged plugin | M | 4 |
 | 2.6 | `promoting-shadow-checks` + `scripts/promote/shadow-record.mjs`; mining gains config-derived list paths, `trustState` filtering and its commit/PR step under 5.4 (18.1, 18.3); version 0.2.0 | proposes PRs under 5.4, whose code landed in 2.5 | S | 5 |
 
 After the 0.2.0 tag: on ship-kit, an admin adds the Actions event policy
@@ -2326,7 +2355,7 @@ only the callers already on the default branch).
 | PR | Content | Safe alone because | Tier | Wave |
 |---|---|---|---|---|
 | 6.1 | `/ship-kit:ci-watch` + pressure tests incl. the ask path and full re-runs (6.5) | capped, never merges, pushes under 5.4 | L | 1 |
-| 6.2 | `/ship-kit:merge`, `scripts/merge/merge.mjs`, `admin-tripwire.mjs` and its `hooks.json` entry, setup's up-to-date ruleset (bypass only under `agents.adminMerge`) and classic-to-ruleset migration offer, `tests/merge/*`, `tests/hooks/admin-tripwire.test.mjs`; version 1.0.0 | normal merges only of green, provenance-checked PRs under 5.4; the admin step needs `agents.adminMerge` true (default false), a `BEHIND` state, no classic protection, and a bypass GitHub itself grants; nothing changes protection | M | 1 |
+| 6.2 | `/ship-kit:merge`, `scripts/merge/merge.mjs`, `admin-tripwire.mjs` and its `hooks.json` entry, the admin bypass actor on setup's up-to-date ruleset (only under `agents.adminMerge`, after F29's live test is recorded, 22.8) and the classic-to-ruleset migration offer, `tests/merge/*`, `tests/hooks/admin-tripwire.test.mjs`; version 1.0.0 | normal merges only of green, provenance-checked PRs under 5.4; the admin step needs `agents.adminMerge` true (default false), a `BEHIND` state, no classic protection, and a bypass GitHub itself grants; nothing changes protection | M | 1 |
 
 ### 22.7 Why this order
 
@@ -2346,14 +2375,16 @@ branch) whose caller pins the release candidate by an owner-approved
 pre-release tag `ship-kit--v<version>-rc.<n>`, which the tag check
 accepts; its plan and seats must fetch the PR head and produce receipts,
 and a re-run and a maintainer's close and reopen of the maintainer's own
-PR must each be decided by the newer run (F21); the single-account cases
-of the live ruleset test `tests/live/ruleset-bypass.md` (F29) recorded
-with their expected outcomes; and `gitleaks` is green on the release
-commit. Checks that need a second account (F29's approved-PR case, and a
-fork PR by a read-only collaborator in that private repository going
-from `needs-maintainer` to green after an approval comment and a
+PR must each be decided by the newer run (F21); and `gitleaks` is green
+on the release commit. Checks that need a second account (a fork PR by
+a read-only collaborator in that private repository going from
+`needs-maintainer` to green after an approval comment and a
 maintainer's close and reopen, F21 and F27) are release 2's last item
-and run after the tag; a defect they find ships as 0.2.1.
+and run after the tag; a defect they find ships as 0.2.1. F29 is not
+settled for release 2, which ships with it UNVERIFIED like F14 and F17:
+its live test (F29's status cell), every case including the approved-PR
+one, runs before PR 6.2 in a throwaway public repository under the
+maintainer's account and gates release 6.
 
 ### 22.9 Implementation notes
 

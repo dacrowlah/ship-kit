@@ -1,0 +1,671 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ship-kit configuration (.ship-kit/config.json)",
+  "description": "The only definition of the config's shape (design 5.2). Every object refuses unknown keys; every key but schemaVersion and shipKit has a default.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "shipKit"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "shipKit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "sha"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(-rc\\.[1-9]\\d*)?$"
+        },
+        "sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "oauth",
+                "api-key"
+              ],
+              "default": "oauth"
+            },
+            "secret": {
+              "type": "string",
+              "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$",
+              "default": "CLAUDE_CODE_OAUTH_TOKEN"
+            }
+          },
+          "default": {}
+        },
+        "runners": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "plan": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+              },
+              "default": [
+                "ubuntu-latest"
+              ]
+            },
+            "seat": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+              },
+              "default": [
+                "ubuntu-latest"
+              ]
+            },
+            "aggregate": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+              },
+              "default": [
+                "ubuntu-latest"
+              ]
+            },
+            "gate": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+              },
+              "default": [
+                "ubuntu-latest"
+              ]
+            }
+          },
+          "default": {}
+        },
+        "bootWorkflow": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "pattern": "^\\./\\.github/workflows/[A-Za-z0-9._-]+\\.ya?ml$",
+          "default": null
+        },
+        "seats": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "enum": [
+              "general",
+              "adversarial",
+              "security",
+              "test-integrity"
+            ]
+          },
+          "default": [
+            "general",
+            "adversarial"
+          ]
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "general": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "default": "ship-kit general review"
+            },
+            "adversarial": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "default": "ship-kit adversarial review"
+            },
+            "security": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "default": "ship-kit security review"
+            },
+            "test-integrity": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "default": "ship-kit test-integrity review"
+            },
+            "coverage": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "default": "ship-kit patch coverage"
+            },
+            "change-class": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$",
+              "default": "ship-kit change class"
+            }
+          },
+          "default": {}
+        },
+        "coverageWorkflow": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "pattern": "^(?:\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*/)*\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$",
+          "default": null
+        },
+        "changeClassCheck": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "default": {}
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "specDirs": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^(?:\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*/)+$"
+          },
+          "default": []
+        },
+        "planDirs": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^(?:\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*/)+$"
+          },
+          "default": []
+        },
+        "seats": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "general": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "required",
+                    "shadow"
+                  ],
+                  "default": "required"
+                },
+                "model": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "default": null
+                }
+              },
+              "default": {}
+            },
+            "adversarial": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "required",
+                    "shadow"
+                  ],
+                  "default": "shadow"
+                },
+                "model": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "default": null
+                }
+              },
+              "default": {}
+            },
+            "security": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "required",
+                    "shadow"
+                  ],
+                  "default": "shadow"
+                },
+                "model": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "default": null
+                }
+              },
+              "default": {}
+            },
+            "test-integrity": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "required",
+                    "shadow"
+                  ],
+                  "default": "shadow"
+                },
+                "model": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "pattern": "^[A-Za-z0-9._\\[\\]-]{1,100}$",
+                  "default": null
+                }
+              },
+              "default": {}
+            }
+          },
+          "default": {}
+        },
+        "maxSeats": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 12
+        },
+        "targetLines": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 100000,
+          "default": 1500
+        },
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 500,
+          "default": 120
+        },
+        "huntLists": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string",
+              "maxLength": 1000,
+              "pattern": "^(?:\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*/)*\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$",
+              "default": ".ship-kit/hunt-lists/code.md"
+            },
+            "design": {
+              "type": "string",
+              "maxLength": 1000,
+              "pattern": "^(?:\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*/)*\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$",
+              "default": ".ship-kit/hunt-lists/design.md"
+            }
+          },
+          "default": {}
+        },
+        "override": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,49}$",
+              "default": "ship-kit-override"
+            },
+            "minPermission": {
+              "type": "string",
+              "enum": [
+                "write",
+                "maintain",
+                "admin"
+              ],
+              "default": "write"
+            }
+          },
+          "default": {}
+        },
+        "promotion": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cleanRuns": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 5
+            },
+            "falsePositiveLabel": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,49}$",
+              "default": "ship-kit-false-positive"
+            },
+            "confirmedLabel": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,49}$",
+              "default": "ship-kit-confirmed"
+            }
+          },
+          "default": {}
+        }
+      },
+      "default": {}
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "shadow",
+            "required"
+          ],
+          "default": "shadow"
+        },
+        "include": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^[A-Za-z0-9._*?-]+(?:/[A-Za-z0-9._*?-]+)*$"
+          },
+          "default": [
+            "src/**"
+          ]
+        },
+        "exclude": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^[A-Za-z0-9._*?-]+(?:/[A-Za-z0-9._*?-]+)*$"
+          },
+          "default": []
+        },
+        "threshold": {
+          "type": [
+            "null",
+            "number"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "default": null
+        },
+        "baseline": {
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "prs",
+            "percentile",
+            "computed"
+          ],
+          "properties": {
+            "prs": {
+              "type": "array",
+              "maxItems": 1000,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "percentile": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 99
+            },
+            "computed": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            }
+          },
+          "default": null
+        }
+      },
+      "default": {}
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "type": "array",
+          "maxItems": 50,
+          "default": [],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "tier",
+              "run"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,39}$"
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "fast",
+                  "full"
+                ]
+              },
+              "run": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "items": {
+                  "type": "string",
+                  "maxLength": 1000
+                }
+              },
+              "requires": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,39}$"
+                },
+                "default": []
+              }
+            }
+          }
+        },
+        "prerequisites": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,39}$"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "default": {}
+        },
+        "prePushTier": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "full"
+          ],
+          "default": "full"
+        }
+      },
+      "default": {}
+    },
+    "classify": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trivial": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^[A-Za-z0-9._*?-]+(?:/[A-Za-z0-9._*?-]+)*$"
+          },
+          "default": [
+            "**/*.md",
+            "docs/**"
+          ]
+        },
+        "hub": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^[A-Za-z0-9._*?-]+(?:/[A-Za-z0-9._*?-]+)*$"
+          },
+          "default": []
+        },
+        "hubRequires": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "enum": [
+              "spec",
+              "plan"
+            ]
+          },
+          "default": [
+            "spec",
+            "plan"
+          ]
+        }
+      },
+      "default": {}
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commitAndPush": {
+          "type": "boolean",
+          "default": true
+        },
+        "adminMerge": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "default": {}
+    },
+    "ship": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 5
+        }
+      },
+      "default": {}
+    },
+    "ciWatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        },
+        "pollSeconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600,
+          "default": 30
+        }
+      },
+      "default": {}
+    },
+    "merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "squash",
+            "merge",
+            "rebase"
+          ],
+          "default": "squash"
+        },
+        "humanOnlyPaths": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^[A-Za-z0-9._*?-]+(?:/[A-Za-z0-9._*?-]+)*$"
+          },
+          "default": []
+        }
+      },
+      "default": {}
+    }
+  }
+}

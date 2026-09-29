@@ -1,0 +1,7 @@
+{
+  "extraKnownMarketplaces": {
+    "ship-kit": { "source": { "source": "github", "repo": "dacrowlah/ship-kit", "ref": "ship-kit--v0.1.0" } },
+    "claude-plugins-official": { "source": { "source": "github", "repo": "anthropics/claude-plugins-official" } }
+  },
+  "enabledPlugins": { "ship-kit@ship-kit": true }
+}
