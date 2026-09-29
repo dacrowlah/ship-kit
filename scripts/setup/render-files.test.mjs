@@ -21,7 +21,9 @@ import {
   TEMPLATE_MANIFEST,
   TEMPLATE_ROLES,
   callerValues,
+  checkDefaultBranch,
   claudeMdBlock,
+  isRenderableDefaultBranch,
   mergeSettings,
   readTemplate,
   renderCallerFile,
@@ -95,7 +97,7 @@ test("the manifest lists exactly the files under templates/", () => {
 
 test("only workflow entries are destined for .github/, and every one is in the registry", () => {
   for (const item of TEMPLATE_MANIFEST) {
-    const underGithub = item.destination !== null && item.destination.startsWith(".github/");
+    const underGithub = item.destination !== null && item.destination.toLowerCase().startsWith(".github/");
     assert.equal(item.role === "workflow", underGithub, `${item.template}: role ${item.role}, destination ${item.destination}`);
     if (item.role === "workflow") {
       assert.ok(item.destination.startsWith(".github/workflows/"), item.template);
@@ -111,6 +113,20 @@ test("readTemplate reads a listed template and refuses a name the manifest does 
   }
 });
 
+test("a template file with CRLF line endings is read as LF, so a Windows checkout renders the same files", () => {
+  const crlf = (text) => text.replace(/\n/g, "\r\n");
+  const replacements = Object.fromEntries(
+    TEMPLATE_MANIFEST.map((item) => [item.template, crlf(readFileSync(join(REPO, item.path), "utf8"))]),
+  );
+  withPluginRoot(replacements, (root) => {
+    assert.equal(readTemplate(root, "blocks/gate-step.sh"), gateScriptText());
+    const converted = install({ pluginRoot: root, repo: repoOf({}, { claudeIgnored: true }) });
+    const original = install({ repo: repoOf({}, { claudeIgnored: true }) });
+    assert.deepEqual([...converted], [...original]);
+    for (const { content: text } of converted.values()) assert.equal(text.includes("\r"), false);
+  });
+});
+
 test("a full install uses every manifest entry: no listed template is dead, and no output comes from an unlisted one", () => {
   const result = install({ config: answers({ render: { seats: ["general", "adversarial", "security", "test-integrity"] } }), repo: repoOf({}, { claudeIgnored: true }) });
   const used = new Set([...result.values()].map((item) => item.template).filter((template) => template !== null));
@@ -118,7 +134,7 @@ test("a full install uses every manifest entry: no listed template is dead, and 
   assert.deepEqual([...used, ...fragments].sort(), TEMPLATE_MANIFEST.map((item) => item.template).sort());
   const workflowTemplates = new Set(TEMPLATE_MANIFEST.filter((item) => item.role === "workflow").map((item) => item.template));
   for (const [path, item] of result) {
-    if (path.startsWith(".github/")) assert.ok(workflowTemplates.has(item.template), `${path} is not rendered from a manifest workflow`);
+    if (path.toLowerCase().startsWith(".github/")) assert.ok(workflowTemplates.has(item.template), `${path} is not rendered from a manifest workflow`);
   }
 });
 
@@ -315,17 +331,65 @@ for (const branch of ACCEPTED_BRANCHES) {
   });
 }
 
+// The config schema admits exactly the check names the caller can write as a
+// plain scalar; the renderer relies on it rather than repeating the rule.
 test("callerValues refuses a check name that would not survive YAML as written", () => {
-  for (const name of ["ship-kit review ", "1st review", "true", "No", "9"]) {
+  for (const name of ["ship-kit review ", "1st review", "true", "No", "9", "y", "NULL"]) {
     const args = callerArgs(NO_BOOT);
     args.config.render.checks = { general: name };
-    refused(() => callerValues(args), /render\.checks\.general .* must start with a letter/);
+    refused(() => callerValues(args), /config is invalid: .*\/render\/checks\/general must match pattern/);
   }
+});
+
+test("callerValues refuses a secret name that is an expression, not an identifier", () => {
+  for (const secret of ["X || github.event.pull_request.title", "X || GITHUB.EVENT.PULL_REQUEST.TITLE", "X }}", "X Y", "GITHUB_TOKEN"]) {
+    const args = callerArgs(NO_BOOT);
+    args.config.render.auth = { kind: "oauth", secret };
+    refused(() => callerValues(args), /config is invalid: .*\/render\/auth\/secret must match pattern/);
+  }
+});
+
+// API-key auth must name its secret: the loader's default secret belongs to
+// the OAuth kind, and pairing it with an API key sends the wrong credential.
+test("api-key auth without a secret is refused, never rendered with the OAuth secret", () => {
+  for (const auth of [{ kind: "api-key" }, { kind: "oauth" }, { secret: "ANTHROPIC_API_KEY" }]) {
+    const args = callerArgs(NO_BOOT);
+    args.config.render.auth = auth;
+    refused(() => callerValues(args), /config is invalid: .*\/render\/auth\/(secret|kind) is required/);
+    refused(() => install({ config: answers({ render: { auth } }) }), /config is invalid: .*\/render\/auth\/(secret|kind) is required/);
+  }
+});
+
+test("api-key auth with its secret renders the API key input and secret, in the header and the call", () => {
+  const config = answers({ render: { auth: { kind: "api-key", secret: "ANTHROPIC_API_KEY" }, seats: ["general"] } });
+  const file = content(install({ config }), ".github/workflows/ship-kit-general.yml");
+  assert.ok(file.includes("# Requires the repository secret ANTHROPIC_API_KEY (Anthropic API key).\n"));
+  assert.ok(file.includes("      anthropic_api_key: $" + "{{ secrets.ANTHROPIC_API_KEY }}\n"));
+  assert.equal(file.includes("CLAUDE_CODE_OAUTH_TOKEN"), false);
+  assert.equal(file.includes("claude_code_oauth_token"), false);
+});
+
+test("the default auth is the OAuth kind with its own secret", () => {
+  const file = content(install({ config: answers({ render: { seats: ["general"] } }) }), ".github/workflows/ship-kit-general.yml");
+  assert.ok(file.includes("# Requires the repository secret CLAUDE_CODE_OAUTH_TOKEN (OAuth token for Claude Code).\n"));
+  assert.ok(file.includes("      claude_code_oauth_token: $" + "{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n"));
+});
+
+// -- the default branch check, exported for detection ------------------------
+
+test("checkDefaultBranch returns an accepted name and throws the setup error for a refused one", () => {
+  for (const branch of ACCEPTED_BRANCHES) assert.equal(checkDefaultBranch(branch), branch);
+  for (const branch of REFUSED_BRANCHES) refused(() => checkDefaultBranch(branch), /default branch .* cannot be written into a branch filter/);
+});
+
+test("isRenderableDefaultBranch answers the same question without throwing", () => {
+  for (const branch of ACCEPTED_BRANCHES) assert.equal(isRenderableDefaultBranch(branch), true, branch);
+  for (const branch of REFUSED_BRANCHES) assert.equal(isRenderableDefaultBranch(branch), false, String(branch));
 });
 
 // -- renderCallerFile -----------------------------------------------------
 
-test("a rendered caller equals Task 20's render of its fixture byte for byte", () => {
+test("a rendered caller equals the original render of its fixture byte for byte", () => {
   assert.equal(renderCaller(NO_BOOT), golden("ship-kit-general.yml"));
   assert.equal(renderCaller(BOOT), golden("ship-kit-adversarial.yml"));
 });
@@ -384,12 +448,12 @@ test("a repository whose .claude/ is ignored also gets the .gitignore block, las
 
 test("the seats setup renders follow render.seats", () => {
   const result = install({ config: answers({ render: { seats: ["security"] } }) });
-  const callers = [...result.keys()].filter((path) => path.startsWith(".github/"));
+  const callers = [...result.keys()].filter((path) => path.toLowerCase().startsWith(".github/"));
   assert.deepEqual(callers, [".github/workflows/ship-kit-security.yml"]);
   assert.equal(parseYaml(content(result, callers[0])).jobs.gate.name, "ship-kit security review");
 });
 
-test("each caller reads as a current managed file, and equals Task 20's fixture render byte for byte", () => {
+test("each caller reads as a current managed file, and equals the original fixture render byte for byte", () => {
   for (const [fixtureValues, name] of [[NO_BOOT, "ship-kit-general.yml"], [BOOT, "ship-kit-adversarial.yml"]]) {
     const args = callerArgs(fixtureValues);
     const result = renderInstall({ config: args.config, pin: args.pin, repo: repoOf({}, { defaultBranch: fixtureValues.default_branch }), pluginRoot: REPO });
@@ -537,6 +601,16 @@ test("a hunt list path that would land on another installed file, or inside a di
   for (const path of [".git/hooks/pre-push", ".GIT/config", ".github/notes.md", ".githooks/list.md", ".claude/list.md", "docs/.git/list.md"]) {
     refused(() => collide({ code: path }), /is inside a directory setup manages/);
   }
+});
+
+// Windows drops a trailing dot from a path segment, so `.git./hooks/x` is
+// `.git/hooks/x` there and `CLAUDE.md.` is `CLAUDE.md`.
+test("a hunt list path with a segment ending in a dot is refused", () => {
+  const collide = (path) => install({ config: answers({ review: { huntLists: { code: path } } }), repo: repoOf({ [path]: null }) });
+  for (const path of [".git./hooks/pre-push", ".github./workflows/x.yml", ".claude./settings.json", ".githooks./x.md", "CLAUDE.md.", "docs./list.md", "a./b./c.md", ".ship-kit/config.json."]) {
+    refused(() => collide(path), /has a path segment ending in "\."/);
+  }
+  assert.doesNotThrow(() => collide("docs/list.v1.md"));
 });
 
 test("a seed template that holds an unrendered placeholder is refused", () => {
@@ -749,6 +823,18 @@ test("markers work after any list marker or none, and only at the start of a lin
   assert.equal(claudeMdBlock(template, "0.2.0"), "a note about the [since 0.3.0] marker stays as written\n");
 });
 
+test("a marker that is nearly right is refused rather than kept as text: case, spacing, tabs", () => {
+  for (const line of ["- [Since 0.3.0] case", "[SINCE 0.3.0] case", "-  [since 0.3.0] two spaces", "-\t[since 0.3.0] tab", "1.  [since 0.3.0] numbered"]) {
+    refused(() => claudeMdBlock(`ok\n${line}\n`, "0.3.0"), /line 2 has a malformed \[since X\.Y\.Z\] marker/);
+    refused(() => claudeMdBlock(`ok\n${line}\n`, "0.2.0"), /line 2 has a malformed \[since X\.Y\.Z\] marker/);
+  }
+});
+
+test("an indented marker without a list marker is a marker", () => {
+  assert.equal(claudeMdBlock("  [since 0.3.0] indented\n", "0.3.0"), "  indented\n");
+  assert.equal(claudeMdBlock("  [since 0.3.0] indented\n", "0.2.0"), "");
+});
+
 test("a malformed marker line is refused with its line number", () => {
   for (const line of ["- [since 0.3] short", "- [since v0.3.0] prefixed", "- [since 0.3.0]no space", "- [since 0.3.0]", "[since ] empty", "- [since 0.3.0-rc.1] prerelease"]) {
     refused(() => claudeMdBlock(`ok\n${line}\n`, "0.3.0"), /line 2 has a malformed \[since X\.Y\.Z\] marker/);
@@ -804,6 +890,24 @@ test("unrelated keys, marketplaces and plugins are kept, in their order", () => 
   assert.deepEqual(merged.permissions, { allow: ["Bash(git status)"] });
   assert.deepEqual(Object.keys(merged.extraKnownMarketplaces), ["mine", "ship-kit", "claude-plugins-official"]);
   assert.deepEqual(merged.enabledPlugins, { "mine@mine": true, "off@mine": false, "ship-kit@ship-kit": true });
+});
+
+// The ship-kit entry is the pin setup owns; claude-plugins-official is only
+// declared so the superpowers dependency resolves, so an entry the adopter
+// already has (their own mirror, ref or sha) is theirs and stays as written.
+test("an existing claude-plugins-official entry is left as the user wrote it, whatever its shape", () => {
+  for (const entry of [
+    { source: { source: "github", repo: "anthropics/claude-plugins-official", ref: "stable", sha: SHA_B }, autoUpdate: false },
+    { source: { source: "git", url: "https://mirror.example.invalid/claude-plugins-official.git" } },
+    "custom",
+    null,
+  ]) {
+    const existing = JSON.stringify({ extraKnownMarketplaces: { "claude-plugins-official": entry } });
+    const merged = JSON.parse(mergeSettings(existing, PIN, { withRef: true }));
+    assert.deepEqual(merged.extraKnownMarketplaces["claude-plugins-official"], entry);
+    assert.deepEqual(merged.extraKnownMarketplaces["ship-kit"], SHIP_KIT_SOURCE);
+    assert.deepEqual(Object.keys(merged.extraKnownMarketplaces), ["claude-plugins-official", "ship-kit"]);
+  }
 });
 
 test("an existing ship-kit entry is replaced whole, so no stale ref or sha lingers, and a disabled plugin is enabled", () => {

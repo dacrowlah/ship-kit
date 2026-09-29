@@ -16,10 +16,18 @@
 //     the directory listing and every workflow entry to be in the registry, so
 //     a template nobody listed cannot reach an adopter or slip past a gate.
 //   - Every value passes through `render()`, which refuses an expression
-//     opener, so a config-derived value can never become a live expression.
-// Values that land in YAML positions are validated here as well: the default
-// branch reaches a branch filter (where `+`, `!` and friends change the
-// pattern's meaning) and a flow sequence, so only names that are plain
+//     opener, a control or line-break character, and any output with more
+//     openers than its template. That keeps a value from adding an
+//     expression of its own; it does not make a value safe in the template's
+//     one expression position, `${{ secrets.<<secret>> }}`, where a value with
+//     spaces or `||` would still be a live expression. There the config
+//     schema is the guard (an upper-case identifier), and
+//     tests/lib/config.test.mjs and this file's tests pin that.
+// Values that land in YAML positions are checked before they are rendered.
+// The config schema admits only check names, runner labels, secrets and boot
+// paths that are plain scalars; the default branch is checked here, because
+// it reaches a branch filter (where `+`, `!` and friends change the
+// pattern's meaning) inside a flow sequence, so only names that are plain
 // strings in both are accepted.
 
 import { readFileSync } from "node:fs";
@@ -123,11 +131,22 @@ function checkPin(pin) {
 }
 
 /**
+ * Whether a default branch name can be written into the caller's branch
+ * filter. Detection can ask this before it asks the user anything else.
+ * @param {unknown} name
+ * @returns {boolean}
+ */
+export function isRenderableDefaultBranch(name) {
+  return typeof name === "string" && FILTER_SAFE_BRANCH.test(name) && !YAML_WORD.test(name);
+}
+
+/**
  * @param {unknown} name
  * @returns {string} name, when it can be written into a branch filter
+ * @throws {RenderFilesError} naming the rule, when it cannot
  */
-function checkDefaultBranch(name) {
-  if (typeof name !== "string" || !FILTER_SAFE_BRANCH.test(name) || YAML_WORD.test(name)) {
+export function checkDefaultBranch(name) {
+  if (!isRenderableDefaultBranch(name)) {
     throw new RenderFilesError(
       `default branch ${show(name)} cannot be written into a branch filter: it must start with a letter, use only letters, digits, ".", "_", "-" and "/", and not read as a YAML keyword`,
     );
@@ -186,10 +205,6 @@ export function callerValues({ config, seat, pin, defaultBranch, gateScript }) {
   if (typeof gateScript !== "string" || gateScript.trim() === "") {
     throw new RenderFilesError("gateScript must be the gate fragment's text; an empty gate would pass everything");
   }
-  const checkName = loaded.render.checks[seat];
-  if (checkName !== checkName.trim() || !/^[A-Za-z]/.test(checkName) || YAML_WORD.test(checkName)) {
-    throw new RenderFilesError(`render.checks.${seat} ${show(checkName)} must start with a letter, have no edge spaces and not read as a YAML keyword`);
-  }
   const { auth, runners, bootWorkflow } = loaded.render;
   const hasBoot = bootWorkflow !== null;
   return {
@@ -204,7 +219,7 @@ export function callerValues({ config, seat, pin, defaultBranch, gateScript }) {
     ship_kit_version: pin.version,
     runners_json: JSON.stringify({ plan: runners.plan, seat: runners.seat, aggregate: runners.aggregate }),
     secret_input: AUTH[auth.kind].input,
-    check_name: checkName,
+    check_name: loaded.render.checks[seat],
     gate_needs: hasBoot ? "boot, review" : "review",
     gate_runner_json: JSON.stringify(runners.gate),
     gate_script: gateScript,
@@ -229,7 +244,8 @@ export function renderCallerFile({ template, ...args }) {
 }
 
 /**
- * Reads a template the manifest lists. Setup renders from the manifest only.
+ * Reads a template the manifest lists, with LF line endings whatever the
+ * checkout did to them. Setup renders from the manifest only.
  * @param {string} pluginRoot directory holding `templates/`
  * @param {string} template a manifest entry's `template` name
  * @returns {string}
@@ -237,7 +253,7 @@ export function renderCallerFile({ template, ...args }) {
 export function readTemplate(pluginRoot, template) {
   const listed = TEMPLATE_MANIFEST.find((item) => item.template === template);
   if (listed === undefined) throw new RenderFilesError(`${template} is not in the template manifest`);
-  return readFileSync(join(pluginRoot, listed.path), "utf8");
+  return readFileSync(join(pluginRoot, listed.path), "utf8").replace(/\r\n/g, "\n");
 }
 
 /** @param {string} text @param {string} label */
@@ -266,8 +282,10 @@ function renderConfig(configTemplate, config, pin) {
 }
 
 /**
- * Sets the ship-kit and claude-plugins-official marketplaces and enables the
- * ship-kit plugin in a `.claude/settings.json`, keeping every other key.
+ * Sets the ship-kit marketplace (replacing any entry of that name) and
+ * enables the ship-kit plugin in a `.claude/settings.json`, declares the
+ * claude-plugins-official marketplace unless the file already has an entry of
+ * that name, and keeps every other key.
  * @param {string | null} existingText the current file, or null when absent
  * @param {{tag: string, sha: string, version: string}} pin
  * @param {{withRef: boolean}} options whether the ship-kit entry carries `ref`
@@ -298,17 +316,24 @@ export function mergeSettings(existingText, pin, { withRef }) {
   marketplaces["ship-kit"] = {
     source: { source: "github", repo: "dacrowlah/ship-kit", ...(withRef ? { ref: pin.tag } : {}) },
   };
-  marketplaces["claude-plugins-official"] = {
-    source: { source: "github", repo: "anthropics/claude-plugins-official" },
-  };
+  // Only declared so the superpowers dependency resolves; an entry the
+  // adopter already has (a mirror, a ref, a sha) is theirs and stays.
+  if (!Object.hasOwn(marketplaces, "claude-plugins-official")) {
+    marketplaces["claude-plugins-official"] = {
+      source: { source: "github", repo: "anthropics/claude-plugins-official" },
+    };
+  }
   plugins["ship-kit@ship-kit"] = true;
   settings.extraKnownMarketplaces = marketplaces;
   settings.enabledPlugins = plugins;
   return `${JSON.stringify(settings, null, 2)}\n`;
 }
 
-const SINCE_START = /^(?:\s*(?:[-*+]|\d+\.) )?\[since /;
-const SINCE_LINE = /^(\s*(?:[-*+]|\d+\.) )?\[since (\d+)\.(\d+)\.(\d+)\] (.*)$/;
+// A line that looks like a marker (any case, any spacing after a list marker)
+// must be exactly one, or the template is refused: a near miss kept as text
+// would put a line of a later release into every older install.
+const SINCE_START = /^\s*(?:(?:[-*+]|\d+\.)\s+)?\[since /i;
+const SINCE_LINE = /^(\s*(?:(?:[-*+]|\d+\.) )?)\[since (\d+)\.(\d+)\.(\d+)\] (.*)$/;
 const CORE_VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/;
 
 /** @returns {number} negative, zero or positive as a is before, equal to or after b */
@@ -339,7 +364,7 @@ export function claudeMdBlock(templateText, version) {
     }
     const marked = SINCE_LINE.exec(line);
     if (marked === null) throw new RenderFilesError(`claude-md template line ${index + 1} has a malformed [since X.Y.Z] marker`);
-    const [, prefix = "", major, minor, patch, text] = marked;
+    const [, prefix, major, minor, patch, text] = marked;
     if (compareCore(installing, [major, minor, patch].map(Number)) >= 0) kept.push(`${prefix}${text}`);
   });
   const body = kept.join("\n");
@@ -388,6 +413,9 @@ function currentFile(repo, path) {
 /** @param {string} path @returns {string} path, when a seed may be written there */
 function checkSeedPath(path) {
   const segments = path.toLowerCase().split("/");
+  if (segments.some((segment) => segment.endsWith("."))) {
+    throw new RenderFilesError(`hunt list path ${show(path)} has a path segment ending in ".", which Windows reads as the segment without it`);
+  }
   if (RESERVED_ROOTS.has(segments[0]) || segments.includes(".git")) {
     throw new RenderFilesError(`hunt list path ${show(path)} is inside a directory setup manages`);
   }
@@ -410,7 +438,11 @@ function assertDistinct(paths) {
  *   `config` is the answers' config (its `shipKit` is replaced by the pin);
  *   `repo.files` maps each path setup needs to read (CLAUDE.md,
  *   .claude/settings.json, both hunt list paths, and .gitignore when
- *   `claudeIgnored`) to its current text, or null when it does not exist. A
+ *   `claudeIgnored`) to its current text, or null when it does not exist.
+ *   `claudeIgnored` must be true whenever `.claude/` needs the block, and
+ *   also when the file already holds our block: once the block is applied,
+ *   `git check-ignore .claude/settings.json` reports "not ignored", so a
+ *   caller that recomputes it that way must OR in "block present". A
  *   path missing from the map is refused, never read as absent. An existing
  *   managed block is replaced whatever its state: deciding whether a modified
  *   block may be replaced belongs to the caller.

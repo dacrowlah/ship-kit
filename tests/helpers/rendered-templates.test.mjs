@@ -80,6 +80,14 @@ test("templateFilesOnDisk lists dot directories, dot files, other extensions and
   );
 });
 
+test("templateFilesOnDisk refuses a root that is itself a symlink or is not a directory", () => {
+  withTree({ "real/callers/a.yml": "a: 1\n", "plain.txt": "x\n" }, (dir) => {
+    symlinkSync(join(dir, "real"), join(dir, "templates"));
+    assert.throws(() => templateFilesOnDisk(join(dir, "templates")), /is not a directory/);
+    assert.throws(() => templateFilesOnDisk(join(dir, "plain.txt")), /is not a directory/);
+  });
+});
+
 test("templateFilesOnDisk refuses a symlink instead of following or skipping it", () => {
   withTree({ "templates/callers/a.yml": "a: 1\n", "outside.yml": "run: ${{ x }}\n" }, (dir) => {
     symlinkSync(join(dir, "outside.yml"), join(dir, "templates", "callers", "link.yml"));
@@ -278,11 +286,29 @@ test("assertNotEmpty refuses empty and whitespace-only output and accepts real o
   assertNotEmpty("t.yml", "v", "a: 1\n");
 });
 
-test("assertTemplateLinesRendered accepts the real caller template rendered by the real renderer", () => {
-  const template = readFileSync(REVIEW, "utf8");
-  for (const { text } of renderedTemplateVariants()) {
-    assertTemplateLinesRendered(REVIEW, "real", template, text);
+test("assertTemplateLinesRendered accepts every registered variant checked against its own path's template", () => {
+  const variants = renderedTemplateVariants();
+  assert.ok(variants.length > 0);
+  for (const { path, variant, text } of variants) {
+    assertTemplateLinesRendered(path, variant, readFileSync(path, "utf8"), text);
   }
+});
+
+test("the registered variants are checked against their own templates, so a second registered template does not fail the first's check", () => {
+  const second = "templates/callers/second.yml";
+  const secondText = "name: second\non: workflow_dispatch\njobs: {}\n";
+  const manifest = [...TEMPLATE_MANIFEST, workflow(second)];
+  const variants = renderedTemplateVariants({
+    manifest,
+    listFiles: () => manifest.map((item) => item.path),
+    registry: { ...REGISTRY, [second]: [{ name: "only", values: () => ({}) }] },
+    read: (path) => (path === second ? secondText : readFileSync(path, "utf8")),
+  });
+  assert.deepEqual(variants.map((item) => item.path), [REVIEW, REVIEW, second]);
+  for (const { path, variant, text } of variants) {
+    assertTemplateLinesRendered(path, variant, path === second ? secondText : readFileSync(path, "utf8"), text);
+  }
+  assert.throws(() => assertTemplateLinesRendered(REVIEW, "wrong", secondText, variants[0].text), /missing/);
 });
 
 test("assertTemplateLinesRendered ignores blank lines and lines that hold a placeholder", () => {

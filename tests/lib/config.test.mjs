@@ -134,6 +134,66 @@ test("check names reject a colon and a hash", () => {
   assert.equal(load(minimal({ render: { checks: { general: "Review (general) v1.0" } } })).ok, true);
 });
 
+// A check name is written as a plain `name:` scalar, so the schema admits
+// exactly the names that read back as themselves: a letter first, no edge
+// space, and not a word YAML reads as a boolean or null.
+const CHECK_KEYS = ["general", "adversarial", "security", "test-integrity", "coverage", "change-class"];
+
+test("check names must start with a letter, end without a space and not read as a YAML keyword, for every seat's check", () => {
+  const refused = ["a ", "1st review", "9", "_x", "-x", "(x)", ".x", "true", "True", "TRUE", "false", "False", "null", "Null", "NULL", "yes", "Yes", "YES", "no", "No", "NO", "on", "On", "off", "OFF", "y", "Y", "n", "N", "x: y", "a#b", " lead", "a".repeat(101)];
+  const accepted = ["Review", "a", "A", "yesterday", "no-op", "on call", "Off duty", "nullable", "ship-kit custom review", "Review (general) v1.0", "a".repeat(100), "a b.c_d-e(f)g"];
+  for (const key of CHECK_KEYS) {
+    for (const name of refused) {
+      const result = load(minimal({ render: { checks: { [key]: name } } }));
+      assert.equal(result.ok, false, `${key}: ${JSON.stringify(name)} was accepted`);
+      assert.match(result.reason, new RegExp(`/render/checks/${key} must match pattern`));
+    }
+    for (const name of accepted) {
+      assert.equal(load(minimal({ render: { checks: { [key]: name } } })).ok, true, `${key}: ${JSON.stringify(name)} was refused`);
+    }
+  }
+});
+
+test("every check name default satisfies its own pattern", () => {
+  const { checks } = load(minimal()).config.render;
+  assert.deepEqual(Object.keys(checks).sort(), [...CHECK_KEYS].sort());
+});
+
+// `render.auth` names the secret twice over: as the input the reusable
+// workflow reads and as the `${{ secrets.NAME }}` the caller passes. A kind
+// with the other kind's default secret would send an API key as an OAuth
+// token (or the reverse), so both keys are written together or not at all.
+test("render.auth is given whole: kind and secret together, or neither", () => {
+  for (const [auth, missing] of [
+    [{ kind: "api-key" }, "secret"],
+    [{ kind: "oauth" }, "secret"],
+    [{ secret: "ANTHROPIC_API_KEY" }, "kind"],
+    [{}, "kind"],
+  ]) {
+    const result = load(minimal({ render: { auth } }));
+    assert.equal(result.ok, false, JSON.stringify(auth));
+    assert.match(result.reason, new RegExp(`/render/auth/${missing} is required`), JSON.stringify(auth));
+  }
+  assert.deepEqual(load(minimal({ render: { auth: { kind: "api-key", secret: "ANTHROPIC_API_KEY" } } })).config.render.auth, { kind: "api-key", secret: "ANTHROPIC_API_KEY" });
+  assert.deepEqual(load(minimal({ render: { auth: { kind: "oauth", secret: "MY_TOKEN" } } })).config.render.auth, { kind: "oauth", secret: "MY_TOKEN" });
+  assert.deepEqual(load(minimal({ render: {} })).config.render.auth, { kind: "oauth", secret: "CLAUDE_CODE_OAUTH_TOKEN" });
+});
+
+// The secret name lands inside `${{ secrets.<name> }}` in a workflow that runs
+// with the repository's secrets on pull_request_target; only an identifier
+// keeps it from carrying an expression of its own (expressions are case
+// insensitive, so upper-case-only is not the whole defence).
+test("the auth secret is an upper-case identifier and never an expression", () => {
+  for (const secret of ["X || github.event.pull_request.title", "X || GITHUB.EVENT.PULL_REQUEST.TITLE", "X }}", "X Y", "A.B", "A|B", "A-B", "A&&B", "A'B", "A\"B", "A[0]", "a", "1X", "GITHUB_TOKEN", "GITHUB_", "", "A".repeat(101)]) {
+    const result = load(minimal({ render: { auth: { kind: "oauth", secret } } }));
+    assert.equal(result.ok, false, `${JSON.stringify(secret)} was accepted`);
+    assert.match(result.reason, /\/render\/auth\/secret must match pattern/);
+  }
+  for (const secret of ["_", "X", "MY_TOKEN_2", "ANTHROPIC_API_KEY", "A".repeat(100)]) {
+    assert.equal(load(minimal({ render: { auth: { kind: "oauth", secret } } })).ok, true, secret);
+  }
+});
+
 test("other value patterns and enums", () => {
   const rejected = [
     { render: { auth: { secret: "GITHUB_TOKEN" } } },

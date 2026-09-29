@@ -30,9 +30,14 @@
 // a value that contains an opener, and an output that holds more openers
 // than the template does (two values, or a value and the template's own
 // text, meeting at the opener: `$` then `{{`). Values must also be strings,
-// since anything else could stringify to an opener after this check.
+// since anything else could stringify to an opener after this check, and
+// hold no control or line-break character other than a tab and the LF that
+// separates the lines of a multi-line value: YAML reads a bare CR (and, in
+// YAML 1.1, NEL and the Unicode line and paragraph separators) as a line
+// break, so an inline value carrying one could start a new key.
 
 const OPENER = "${{";
+const FORBIDDEN_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f\u0085\u2028\u2029]/u;
 
 export class RenderError extends Error {
   constructor(message) {
@@ -105,6 +110,9 @@ export function render(template, values) {
     const value = values[key];
     if (typeof value !== "string") {
       throw new RenderError(`value <<${key}>> must be a string`);
+    }
+    if (FORBIDDEN_CHARACTER.test(value)) {
+      throw new RenderError(`value <<${key}>> contains a control or line-break character other than tab and LF`);
     }
     if (value.includes(OPENER)) {
       throw new RenderError(`value <<${key}>> contains ${OPENER}, which no value may carry`);

@@ -228,3 +228,39 @@ test("a value that is not a string is refused", () => {
     );
   }
 });
+
+// --- Line breaks and control characters ---
+// YAML reads a bare CR (and, in YAML 1.1, NEL and the Unicode line and
+// paragraph separators) as a line break, so an inline value carrying one can
+// start a new key. A value is text with LF line breaks and tabs only.
+
+const BREAKS = [
+  ["a carriage return", "\r"],
+  ["a next-line character", "\u0085"],
+  ["a line separator", "\u2028"],
+  ["a paragraph separator", "\u2029"],
+  ["a NUL", "\u0000"],
+  ["a vertical tab", "\u000b"],
+  ["a form feed", "\u000c"],
+  ["an escape", "\u001b"],
+  ["a delete", "\u007f"],
+];
+
+for (const [name, character] of BREAKS) {
+  test(`an inline value containing ${name} is refused, naming the key`, () => {
+    assert.throws(
+      () => render("name: <<n>>\n", { n: `x${character}    if: github.event.pull_request.title == 'go'` }),
+      (error) => error instanceof RenderError && error.message.includes("<<n>>") && /control or line-break character/.test(error.message),
+    );
+  });
+
+  test(`a whole-line value and a fragment containing ${name} are refused`, () => {
+    assert.throws(() => render("jobs:\n<<job>>\n", { job: `  a:${character}\n  b:` }), RenderError);
+    assert.throws(() => render("        run: |\n<<gate_script>>\n", { gate_script: `echo one\necho two${character}` }), RenderError);
+  });
+}
+
+test("a value may hold tabs and LF line breaks in a fragment, and any printable character", () => {
+  assert.equal(render("name: <<n>>\n", { n: "a\tb caf\u00e9 ~" }), "name: a\tb caf\u00e9 ~\n");
+  assert.equal(render("        run: |\n<<s>>\n", { s: "echo a\n\techo b" }), "        run: |\n          echo a\n          \techo b\n");
+});

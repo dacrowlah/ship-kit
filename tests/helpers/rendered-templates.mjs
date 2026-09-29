@@ -59,7 +59,8 @@ export const REGISTRY = {
  * other non-regular entry is refused rather than followed or skipped.
  * @param {string} [root]
  * @returns {string[]}
- * @throws {Error} on an entry that is neither a regular file nor a directory
+ * @throws {Error} on an entry that is neither a regular file nor a directory,
+ *   or when `root` is not itself a real directory
  */
 export function templateFilesOnDisk(root = TEMPLATES_ROOT) {
   const files = [];
@@ -72,6 +73,7 @@ export function templateFilesOnDisk(root = TEMPLATES_ROOT) {
       else throw new Error(`${path} is neither a regular file nor a directory; templates must be plain files`);
     }
   };
+  if (!lstatSync(root).isDirectory()) throw new Error(`${root} is not a directory (a symlink to one does not count); templates must be plain files`);
   walk(root);
   return files.sort();
 }
