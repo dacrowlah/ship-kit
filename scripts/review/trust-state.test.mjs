@@ -129,6 +129,12 @@ test("callerPathMatches accepts the managed caller path, bare or at the default 
   assert.ok(callerPathMatches(".github/workflows/ship-kit-general.yml@refs/heads/release/1.x", "general", "release/1.x"));
 });
 
+test("callerPathMatches compares case-sensitively", () => {
+  assert.equal(callerPathMatches(".github/workflows/Ship-Kit-General.yml", "general", "main"), false);
+  assert.equal(callerPathMatches(".GITHUB/workflows/ship-kit-general.yml", "general", "main"), false);
+  assert.equal(callerPathMatches(".github/workflows/ship-kit-general.yml@refs/heads/MAIN", "general", "main"), false);
+});
+
 test("callerPathMatches refuses every other path, ref or kind", () => {
   const refuse = [
     [".github/workflows/evil.yml", "general", "main"],
@@ -330,6 +336,15 @@ test("a run with no repository is untrusted", () => {
   const g = genuine(101, 500);
   assert.equal(single(g, { run: run(500, "general", { repository: null }) }).trust(g.comment).trusted, false);
   assert.equal(single(g, { run: run(500, "general", { repository: { full_name: 5 } }) }).trust(g.comment).trusted, false);
+});
+
+test("a run from a repository whose name only starts with this one's is untrusted", () => {
+  const g = genuine(101, 500);
+  for (const full_name of ["owner/repo-evil", "owner/repository", "owner/repo/x", "owner/rep", "xowner/repo"]) {
+    const result = single(g, { run: run(500, "general", { repository: { full_name } }) }).trust(g.comment);
+    assert.equal(result.trusted, false, full_name);
+    assert.match(result.reason, /repository/);
+  }
 });
 
 test("the repository comparison ignores case", () => {

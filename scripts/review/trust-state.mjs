@@ -7,6 +7,10 @@
 // byte. Every error, of any kind, is "not trusted", which can only cost a
 // full review or a shorter promotion record. State artifacts expire with
 // the repository's artifact retention; an expired one is never trusted.
+// Two effects of this design fail closed: a PR workflow that floods bot
+// comments can push real states past the 30-marker cap, and editing the
+// newest genuine comment untrusts it; both only widen the review, never
+// trust a forgery.
 
 import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
