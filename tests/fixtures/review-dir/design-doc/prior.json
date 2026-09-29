@@ -1,0 +1,10 @@
+[
+  {
+    "id": "p1",
+    "seat": 1,
+    "severity": "BLOCKING",
+    "file": "docs/design/items.md",
+    "line": 5,
+    "finding": "The contract names no valid index range, so an implementer cannot tell whether items.length is accepted."
+  }
+]

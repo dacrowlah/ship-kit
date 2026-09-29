@@ -1,0 +1,4 @@
+Mode: full.
+Seat 1 of 1 reviews every changed file:
+src/items.mjs
+test/items.spec.mjs

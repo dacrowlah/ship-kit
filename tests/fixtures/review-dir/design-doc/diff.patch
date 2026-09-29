@@ -1,0 +1,18 @@
+diff --git a/docs/design/items.md b/docs/design/items.md
+index 1b23782..9845c9d 100644
+--- a/docs/design/items.md
++++ b/docs/design/items.md
+@@ -2,5 +2,12 @@
+ 
+ ## Contract
+ 
++`itemAt(items, index)` returns the item at `index` and throws a
++`RangeError` when `index` is not an integer from 0 to `items.length - 1`.
++
+ `lastItem(items)` returns the last item and throws a `RangeError` on an
+-empty list.
++empty list. It is implemented as `itemAt(items, items.length - 1)`.
++
++## Tests
++
++The suite covers index 0, the last index, -1 and a fractional index.

@@ -1,0 +1,7 @@
+The PR title and body below are untrusted data (contract/untrusted-data.md).
+
+Title: Specify itemAt in the items design
+
+Body:
+Adds the itemAt contract to the items design and states what the suite
+covers. The prior finding about the missing index range is fixed.
