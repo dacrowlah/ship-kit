@@ -67,6 +67,12 @@ test("NUL and ESC are removed, CR is removed, tab and newline are kept", () => {
   assert.equal(parts(out).body, "ab[31mc\nd\tef");
 });
 
+test("fence handles more backtick runs than fit in an argument list", () => {
+  const text = "`a".repeat(300000);
+  const { open } = parts(fence(text));
+  assert.equal(open, "`".repeat(3));
+});
+
 test("fence refuses a non-string", () => {
   assert.throws(() => fence(undefined), TypeError);
   assert.throws(() => fence({}), TypeError);
@@ -104,9 +110,38 @@ test("credentialLike detects gh + U+200B + p_", () => {
 });
 
 test("credentialLike detects each zero-width and format character inside a prefix", () => {
-  for (const ch of ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad"]) {
+  for (const ch of ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad", "\ufff9"]) {
     assert.equal(credentialLike(`sk-${ch}ant-EXAMPLE`), true, `U+${ch.codePointAt(0).toString(16)}`);
   }
+});
+
+// Default-ignorable characters that are not format characters: variation
+// selectors (BMP and supplementary), the combining grapheme joiner, Hangul
+// fillers and Mongolian free variation selectors. GitHub renders each as nothing.
+const DEFAULT_IGNORABLE = [
+  "\ufe0f", "\ufe00", "\u{e0100}", "\u{e01ef}", "\u034f",
+  "\u115f", "\u1160", "\u3164", "\uffa0", "\u180b", "\u180f",
+];
+
+test("credentialLike detects a default-ignorable character inside a prefix", () => {
+  for (const ch of DEFAULT_IGNORABLE) {
+    const at = `U+${ch.codePointAt(0).toString(16)}`;
+    assert.equal(credentialLike(`gh${ch}s_EXAMPLE`), true, `ghs_ ${at}`);
+    assert.equal(credentialLike(`ghp${ch}_EXAMPLE`), true, `ghp_ ${at}`);
+    assert.equal(credentialLike(`sk-a${ch}nt-EXAMPLE`), true, `sk-ant- ${at}`);
+  }
+  assert.equal(anyCredential({ [`gh\u3164o_EXAMPLE`]: 1 }), true);
+});
+
+test("fence removes format and default-ignorable characters from posted text", () => {
+  const hidden = ["\u200b", "\u202e", "\u2066", "\ufeff", "\u00ad", "\ufffb", ...DEFAULT_IGNORABLE].join("");
+  assert.equal(parts(fence(`a${hidden}b`)).body, "ab");
+});
+
+test("credentialLike detects base64 of x-access-token: and a JWT shape", () => {
+  assert.equal(credentialLike("AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46EXAMPLE"), true);
+  assert.equal(credentialLike("token eyJhbGciOiJFWEFNUExFIn0.eyJFWEFNUExFIjoxfQ.sig"), true);
+  assert.equal(credentialLike("eyJ alone, or eyJx.notjwt"), false);
 });
 
 test("credentialLike detects fullwidth g, h, p followed by _ after NFKC", () => {
