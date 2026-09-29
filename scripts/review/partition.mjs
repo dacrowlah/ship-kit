@@ -4,7 +4,9 @@
 // Callers supply already-trusted inputs and real git wrappers
 // (`isAncestor`, `changedFiles`).
 
-import { DESIGN_DOC, BLOCKING, normalizeFinding } from "./review-mode.mjs";
+import {
+  DESIGN_DOC, BLOCKING, normalizeFinding, severityOf,
+} from "./review-mode.mjs";
 
 const HEX40 = /^[0-9a-f]{40}$/i;
 
@@ -148,7 +150,7 @@ export function planDesignDocScope({ prFiles, state, head, mergeBase, isAncestor
     incremental: true,
     since: state.head,
     files: sinceFiles.filter((path) => prFileSet.has(path)),
-    priors: Array.isArray(state.findings) ? state.findings : [],
+    priors: (Array.isArray(state.findings) ? state.findings : []).map(normalizeFinding),
     reason: null,
   };
 }
@@ -189,11 +191,16 @@ export function assignPriors(priors, bins) {
 /**
  * True when the scope has no changed paths to review yet a BLOCKING prior
  * is still open, so one seat must run anyway with an empty chunk to
- * re-check it (design 8.2).
+ * re-check it (design 8.2). Runs every prior's severity through
+ * `severityOf` rather than an exact-match comparison, so a prior whose
+ * severity is anything other than the literal "NON-BLOCKING" -- a
+ * different case, empty, missing or non-string -- still counts as
+ * BLOCKING (design 8.3), even if a caller ever passed this function
+ * priors `planDesignDocScope` had not normalized.
  * @param {string[]} reviewPaths the scope's changed paths
- * @param {{severity: string}[]} priors already-normalized prior findings
+ * @param {{severity: unknown}[]} priors prior findings
  * @returns {boolean}
  */
 export function needsPriorCheck(reviewPaths, priors) {
-  return reviewPaths.length === 0 && priors.some((prior) => prior.severity === BLOCKING);
+  return reviewPaths.length === 0 && priors.some((prior) => severityOf(prior.severity) === BLOCKING);
 }

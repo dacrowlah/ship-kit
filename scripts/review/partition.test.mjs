@@ -259,6 +259,17 @@ test("needsPriorCheck: no paths and a BLOCKING prior is true", () => {
   );
 });
 
+test("needsPriorCheck: treats a raw, non-normalized prior's severity as BLOCKING unless it is exactly NON-BLOCKING, on its own (not relying on a caller having normalized it first)", () => {
+  for (const severity of ["Blocking", "blocking", "", 42, null, undefined]) {
+    assert.equal(
+      needsPriorCheck([], [{ severity }]),
+      true,
+      `severity ${JSON.stringify(severity)} should count as blocking`,
+    );
+  }
+  assert.equal(needsPriorCheck([], [{ severity: "NON-BLOCKING" }]), false);
+});
+
 test("needsPriorCheck: no paths but only NON-BLOCKING priors is false", () => {
   assert.equal(
     needsPriorCheck([], [{ severity: "NON-BLOCKING" }, { severity: "NON-BLOCKING" }]),
@@ -275,4 +286,37 @@ test("needsPriorCheck: paths present is false even with a BLOCKING prior", () =>
 
 test("needsPriorCheck: no paths and no priors is false", () => {
   assert.equal(needsPriorCheck([], []), false);
+});
+
+// --- end to end: planDesignDocScope's priors feed needsPriorCheck, and any
+// severity spelling other than the exact literal "NON-BLOCKING" must still
+// force a prior re-check when nothing else changed (design 8.3: anything
+// other than an explicit NON-BLOCKING is BLOCKING). ---
+
+function scopeWithFindingSeverity(severity) {
+  const finding = severity === undefined
+    ? { file: "docs/design/a.md", line: 1, finding: "x" } // missing severity
+    : { severity, file: "docs/design/a.md", line: 1, finding: "x" };
+  return planDesignDocScope(deps({
+    state: { ...deps().state, findings: [finding] },
+    changedFiles: () => [], // nothing changed since the prior review
+  }));
+}
+
+for (const severity of ["Blocking", "blocking", "", 42, null]) {
+  test(`end-to-end: a prior finding with severity ${JSON.stringify(severity)} still forces a re-check`, () => {
+    const scope = scopeWithFindingSeverity(severity);
+    assert.equal(scope.incremental, true);
+    assert.equal(needsPriorCheck(scope.files, scope.priors), true);
+  });
+}
+
+test("end-to-end: a prior finding with no severity field at all still forces a re-check", () => {
+  const scope = scopeWithFindingSeverity(undefined);
+  assert.equal(needsPriorCheck(scope.files, scope.priors), true);
+});
+
+test("end-to-end: planDesignDocScope normalizes every prior it returns, not just what needsPriorCheck happens to accept", () => {
+  const scope = scopeWithFindingSeverity("blocking");
+  assert.equal(scope.priors[0].severity, "BLOCKING");
 });
