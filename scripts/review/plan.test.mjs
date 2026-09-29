@@ -14,7 +14,7 @@ import {
 } from "../../tests/fixtures/plan/build.mjs";
 import {
   HEAD_REF, MAX_PR_TEXT, PR_TXT_HEADER, PlanFailure, appendOutputs, authorDecision, defaultDeps, formatOutputs,
-  isCanary, lsRemoteTags, main, oneLine, quotePath, runPlan, sameSet, workspaceGit,
+  bindRunToThisPr, isCanary, lsRemoteTags, main, oneLine, quotePath, runPlan, sameSet, workspaceGit,
 } from "./plan.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./plan.mjs", import.meta.url));
@@ -37,6 +37,7 @@ function envFor(repo, root, overrides = {}) {
     TRUSTED_SHA: repo.base,
     GITHUB_SHA: repo.base,
     BASE_SHA: repo.base,
+    BASE_REF: "main",
     HEAD_SHA: repo.head,
     HEAD_REPO: REPOSITORY,
     HEAD_REPO_ID: REPOSITORY_ID,
@@ -125,12 +126,22 @@ function designRepo() {
   });
 }
 
-// The API a genuine state marker is bound to: its run, artifact and comment.
-function trustedStateApi(state, { commentId = 9001, runId = 501, user = { login: "github-actions[bot]", type: "Bot" } } = {}) {
+const prOnMain = (number = 7, ref = "main", repoId = Number(REPOSITORY_ID)) => ({
+  number, base: { ref, sha: "9".repeat(40), repo: { id: repoId } }, head: { ref: "feature", sha: "8".repeat(40), repo: { id: repoId } },
+});
+
+// The API a genuine state marker is bound to: its run (for PR 7 into main), artifact and comment.
+function trustedStateApi(state, {
+  commentId = 9001, runId = 501, user = { login: "github-actions[bot]", type: "Bot" }, pullRequests = [prOnMain()],
+} = {}) {
   const marker = encodeStateMarker({ v: 1, kind: "general", mode: "design-doc", complete: true, findings: [], runId, ...state });
   return {
     comments: [{ id: commentId, body: `${marker}\nsummary`, user, created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z" }],
-    runs: { [runId]: { id: runId, event: "pull_request_target", path: ".github/workflows/ship-kit-general.yml", repository: { full_name: REPOSITORY } } },
+    runs: {
+      [runId]: {
+        id: runId, event: "pull_request_target", path: ".github/workflows/ship-kit-general.yml", repository: { full_name: REPOSITORY }, pull_requests: pullRequests,
+      },
+    },
     artifacts: { [runId]: [{ name: "ship-kit-state-1", expired: false }] },
     payloads: { [`${runId}:ship-kit-state-1`]: JSON.stringify({ commentId, marker }) },
   };
@@ -182,7 +193,11 @@ test("a same-repo writer's PR plans full mode", () => {
     notices: out.json("plan.json").notices,
   });
   assert.deepEqual(out.lsRemoteCalls, [`https://github.com/${WORKFLOW_REPOSITORY}`]);
-  assert.deepEqual(gh.calls[0], ["list", `repos/${REPOSITORY}/issues/7/comments`]);
+  assert.deepEqual(gh.calls.slice(0, 3), [
+    ["get", `repos/${REPOSITORY}`],
+    ["get", `repos/${REPOSITORY}/commits/${repo.base}/branches-where-head`],
+    ["list", `repos/${REPOSITORY}/issues/7/comments`],
+  ]);
 });
 
 test("the seat's model and turn budget come from the trusted config", () => {
@@ -299,7 +314,9 @@ test("canary from another repository", () => {
 
 test("the canary reviews from the base commit and skips the release pin", () => {
   const repo = sharedRepo();
+  const gh = fakeGh({ branchesWhereHead: () => ({ status: 200, json: [] }) });
   const out = plan(repo, {
+    gh,
     env: { EVENT_NAME: "pull_request", CANARY: "true", WORKFLOW_REPOSITORY: REPOSITORY.toUpperCase(), GITHUB_SHA: "e".repeat(40) },
     lsRemote: () => {
       throw new Error("the canary must not read tags");
@@ -307,6 +324,7 @@ test("the canary reviews from the base commit and skips the release pin", () => 
   });
   assert.equal(out.status, null);
   assert.deepEqual(out.lsRemoteCalls, []);
+  assert.equal(gh.calls.some(([, path]) => path.endsWith("branches-where-head")), false);
   assert.equal(isCanary({ EVENT_NAME: "pull_request", CANARY: "true", WORKFLOW_REPOSITORY: "a/B", REPOSITORY: "A/b" }), true);
   for (const env of [
     { EVENT_NAME: "pull_request_target", CANARY: "true", WORKFLOW_REPOSITORY: "a/b", REPOSITORY: "a/b" },
@@ -381,6 +399,42 @@ test("the trusted commit must be the one the event names", () => {
   assertFailure(out, "fail-config", /^the event's trusted commit .* differs from TRUSTED_SHA/);
   const canary = plan(repo, { env: { EVENT_NAME: "pull_request", CANARY: "true", WORKFLOW_REPOSITORY: REPOSITORY, BASE_SHA: repo.head } });
   assertFailure(canary, "fail-config", /differs from TRUSTED_SHA/);
+});
+
+test("a pull request into another branch is fail-config", () => {
+  const gh = fakeGh();
+  const out = plan(sharedRepo(), { env: { BASE_REF: "release" }, gh });
+  assertFailure(out, "fail-config", /^the pull request targets "release", not the default branch "main"/);
+  assert.equal(gh.calls.some(([, path]) => /branches-where-head|comments/.test(path)), false);
+  for (const BASE_REF of [undefined, "Main"]) assertFailure(plan(sharedRepo(), { env: { BASE_REF } }), "fail-config", /not the default branch/);
+  const canary = plan(sharedRepo(), { env: { EVENT_NAME: "pull_request", CANARY: "true", WORKFLOW_REPOSITORY: REPOSITORY, BASE_REF: "release" } });
+  assertFailure(canary, "fail-config", /not the default branch/);
+});
+
+test("an unreadable default branch is fail-config", () => {
+  for (const repoResponse of [{ status: 500, json: null }, { status: 200, json: { default_branch: "" } }, { status: 200, json: null }, new Error("timed out")]) {
+    const out = plan(sharedRepo(), { gh: fakeGh({ repoResponse }) });
+    assertFailure(out, "fail-config", /^could not read the repository's default branch/);
+  }
+});
+
+test("a trusted commit that is not the default branch's head is fail-config", () => {
+  const repo = sharedRepo();
+  for (const branchesWhereHead of [
+    () => ({ status: 200, json: [] }),
+    () => ({ status: 200, json: [{ name: "release", commit: { sha: repo.base } }] }),
+    () => ({ status: 200, json: [{ name: "main", commit: { sha: repo.head } }] }),
+    () => ({ status: 200, json: [null] }),
+  ]) {
+    assertFailure(plan(repo, { gh: fakeGh({ branchesWhereHead }) }), "fail-config", /is not the head of the default branch "main"/);
+  }
+  for (const branchesWhereHead of [() => ({ status: 404, json: { message: "Not Found" } }), () => ({ status: 200, json: {} }), () => {
+    throw new Error("timed out");
+  }]) {
+    assertFailure(plan(repo, { gh: fakeGh({ branchesWhereHead }) }), "fail-config", /^could not read which branches TRUSTED_SHA/);
+  }
+  const heads = plan(repo, { gh: fakeGh({ branchesWhereHead: (sha) => ({ status: 200, json: [{ name: "x", commit: { sha } }, { name: "main", commit: { sha } }] }) }) });
+  assert.equal(heads.status, null);
 });
 
 test("malformed event values are fail-config", () => {
@@ -691,15 +745,58 @@ test("nothing new and no open BLOCKING prior runs no seat", () => {
   assert.match(out.text("scope.txt"), /^Nothing changed since the last complete review and no BLOCKING prior finding is open; no seat runs\.$/m);
 });
 
-test("an unreadable default branch name gives a full scope with a notice", () => {
+test("a prior state from a run for another pull request, or into another branch, is not trusted", () => {
   const repo = designRepo();
-  for (const repoResponse of [{ status: 500, json: null }, { status: 200, json: { default_branch: "" } }, new Error("timed out")]) {
-    const api = trustedStateApi({ head: repo.heads[0], mergeBase: repo.base, findings: [priorFinding] });
-    const out = plan(repo, { gh: fakeGh({ ...api, repoResponse }) });
-    assert.deepEqual(out.seatPaths().flat().sort(), ["docs/design/a.md", "docs/design/b.md"]);
-    assert.match(out.text("scope.txt"), /^Notice: could not read the default branch name \(.+\); prior review states are not trusted\.$/m);
-    assert.match(out.text("scope.txt"), /^Mode: design-doc, full scope \(the default branch name could not be read\)\.\n/);
+  for (const pullRequests of [
+    [],
+    [prOnMain(8)],
+    [prOnMain(7), prOnMain(9, "release")],
+    [prOnMain(7, "release")],
+    [prOnMain(7, "main", 2002)],
+  ]) {
+    const api = trustedStateApi({ head: repo.heads[0], mergeBase: repo.base, findings: [priorFinding] }, { pullRequests });
+    const out = plan(repo, { gh: fakeGh(api) });
+    assert.deepEqual(out.seatPaths().flat().sort(), ["docs/design/a.md", "docs/design/b.md"], JSON.stringify(pullRequests));
+    assert.deepEqual(out.json("plan.json").priors, []);
   }
+  const api = trustedStateApi({ head: repo.heads[0], mergeBase: repo.base, findings: [priorFinding] }, { pullRequests: [prOnMain(7), prOnMain(12)] });
+  assert.deepEqual(plan(repo, { gh: fakeGh(api) }).seatPaths(), [["docs/design/b.md"]]);
+});
+
+test("the run binding fails closed and reads each run once", () => {
+  const state = { runId: 5 };
+  const trusted = () => ({ trusted: true, state });
+  const options = { owner: "example-org", name: "app", prNumber: 7, repositoryId: 1001, defaultBranch: "main" };
+  const failing = { get: () => { throw new Error("timed out"); } };
+  assert.equal(bindRunToThisPr(trusted, { ...options, gh: failing })({}).trusted, false);
+  for (const response of [{ status: 404, json: null }, { status: 200, json: { id: 6, pull_requests: [prOnMain()] } }, { status: 200, json: { id: 5 } }]) {
+    assert.equal(bindRunToThisPr(trusted, { ...options, gh: { get: () => response } })({}).trusted, false, JSON.stringify(response));
+  }
+  let reads = 0;
+  const gh = { get: () => { reads += 1; return { status: 200, json: { id: 5, pull_requests: [prOnMain()] } }; } };
+  const bound = bindRunToThisPr(trusted, { ...options, gh });
+  const cache = new Map();
+  assert.deepEqual(bound({}, cache), { trusted: true, state });
+  assert.deepEqual(bound({}, cache), { trusted: true, state });
+  assert.equal(reads, 1);
+  const refused = { trusted: false, reason: "edited" };
+  assert.equal(bindRunToThisPr(() => refused, { ...options, gh })({}), refused);
+});
+
+test("a pull request whose base was changed trusts no prior state", () => {
+  const repo = designRepo();
+  const api = trustedStateApi({ head: repo.heads[0], mergeBase: repo.base, findings: [priorFinding] });
+  for (const [extra, reason] of [
+    [{ events: [{ event: "labeled" }, { event: "base_ref_changed" }] }, /base branch was changed/],
+    [{ eventsError: new Error("listing truncated") }, /events could not be read/],
+  ]) {
+    const out = plan(repo, { gh: fakeGh({ ...api, ...extra }) });
+    assert.deepEqual(out.seatPaths().flat().sort(), ["docs/design/a.md", "docs/design/b.md"]);
+    assert.deepEqual(out.json("plan.json").priors, []);
+    assert.match(out.text("scope.txt").split("\n")[0], reason);
+    assert.match(out.text("scope.txt"), /^Notice: .*prior review states are not trusted\.$/m);
+  }
+  assert.deepEqual(plan(repo, { gh: fakeGh({ ...api, events: [{ event: "labeled" }] }) }).seatPaths(), [["docs/design/b.md"]]);
 });
 
 // -------------------------------------------------------------- hunt lists

@@ -25,10 +25,14 @@
 // review/status.json {status, reason} (fail-config or needs-maintainer),
 // review/plan.json with count 0 and outputs count=0:
 // 1. Preflight: the trigger and its trusted commit, which must equal
-//    TRUSTED_SHA and the workspace HEAD; value formats; the release pin
-//    (skipped for ship-kit's own canary); exactly one auth secret; the
-//    fetched head equals HEAD_SHA; the trusted config, or strict defaults
-//    with a notice when it is absent or invalid.
+//    TRUSTED_SHA and the workspace HEAD; value formats; the PR's base is the
+//    default branch (read live), and TRUSTED_SHA is that branch's current
+//    head (read live; not checked for ship-kit's own canary), because
+//    pull_request_target runs the base branch's copy of the caller and a
+//    re-run keeps its event's commit; the release pin (skipped for the
+//    canary); exactly one auth secret; the fetched head equals HEAD_SHA; the
+//    trusted config, or strict defaults with a notice when it is absent or
+//    invalid.
 // 2. Author (author.mjs): the sender and the author, or a maintainer's
 //    approval of the full head SHA. A PR whose author is a bot (a login
 //    ending "[bot]", or a user type other than User, such as a dependency
@@ -36,7 +40,9 @@
 //    branch in this repository: it runs only after a maintainer approves its
 //    exact head and then sends the event (a reopen). The head repository is
 //    this repository only when both its name and its id match.
-// 3. Plan: mode, design-doc scope from trusted prior states, the partition,
+// 3. Plan: mode, design-doc scope from trusted prior states (none when the
+//    PR's base was ever changed; each bound to a run for this PR into the
+//    default branch, see bindRunToThisPr), the partition,
 //    and review/: seat-<n>.patch, .stat and (design-doc) .prior.json,
 //    pr.txt, scope.txt, contract/, hunt/ and plan.json; expect/run.json.
 //
@@ -47,8 +53,8 @@
 // Environment (strings, from the workflow's env: only): EVENT_NAME, CANARY,
 // WORKFLOW_REPOSITORY, WORKFLOW_SHA, REPOSITORY, REPOSITORY_ID
 // (github.repository_id), TRUSTED_SHA, GITHUB_SHA, BASE_SHA, HEAD_SHA,
-// HEAD_REPO, HEAD_REPO_ID (the head repository's full name and id; empty
-// for a deleted fork), PR_NUMBER, PR_AUTHOR, PR_AUTHOR_TYPE (the author's
+// BASE_REF (the PR's base branch), HEAD_REPO, HEAD_REPO_ID (the head
+// repository's full name and id; empty for a deleted fork), PR_NUMBER, PR_AUTHOR, PR_AUTHOR_TYPE (the author's
 // user type), SENDER, SEAT, CONFIG_PATH, HAS_OAUTH, HAS_API, PR_TITLE,
 // PR_BODY, SHIP_KIT_ROOT, GH_TOKEN (read by gh), GITHUB_OUTPUT.
 //
@@ -244,6 +250,41 @@ function revParse(git, rev) {
   }
 }
 
+/** The repository's default branch, read live. */
+function readDefaultBranch(env, gh) {
+  const { owner, name } = repoSlug(env.REPOSITORY);
+  let branch;
+  try {
+    const { status, json } = gh.get(api`repos/${owner}/${name}`);
+    branch = status === 200 ? json?.default_branch : undefined;
+    if (typeof branch !== "string" || branch === "") throw new Error(`HTTP ${status}, no default_branch`);
+  } catch (error) {
+    failConfig(`could not read the repository's default branch: ${messageOf(error)}`);
+  }
+  return branch;
+}
+
+/**
+ * TRUSTED_SHA must be the default branch's current head, read live, so a
+ * run cannot review against another branch's commit or replay an older
+ * default-branch commit (a re-run keeps its event's commit).
+ */
+function checkDefaultBranchHead(env, gh, defaultBranch) {
+  const { owner, name } = repoSlug(env.REPOSITORY);
+  let heads;
+  try {
+    const { status, json } = gh.get(api`repos/${owner}/${name}/commits/${env.TRUSTED_SHA}/branches-where-head`);
+    if (status !== 200 || !Array.isArray(json)) throw new Error(`HTTP ${status}`);
+    heads = json;
+  } catch (error) {
+    failConfig(`could not read which branches TRUSTED_SHA ${env.TRUSTED_SHA} heads: ${messageOf(error)}`);
+  }
+  if (!heads.some((branch) => branch?.name === defaultBranch && branch?.commit?.sha === env.TRUSTED_SHA)) {
+    failConfig(`TRUSTED_SHA ${env.TRUSTED_SHA} is not the head of the default branch ${JSON.stringify(defaultBranch)}: `
+      + "the branch moved after this event, so push to the pull request, or close and reopen it, to review it against the current default branch");
+  }
+}
+
 function checkReleasePin(env, deps) {
   const { slug } = repoSlug(env.WORKFLOW_REPOSITORY);
   let tags;
@@ -274,6 +315,12 @@ function preflight(env, deps, run) {
   if (derived !== env.TRUSTED_SHA) failConfig(`the event's trusted commit ${derived} differs from TRUSTED_SHA ${env.TRUSTED_SHA}`);
   const workspace = revParse(git, "HEAD");
   if (workspace !== env.TRUSTED_SHA) failConfig(`the workspace is checked out at ${workspace}, not TRUSTED_SHA ${env.TRUSTED_SHA}`);
+  run.defaultBranch = readDefaultBranch(env, deps.gh);
+  if (env.BASE_REF !== run.defaultBranch) {
+    failConfig(`the pull request targets ${JSON.stringify(str(env.BASE_REF))}, not the default branch ${JSON.stringify(run.defaultBranch)}; `
+      + "reviews run only for pull requests into the default branch, whose caller and config are the trusted ones");
+  }
+  if (!isCanary(env)) checkDefaultBranchHead(env, deps.gh, run.defaultBranch);
   if (!isCanary(env)) checkReleasePin(env, deps);
   checkAuth(env);
   const head = revParse(git, HEAD_REF);
@@ -468,18 +515,51 @@ function scopeText({ modeLine, empty, seats, priors, notices, idle }) {
   return `${out.join("\n")}\n`;
 }
 
+/**
+ * Narrows `trustState` to runs bound to this pull request into the default
+ * branch. A run's own fields do not say which branch's caller it ran (its
+ * head_sha and head_branch are the PR head's), and a pull_request_target
+ * run of a PR into another branch runs that branch's copy of the caller. So
+ * the run's pull_requests must list this PR, and every PR it lists must be
+ * based on the default branch of this repository. A fork PR's run lists no
+ * PR, so its states are never trusted, which only costs a full review.
+ * @returns {(comment: object, cache?: Map) => object}
+ */
+export function bindRunToThisPr(trustState, { gh, owner, name, prNumber, repositoryId, defaultBranch }) {
+  const boundOk = (runId) => {
+    try {
+      const { status, json } = gh.get(api`repos/${owner}/${name}/actions/runs/${runId}`);
+      const prs = status === 200 && json?.id === runId && Array.isArray(json.pull_requests) ? json.pull_requests : [];
+      return prs.some((pr) => pr?.number === prNumber)
+        && prs.every((pr) => pr?.base?.ref === defaultBranch && pr?.base?.repo?.id === repositoryId);
+    } catch {
+      return false;
+    }
+  };
+  return (comment, cache = new Map()) => {
+    const result = trustState(comment, cache);
+    if (!result.trusted) return result;
+    const key = `bound:${result.state.runId}`;
+    if (!cache.has(key)) cache.set(key, boundOk(result.state.runId));
+    return cache.get(key) ? result : { trusted: false, reason: "the run is not bound to this pull request into the default branch" };
+  };
+}
+
 /** Design-doc scope from this seat's trusted prior states (design 8.2). */
-function designDocScope({ env, deps, files, comments, mergeBase, notices }) {
+function designDocScope({ env, deps, files, comments, mergeBase, defaultBranch, notices }) {
   const { git, gh } = deps;
   const { owner, name } = repoSlug(env.REPOSITORY);
-  let defaultBranch;
+  const prNumber = Number(env.PR_NUMBER);
+  let events;
   try {
-    const { status, json } = gh.get(api`repos/${owner}/${name}`);
-    defaultBranch = json?.default_branch;
-    if (status !== 200 || typeof defaultBranch !== "string" || defaultBranch === "") throw new Error(`HTTP ${status}, no default_branch`);
+    events = gh.list(api`repos/${owner}/${name}/issues/${prNumber}/events`);
   } catch (error) {
-    notices.push(`could not read the default branch name (${messageOf(error)}); prior review states are not trusted.`);
-    return fullScope("the default branch name could not be read");
+    notices.push(`could not read the pull request's events (${messageOf(error)}); prior review states are not trusted.`);
+    return fullScope("the pull request's events could not be read");
+  }
+  if (events.some((event) => event?.event === "base_ref_changed")) {
+    notices.push("the pull request's base branch was changed, so a prior review may have run another branch's caller; prior review states are not trusted.");
+    return fullScope("the pull request's base branch was changed");
   }
   const isAncestor = (candidate, of) => {
     const code = git.status(["merge-base", "--is-ancestor", candidate, of]);
@@ -487,7 +567,10 @@ function designDocScope({ env, deps, files, comments, mergeBase, notices }) {
     throw new Error(`git merge-base --is-ancestor exited ${code}`);
   };
   const changedFiles = (from, to) => split0(git.run([...DIFF, "--name-only", "-z", from, to]));
-  const trustState = makeTrustState({ gh, repo: env.REPOSITORY, defaultBranch, download: makeDownload({ gh, repo: env.REPOSITORY }) });
+  const trustState = bindRunToThisPr(
+    makeTrustState({ gh, repo: env.REPOSITORY, defaultBranch, download: makeDownload({ gh, repo: env.REPOSITORY }) }),
+    { gh, owner, name, prNumber, repositoryId: Number(env.REPOSITORY_ID), defaultBranch },
+  );
   const states = collectTrustedStates(comments, { kinds: [env.SEAT], trustState });
   const state = findReviewBase(states, env.SEAT, { head: env.HEAD_SHA, isAncestor });
   return planDesignDocScope({ prFiles: files, state, head: env.HEAD_SHA, mergeBase, isAncestor, changedFiles });
@@ -571,7 +654,7 @@ function planPhase(env, deps, dirs, run, comments) {
   let priors = [];
   let modeLine = "Mode: full.";
   if (run.mode === DESIGN_DOC) {
-    const scope = designDocScope({ env, deps, files, comments, mergeBase, notices: run.notices });
+    const scope = designDocScope({ env, deps, files, comments, mergeBase, defaultBranch: run.defaultBranch, notices: run.notices });
     if (scope.incremental) {
       reviewFiles = scope.files;
       priors = scope.priors;
@@ -627,7 +710,7 @@ export function runPlan(env, deps) {
   const dirs = { root, src: join(root, "src"), review: join(root, "review"), expect: join(root, "expect") };
   recreate(dirs.review);
   recreate(dirs.expect);
-  const run = { mode: FULL, enforced: true, config: null, notices: [] };
+  const run = { mode: FULL, enforced: true, config: null, defaultBranch: null, notices: [] };
   try {
     preflight(env, deps, run);
     const { owner, name } = repoSlug(env.REPOSITORY);

@@ -171,6 +171,9 @@ export function configText(review = {}) {
  * An in-memory gh client. `permissions` maps a login to a permission name or
  * a full response body; an unknown login is a 404. `runs`, `artifacts` and
  * `payloads` (keyed "<runId>:<artifact name>") back trustState.
+ * `repoResponse` answers the repository read (an Error is thrown);
+ * `branchesWhereHead(sha)` answers the branches-where-head read (by default
+ * every commit heads "main"); `events` are the PR's issue events.
  */
 export function fakeGh({
   permissions = { writer: "write", maint: "maintain", boss: "admin", outsider: "read" },
@@ -180,6 +183,9 @@ export function fakeGh({
   artifacts = {},
   payloads = {},
   repoResponse = { status: 200, json: { default_branch: "main" } },
+  branchesWhereHead = (sha) => ({ status: 200, json: [{ name: "main", commit: { sha }, protected: false }] }),
+  events = [],
+  eventsError = null,
 } = {}) {
   const calls = [];
   const prefix = `repos/${REPOSITORY}`;
@@ -201,10 +207,16 @@ export function fakeGh({
         if (repoResponse instanceof Error) throw repoResponse;
         return repoResponse;
       }
+      const heads = new RegExp(`^${prefix}/commits/([0-9a-f]{40})/branches-where-head$`).exec(path);
+      if (heads) return branchesWhereHead(heads[1]);
       throw new Error(`fakeGh: unexpected get ${path}`);
     },
     list(path) {
       calls.push(["list", path]);
+      if (new RegExp(`^${prefix}/issues/\\d+/events$`).test(path)) {
+        if (eventsError) throw eventsError;
+        return events;
+      }
       if (!new RegExp(`^${prefix}/issues/\\d+/comments$`).test(path)) throw new Error(`fakeGh: unexpected list ${path}`);
       if (commentsError) throw commentsError;
       return comments;
