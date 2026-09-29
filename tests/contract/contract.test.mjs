@@ -108,7 +108,7 @@ export function checkContract(dir) {
     }
   }
   if (texts["untrusted-data.md"] !== null) {
-    for (const input of ["prior.json", "rebuttal", "pr.txt", "../pr", "hunt/"]) {
+    for (const input of ["prior.json", "rebuttal", "pr.txt", "diff.patch", "stat.txt", "scope.txt", "../pr", "hunt/"]) {
       if (!texts["untrusted-data.md"].includes(input)) violations.push(`untrusted-data.md: does not name ${input}`);
     }
   }
@@ -148,6 +148,16 @@ test("a missing nonce placeholder, or one in another contract file, fails", () =
 test("output.md that omits a schema field fails", () => {
   const output = source("output.md").replaceAll("`unreviewed`", "unreviewed");
   assert.deepEqual(checkContract(contractCopy({ "output.md": output })), ["output.md: does not name unreviewed"]);
+});
+
+test("output.md that does not name a verdict value fails", () => {
+  const output = source("output.md").replaceAll('"PASS"', "PASS");
+  assert.deepEqual(checkContract(contractCopy({ "output.md": output })), ['output.md: does not name the value "PASS"']);
+});
+
+test("untrusted-data.md that drops a PR-derived review file fails", () => {
+  const text = source("untrusted-data.md").replaceAll("`scope.txt`", "the scope file");
+  assert.deepEqual(checkContract(contractCopy({ "untrusted-data.md": text })), ["untrusted-data.md: does not name scope.txt"]);
 });
 
 test("design-doc.md that omits an extra field or a severity value fails", () => {
