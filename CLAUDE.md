@@ -60,6 +60,37 @@ declares `superpowers` (claude-plugins-official) as a dependency.
 - One excellent example beats many; never implement an example in multiple
   languages. (superpowers writing-skills SKILL.md)
 
+### Pressure-test method
+
+Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
+`tests/skills/artifacts.test.mjs` enforces the mechanical parts.
+
+- RED and GREEN run headless and isolated: `claude -p` in a fresh
+  directory outside the repository holding only the files the scenario's
+  `## Run directory` section lists, with `--setting-sources ""
+  --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan
+  --no-session-persistence --output-format stream-json --verbose`. The run
+  directory holds every file the listed code imports.
+- GREEN loads the copy made by `node tests/helpers/pressure.mjs stage --out
+  <dir>`, which deletes `dependencies` from the staged `plugin.json` only.
+  Isolated runs have no superpowers, and a plugin whose dependency is
+  missing is dropped, so without this GREEN silently equals RED.
+- A GREEN run counts only when `node tests/helpers/pressure.mjs check
+  --skill <name> --stream <file>` exits 0: the init message lists
+  `ship-kit:<name>` and the run invoked it (a `Skill` call naming it; for a
+  seat skill run by its slash command, `--dmi` and a returned
+  `skill_marker` equal to the SKILL.md marker). Other runs are discarded.
+- `result.md` records `Discriminating criteria: <numbers>`, the criteria
+  that failed in at least one RED attempt; only those count in a headline.
+- Every rationalization-table row quotes an excuse observed in a RED or
+  GREEN run, found verbatim in `baseline.md` or `result.md`.
+- Records and fixtures write every `skill_marker` token as `<token>`; the
+  `check` output already does. A live token anywhere but its SKILL.md
+  fails `tests/skills/marker.test.mjs`.
+- `result.md` records `Shipped-text SHA-256: <hex>` from `node
+  tests/helpers/pressure.mjs hash --skill <name>`; any edit to a skill
+  reruns GREEN before merge.
+
 ### Commands
 
 - A ship-kit slash command is a skill (`SKILL.md`), never the legacy
