@@ -193,8 +193,8 @@ test("semanticErrors reports a review seat outside SEATS", () => {
 
 test("one leading BOM is accepted, a second is not", () => {
   const text = JSON.stringify(minimal());
-  assert.equal(loadConfig(`﻿${text}`).ok, true);
-  assert.equal(loadConfig(`﻿﻿${text}`).ok, false);
+  assert.equal(loadConfig(`\uFEFF${text}`).ok, true);
+  assert.equal(loadConfig(`\uFEFF\uFEFF${text}`).ok, false);
 });
 
 test("non-object JSON, invalid JSON and non-string input are rejected", () => {

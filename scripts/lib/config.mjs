@@ -98,7 +98,7 @@ export function loadConfig(text, { migrations = MIGRATIONS } = {}) {
   if (typeof text !== "string") return { ok: false, reason: "config text must be a string" };
   let value;
   try {
-    value = JSON.parse(text.startsWith("﻿") ? text.slice(1) : text);
+    value = JSON.parse(text.startsWith("\uFEFF") ? text.slice(1) : text);
   } catch (err) {
     return { ok: false, reason: `not valid JSON: ${err.message}` };
   }
