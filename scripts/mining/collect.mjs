@@ -16,8 +16,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { decodeStateMarker } from "../lib/state-marker.mjs";
+import { isMain } from "../lib/entry-point.mjs";
 
 export const DEFAULT_LIMIT = 1000;
 // gh pr list --search never returns more than this many results, regardless
@@ -202,6 +202,6 @@ export function main(argv, deps = { gh: run("gh"), git: run("git"), readFile: (p
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(process.argv[1], import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));
 }

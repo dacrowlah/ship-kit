@@ -18,4 +18,4 @@ Write an implementation plan for this change in this repository: add a `--json` 
 
 ## Run directory
 
-`scripts/check-template-secrets.mjs` and `.github/workflows/secret-scan.yml`, copied at their relative paths.
+`scripts/check-template-secrets.mjs`, `scripts/lib/entry-point.mjs` and `.github/workflows/secret-scan.yml`, copied at their relative paths.

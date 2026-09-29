@@ -424,7 +424,16 @@ already on the default branch (6.5), and both change together at merge;
 Local scripts read the config at `origin/<default>` after
 `git fetch origin <default>` (15.3, 5.4), the local equivalent of CI's
 `TRUSTED_SHA`, so local and CI classify a change the same way when the
-local fetch is current.
+local fetch is current. `origin` must be a configured remote whose URL
+names a network transport (a URL such as `https://` or `ssh://`, or
+`host:path`), and the reader passes that URL to git rather than the name:
+git reads an unconfigured `origin` as a path and resolves a local-path URL
+against the working tree, so either would let a directory committed on a
+branch stand in for the remote. The working directory must be inside an
+ordinary checkout: a bare repository, or a directory laid out as a git
+directory, committed on a branch is never taken as the repository. Anything
+else makes the config unreadable, which every caller treats as its
+fail-closed default.
 
 ### 5.4 Agent settings
 

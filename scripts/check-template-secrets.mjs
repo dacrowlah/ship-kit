@@ -10,6 +10,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { isMain } from "./lib/entry-point.mjs";
 
 const SCAN_ROOTS = ["templates", "workflows", ".github/workflows"];
 const SCAN_EXTENSIONS = [".yml", ".yaml", ".json", ".sh", ".mjs", ".md"];
@@ -183,6 +184,6 @@ export function main(cwd = process.cwd(), out = console) {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(process.argv[1], import.meta.url)) {
   process.exit(main());
 }
