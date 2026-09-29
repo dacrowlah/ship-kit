@@ -45,8 +45,8 @@
 #     names): it never silently falls back to treating whatever happened
 #     to appear as the full picture.
 #
-# Requires gh (authenticated) and node. Run inside the PR's repository or
-# set GH_REPO. Makes no network call other than gh's own.
+# Requires gh (authenticated), node and jq. Run inside the PR's repository
+# or set GH_REPO. Makes no network call other than gh's own.
 
 set -u
 usage="usage: watch-pr-checks.sh <pr-number> [poll-seconds] [max-empty-tries] [--require <name>]..."
@@ -105,9 +105,25 @@ if [ "$derive_ok" -eq 1 ]; then
   if [ "$repo_status" -ne 0 ] || [ -z "$repo" ]; then derive_ok=0; fi
 fi
 
+# A branch name is one path segment, but the branches/{branch}/protection/...
+# endpoint places it as a MIDDLE segment (another literal "/protection..."
+# follows it in the same path); an unescaped "/" in the branch name (for
+# example "release/1.0") is otherwise indistinguishable from a path
+# segment boundary, which can make the request 404 for the wrong reason --
+# a malformed path, not "this branch genuinely has no classic protection"
+# -- and that wrong-reason 404 is exactly what the 404-means-none handling
+# below would otherwise silently accept. Percent-encode it (jq's `@uri`;
+# "main" round-trips unchanged, "release/1.0" becomes "release%2F1.0") for
+# both API calls, not just the one where the branch is the last segment.
+encoded_base=""
+if [ "$derive_ok" -eq 1 ]; then
+  encoded_base=$(jq -rn --arg b "$base" '$b|@uri' 2>/dev/null)
+  if [ -z "$encoded_base" ]; then derive_ok=0; fi
+fi
+
 rules_out=""
 if [ "$derive_ok" -eq 1 ]; then
-  rules_out=$(gh api "repos/$repo/rules/branches/$base" --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' 2>&1)
+  rules_out=$(gh api "repos/$repo/rules/branches/$encoded_base" --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' 2>&1)
   rules_status=$?
   if [ "$rules_status" -ne 0 ]; then
     if printf '%s' "$rules_out" | grep -q '(HTTP 404)'; then
@@ -120,7 +136,7 @@ fi
 
 classic_out=""
 if [ "$derive_ok" -eq 1 ]; then
-  classic_out=$(gh api "repos/$repo/branches/$base/protection/required_status_checks" --jq '.contexts[]?' 2>&1)
+  classic_out=$(gh api "repos/$repo/branches/$encoded_base/protection/required_status_checks" --jq '.contexts[]?' 2>&1)
   classic_status=$?
   if [ "$classic_status" -ne 0 ]; then
     if printf '%s' "$classic_out" | grep -q '(HTTP 404)'; then

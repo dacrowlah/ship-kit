@@ -26,11 +26,18 @@ function run(args, checksQueue, opts = {}) {
     protectionResponse = text(""),
     extraEnv = {},
   } = opts;
+  // The script percent-encodes the base branch name (jq's `@uri`) before
+  // using it in either API path, since it is a middle path segment in the
+  // protection URL; encodeURIComponent matches `@uri` for the characters
+  // that matter here (in particular "/" -> "%2F"). "main" round-trips
+  // unchanged, so this is a no-op for every test that does not override
+  // baseName.
+  const encodedBaseName = encodeURIComponent(baseName);
   const gh = makeRoutedFakeGh([
     { match: ["pr", "view"], queue: [baseResponse] },
     { match: ["repo", "view"], queue: [repoResponse] },
-    { match: ["api", `repos/${repoName}/rules/branches/${baseName}`], queue: [rulesResponse] },
-    { match: ["api", `repos/${repoName}/branches/${baseName}/protection/required_status_checks`], queue: [protectionResponse] },
+    { match: ["api", `repos/${repoName}/rules/branches/${encodedBaseName}`], queue: [rulesResponse] },
+    { match: ["api", `repos/${repoName}/branches/${encodedBaseName}/protection/required_status_checks`], queue: [protectionResponse] },
     { match: ["pr", "checks"], queue: checksQueue },
   ]);
   const result = spawnSync("bash", [SCRIPT, ...args], {
@@ -195,4 +202,26 @@ test("a lookup failure with an explicit --require proceeds using only the explic
   assert.match(r.stderr, /WARNING: could not read required checks for main; pass --require/);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "PR7 checks concluded: pass:1\n");
+});
+
+test("a base branch name containing a slash is percent-encoded in both API paths", () => {
+  const r = run(["7", "0", "1"], [json([{ name: "ci", bucket: "pass" }])], {
+    baseName: "release/1.0",
+    rulesResponse: text("ci\n"),
+    protectionResponse: text("gh: Branch not protected (HTTP 404)", 1),
+  });
+  assert.equal(r.status, 0);
+  const apiCalls = r.calls.filter((c) => c[0] === "api");
+  assert.deepEqual(apiCalls[0], [
+    "api",
+    "repos/dacrowlah/ship-kit/rules/branches/release%2F1.0",
+    "--jq",
+    '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
+  ]);
+  assert.deepEqual(apiCalls[1], [
+    "api",
+    "repos/dacrowlah/ship-kit/branches/release%2F1.0/protection/required_status_checks",
+    "--jq",
+    ".contexts[]?",
+  ]);
 });
