@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { isolatedEnv } from "../../scripts/assert-test-globs.mjs";
-import { checkStream, loadedBodyMatches, main, MODEL_ID, pinnedModel, readMarker, shippedTextHash, stage, stagedTreeHash } from "./pressure.mjs";
+import { checkBaseline, checkStream, loadedBodyMatches, main, MODEL_ID, pinnedModel, readMarker, shippedTextHash, stage, stagedTreeHash } from "./pressure.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -36,6 +36,8 @@ const SKILL = "proving-tests-can-fail";
 const HEX = "0123456789abcdef";
 const MARKER = `${SKILL}@0.1.0:${HEX}`;
 const OTHER_MODEL = "claude-other-model-1";
+/** Ids that differ from the fixture model only by a suffix, padding or case. */
+const NEAR_MISSES = ["claude-opus-5-5[1m]", "claude-opus-5-5-20260901", " claude-opus-5-5", "claude-opus-5-5 ", "claude-opus-5-5\n", "CLAUDE-OPUS-5-5", "claude-opus-5", ""];
 
 /** Writes `<root>/tests/skills/pinned-model.txt`. @returns {string} root */
 function pin(root, content = `${FIXTURE_MODEL}\n`) {
@@ -984,7 +986,7 @@ function baselineStream() {
 }
 
 test("the pinned model file is one well-formed line", () => {
-  assert.equal(pinnedModel(REPO), "claude-opus-5-5");
+  assert.equal(`${pinnedModel(REPO)}\n`, readFileSync(join(REPO, "tests", "skills", "pinned-model.txt"), "utf8"));
   assert.match(pinnedModel(REPO), MODEL_ID);
   assert.equal(pinnedModel(pin(tmp("pressure-pin-"), "model-a[1m]\n")), "model-a[1m]");
   const cases = ["a\nb\n", "claude-opus-5-5", "claude opus\n", "claude-opus-5-5\n\n", "claude-opus-5-5\r\n", "\n", "", `${"a".repeat(101)}\n`, "a/b\n"];
@@ -1023,6 +1025,12 @@ test("a GREEN run under another model fails", () => {
   assert.match(refused.err, new RegExp(`${OTHER_MODEL} differs from the pinned model ${FIXTURE_MODEL}`));
   const dmi = withResult(withModel(INVOKED, OTHER_MODEL), (m) => ({ ...m, structured_output: { skill_marker: MARKER } }));
   assert.equal(checkStream(dmi, { skill: SKILL, dmi: true, marker: MARKER, expectModel: FIXTURE_MODEL }).ok, false, "dmi too");
+  assert.ok(!NEAR_MISSES.includes(FIXTURE_MODEL));
+  for (const model of NEAR_MISSES) {
+    const near = checkStream(withModel(INVOKED, model), { skill: SKILL, dmi: false, expectModel: FIXTURE_MODEL });
+    assert.equal(near.ok, false, JSON.stringify(model));
+    assert.equal(near.reason, `the run's model ${model} differs from the pinned model ${FIXTURE_MODEL}`);
+  }
 });
 
 test("an init with no model fails", () => {
@@ -1061,7 +1069,8 @@ test("a RED run under the pin passes", () => {
   assert.equal(ok.out, `Model: ${FIXTURE_MODEL}\n\n${finalResult(INVOKED)}\n`);
   const other = parse(baselineStream());
   other[0].plugins.push({ name: "ship-kit-extras", path: "/x" });
-  other[0].skills.push("superpowers:ship-kit-like");
+  other[0].skills.push("superpowers:ship-kit-like", "ship-kit-helper");
+  other[0].slash_commands.push("ship-kitchen", "ship-kit-helper");
   assert.equal(run(["baseline", "--stream", streamFile(join_(other))], { root }).code, 0, "other names are not ship-kit");
 });
 
@@ -1094,6 +1103,25 @@ test("a RED run under another model is refused", () => {
   const none = run(["baseline", "--stream", streamFile(withModel(baselineStream(), undefined))], { root });
   assert.equal(none.code, 1);
   assert.match(none.err, /init message names no model/);
+  for (const model of NEAR_MISSES) {
+    const near = run(["baseline", "--stream", streamFile(withModel(baselineStream(), model))], { root });
+    assert.equal(near.code, 1, JSON.stringify(model));
+    assert.equal(near.out, "");
+  }
+  assert.throws(() => checkBaseline(baselineStream(), {}), /expectModel/, "the library call names the model it accepts");
+});
+
+test("baseline has no any-model mode: a RED run on another model is never accepted", () => {
+  const root = repoWithSkill("s\n");
+  const haiku = streamFile(withModel(baselineStream(), "claude-haiku-4-5"));
+  const plain = run(["baseline", "--stream", haiku], { root });
+  assert.equal(plain.code, 1);
+  assert.equal(plain.out, "");
+  assert.match(plain.err, /claude-haiku-4-5 differs from the pinned model/);
+  const flagged = run(["baseline", "--stream", haiku, "--any-model"], { root });
+  assert.equal(flagged.code, 2);
+  assert.equal(flagged.out, "");
+  assert.match(flagged.err, /unexpected argument --any-model/);
 });
 
 test("a RED run with no final success is refused", () => {
@@ -1120,9 +1148,17 @@ test("a RED run with no final success is refused", () => {
 
 test("baseline usage errors exit 2", () => {
   const root = repoWithSkill("s\n");
-  for (const argv of [["baseline"], ["baseline", "--stream"], ["baseline", "--stream", join(root, "missing.jsonl")], ["baseline", "--stream", "x", "--any-model"]]) {
+  for (const argv of [["baseline"], ["baseline", "--stream"], ["baseline", "--stream", join(root, "missing.jsonl")]]) {
     const result = run(argv, { root });
     assert.equal(result.code, 2, JSON.stringify(argv));
     assert.ok(result.err.length > 0);
+  }
+  const valid = streamFile(baselineStream());
+  assert.equal(run(["baseline", "--stream", valid], { root }).code, 0, "the stream itself is a valid RED run");
+  for (const argv of [["baseline", "--stream", valid, "--any-model"], ["baseline", "--any-model", "--stream", valid], ["baseline", "--stream", valid, "--dmi"]]) {
+    const result = run(argv, { root });
+    assert.equal(result.code, 2, JSON.stringify(argv));
+    assert.equal(result.out, "");
+    assert.match(result.err, /unexpected argument --(any-model|dmi)/);
   }
 });

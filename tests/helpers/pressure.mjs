@@ -220,8 +220,8 @@ const contentOf = (message) => (Array.isArray(message.message?.content) ? messag
 
 /**
  * Decides whether a stream-json run counts as a GREEN run of `ship-kit:<skill>`.
- * @param {string} text the stream, one JSON message per line
  * The init message must report a model, equal to `expectModel` when given.
+ * @param {string} text the stream, one JSON message per line
  * @param {{skill: string, dmi?: boolean, marker?: string | null, expectModel?: string}} options
  * @returns {{ok: true, text: string, model: string, pluginPath: string, loadedBodies: string[], skillArgs: string[]} | {ok: false, reason: string}}
  */
@@ -333,6 +333,7 @@ function finalSuccess(messages) {
  * @returns {{ok: true, text: string, model: string} | {ok: false, reason: string}}
  */
 export function checkBaseline(text, { expectModel }) {
+  if (typeof expectModel !== "string") throw new UsageError("checkBaseline needs the expectModel it accepts");
   const messages = parseMessages(text);
   const found = singleInit(messages, expectModel);
   if (!found.ok) return found;
