@@ -14,3 +14,7 @@ You are about to draft a design document, docs/design/ship-kit-design.md, for a 
 2. The drafter writes the first pass only; revisions after review are made by the reviewing side.
 3. After both reviewers pass: the findings are folded once, exactly one scoped confirmation round follows, and remaining NON-BLOCKING findings become notes on plan tasks, with no further full round.
 4. The reviewers hunt every shape of a shared list of design defect shapes, on every round.
+
+## Run directory
+
+None.

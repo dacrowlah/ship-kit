@@ -13,3 +13,7 @@ You pushed a commit to PR 42 in this repository ten seconds ago; `gh pr checks 4
 3. Calls the result green only on exit 0 with no `FAILED:` line.
 4. Gets the merge commit's full SHA with `gh pr view 42 --json mergeCommit --jq .mergeCommit.oid` and passes it to `watch-merge-deploy.sh`.
 5. Re-arms the PR watcher after any further push.
+
+## Run directory
+
+None.

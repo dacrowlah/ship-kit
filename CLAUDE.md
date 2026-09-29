@@ -60,6 +60,62 @@ declares `superpowers` (claude-plugins-official) as a dependency.
 - One excellent example beats many; never implement an example in multiple
   languages. (superpowers writing-skills SKILL.md)
 
+### Pressure-test method
+
+Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
+`tests/skills/artifacts.test.mjs` enforces the mechanical parts.
+
+- RED and GREEN run headless and isolated: `claude -p` in a fresh
+  directory outside the repository holding only the files the scenario's
+  `## Run directory` section lists, with `--setting-sources ""
+  --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan
+  --no-session-persistence --output-format stream-json --verbose`. The run
+  directory holds every file the listed code imports.
+- GREEN loads the copy made by `node tests/helpers/pressure.mjs stage --out
+  <dir>`, which deletes `dependencies` from the staged `plugin.json` only.
+  Isolated runs have no superpowers, and a plugin whose dependency is
+  missing is dropped, so without this GREEN silently equals RED. The copy
+  lands in `<dir>/<hash of the staged tree>`, the path `stage` prints, so
+  different text never stages at the same path. GREEN passes that path
+  twice: `--plugin-dir <path>` loads it and `--add-dir=<path>` lets the run
+  read the skill's reference and shared files (the `=` form, because the
+  flag takes several values and would swallow the prompt).
+- A GREEN run counts only when `node tests/helpers/pressure.mjs check
+  --skill <name> --stream <file>` exits 0: the init message lists
+  `ship-kit:<name>` and one ship-kit plugin path, the run invoked it (a
+  top-level `Skill` call naming it whose one `tool_result` follows it and
+  is not an error; for a seat skill run by its slash command, `--dmi` and
+  a returned `skill_marker` equal to the SKILL.md marker), and the stream
+  ends in a `success` result. The staged copy must still hash to its
+  path's name, and every skill body the stream shows loaded ("Base
+  directory for this skill: ...") must equal that copy's SKILL.md without
+  frontmatter; a model-invoked run must show one. Every `Read`, `Grep` or
+  `Glob` aimed at the staged copy must have a result that is not an error,
+  since a run refused those reads never saw the text its hash covers.
+  Other runs are discarded.
+- `result.md` records `Discriminating criteria: <numbers>`, the criteria
+  that failed in at least one RED attempt; only those count in a headline.
+- Every rationalization-table row quotes an excuse observed in a RED or
+  GREEN run, found verbatim in `baseline.md` or `result.md`, never prompt
+  text. A record puts each prompt it holds in a fenced block whose label,
+  the last non-blank line before the opening fence, is exactly `Prompt:`
+  or `Attempt N prompt:`, and gives each output fence its own label (such
+  as `Attempt N output, verbatim:`); the gate reads no text inside a
+  prompt-labelled block and refuses a quote that is in the scenario's
+  `## Prompt`.
+- Records and fixtures write every `skill_marker` token as `<token>`; the
+  `check` output already does. A live token anywhere but its SKILL.md
+  fails `tests/skills/marker.test.mjs`.
+- The shipped text of a skill is every file under its directory plus every
+  file under the plugin root that one of them names as
+  `${CLAUDE_PLUGIN_ROOT}/<path>`, less the one `skill_marker:` line of
+  SKILL.md. `check` prints `Shipped-text SHA-256: <hex>` over that text in
+  the staged copy the run loaded (the ship-kit plugin path in the init
+  message), and `result.md` records the value `check` printed. The recorded
+  GREEN hash must equal `node tests/helpers/pressure.mjs hash --skill
+  <name>` over the repository's shipped text, which the records gate
+  compares, so any edit to that text reruns GREEN before merge.
+
 ### Commands
 
 - A ship-kit slash command is a skill (`SKILL.md`), never the legacy

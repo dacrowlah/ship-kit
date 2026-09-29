@@ -33,7 +33,7 @@ Run directory held only `scripts/check-template-secrets.mjs` and
 
 Output (verbatim, ASCII-transcribed):
 
-```
+````
 # Plan: `--json` output for `check-template-secrets.mjs` and a CI artifact upload
 
 ## Context
@@ -122,7 +122,7 @@ Use `node:test` with a temp directory holding `.github/workflows/*.yml` fixtures
 
 ## Out of scope (worth a follow-up)
 The existing text output (line 113) already prints the literal value into public CI logs. Consider redacting it there too, in a separate change, since that would change the current behaviour.
-```
+````
 
 Pass criteria (final 7-criterion scenario):
 
