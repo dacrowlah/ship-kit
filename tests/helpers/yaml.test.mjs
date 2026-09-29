@@ -154,12 +154,16 @@ function hasYq() {
   return result.status === 0;
 }
 
-const yamlFixtures = [
-  ...globSync(".github/workflows/*.yml"),
-  ...globSync("templates/**/*.yml"),
-  ...globSync("templates/**/*.yaml"),
-  ...globSync("tests/fixtures/**/*.yml"),
-].filter((path) => existsSync(path));
+// Real, complete workflow files and YAML fixtures only: a caller template
+// under templates/ may hold `<<placeholder>>` tokens (for example a column-0
+// whole-line placeholder standing in for an entire job), which are not valid
+// YAML on their own, so `yq` cannot parse it and it is not part of this
+// cross-check. A rendered caller (placeholders filled in) is real YAML and
+// is cross-checked once rendered by `tests/callers/render.test.mjs` and
+// `tests/callers/gate.test.mjs`.
+const yamlFixtures = [...globSync(".github/workflows/*.yml"), ...globSync("tests/fixtures/**/*.yml")].filter((path) =>
+  existsSync(path),
+);
 
 /**
  * Recursively collects the value of every key named in `keyNames`, from any

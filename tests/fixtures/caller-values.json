@@ -1,0 +1,8 @@
+{
+  "auth": "oauth",
+  "boot": null,
+  "seat": "general",
+  "default_branch": "main",
+  "ship_kit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "ship_kit_version": "0.2.0"
+}

@@ -159,11 +159,30 @@ test("a second YAML document in the same file is refused", () => {
 
 // -- The real repository: every tracked workflow and template. ----------
 
-const REPO_YAML_GLOBS = [".github/workflows/*.yml", "templates/**/*.yml", "templates/**/*.yaml"];
+// Real workflow files are always complete, standalone YAML, so the tree
+// walk (`yamlExpressionViolations`) is the gate for them: it sees a
+// run:/script: value regardless of which supported spelling produced it,
+// and refuses a document it cannot fully represent.
+const REPO_WORKFLOW_YAML_GLOB = ".github/workflows/*.yml";
+// A file under templates/ is rendered by `render.mjs` before it is ever a
+// real workflow: it may hold `<<placeholder>>` tokens (for example a
+// column-0 whole-line placeholder standing in for an entire job, as
+// `templates/callers/review.yml` uses for `<<boot_job>>`), which are not
+// valid YAML on their own and would make the tree walk refuse a template
+// that is actually clean. These are scanned the same line-based way as a
+// `.sh` template (`runBodies`/`scriptBodies`, built for exactly this case);
+// the rendered output itself is checked by `tests/callers/gate.test.mjs`
+// and `tests/callers/render.test.mjs`, which parse it as real YAML once its
+// placeholders are filled in.
+const REPO_TEMPLATE_YAML_GLOB = "templates/**/*.{yml,yaml}";
 const REPO_SHELL_GLOB = "templates/**/*.sh";
 
-function repoYamlFiles() {
-  return REPO_YAML_GLOBS.flatMap((pattern) => globSync(pattern)).sort();
+function repoWorkflowFiles() {
+  return globSync(REPO_WORKFLOW_YAML_GLOB).sort();
+}
+
+function repoTemplateYamlFiles() {
+  return globSync(REPO_TEMPLATE_YAML_GLOB).sort();
 }
 
 function repoShellFiles() {
@@ -172,7 +191,7 @@ function repoShellFiles() {
 
 test("no run: or script: value in a tracked workflow or template contains an expression", () => {
   const violations = [];
-  for (const path of repoYamlFiles()) {
+  for (const path of repoWorkflowFiles()) {
     const text = readFileSync(path, "utf8");
     try {
       for (const hit of withExpression(yamlExpressionViolations(text))) {
@@ -181,6 +200,18 @@ test("no run: or script: value in a tracked workflow or template contains an exp
     } catch (err) {
       if (!(err instanceof YamlSubsetError)) throw err;
       violations.push(`${path}: refused (cannot be fully parsed by the supported YAML subset): ${err.message}`);
+    }
+  }
+  // A template YAML file may hold `<<placeholders>>` outside any run:/
+  // script: value too (for example `<<default_branch>>` in `branches:
+  // [...]`), so it is scanned key-by-key with the same line-based reader a
+  // shell template's whole body uses, not a blind whole-file line scan: an
+  // expression legitimately living in `env:` or `concurrency:` must not be
+  // flagged just because the file cannot be tree-walked.
+  for (const path of repoTemplateYamlFiles()) {
+    const text = readFileSync(path, "utf8");
+    for (const hit of [...withExpression(runBodies(text)), ...withExpression(scriptBodies(text))]) {
+      violations.push(`${path}:${hit.line}: run:/script: value contains an expression`);
     }
   }
   // Every line of a shell template is itself a run body once copied into a
@@ -196,5 +227,5 @@ test("no run: or script: value in a tracked workflow or template contains an exp
 });
 
 test("the repository has at least one workflow to scan", () => {
-  assert.ok(repoYamlFiles().length > 0);
+  assert.ok(repoWorkflowFiles().length > 0);
 });

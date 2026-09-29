@@ -1,0 +1,8 @@
+{
+  "auth": "api-key",
+  "boot": "./.github/workflows/boot.yml",
+  "seat": "adversarial",
+  "default_branch": "main",
+  "ship_kit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "ship_kit_version": "0.2.0"
+}
