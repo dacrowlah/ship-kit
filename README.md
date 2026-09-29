@@ -36,6 +36,8 @@ None.
 | `scripts/mining/collect.mjs` | Collects evidence for a defect-shape mining pass: merged PRs since a date with their comments and reviews, commit subjects, a hunt list and its history, and the review state markers in comments (labelled unverified). Writes only to the directory you pass with `--out`; never commits or pushes. | `gh` calls to the current repository's GitHub API |
 | `scripts/check-template-secrets.mjs` | Maintainer check run in this repository's CI: fails when a workflow template assigns a literal value to a credential-shaped key. No skill runs it. | None |
 | `scripts/assert-test-globs.mjs` | Maintainer check run in this repository's CI before the test suite: fails loudly if a test glob matches zero files, if a `scripts/**` module has no paired test at its conventional path, or if that test, run alone, fails, passes no test or never loads its module. No skill runs it. | None |
+| `scripts/watch/watch-pr-checks.sh` | Polls `gh pr checks` for a PR until nothing is pending, then prints one summary line and one line per failed or cancelled check; raises an alarm when no checks appear. | `gh` calls to the current repository's GitHub API |
+| `scripts/watch/watch-merge-deploy.sh` | Polls `gh run list` for a full merge-commit SHA until every run completes, then prints one summary line and one line per run that did not succeed; refuses a short SHA. | `gh` calls to the current repository's GitHub API |
 
 No script sends data anywhere except `gh` calls to your repository's own
 GitHub API, and each row above says whether its script makes any.
