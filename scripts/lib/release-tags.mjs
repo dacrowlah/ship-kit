@@ -49,9 +49,11 @@ export function parseLsRemote(text) {
 
 function rank(name) {
   const [, major, minor, patch, rc] = RELEASE_TAG.exec(name);
-  // A final release sorts above every rc of the same version.
-  const rcNumber = rc === undefined ? Infinity : Number(rc.slice("-rc.".length));
-  return [Number(major), Number(minor), Number(patch), rcNumber];
+  // BigInt keeps components beyond 2^53 exact. A final release sorts above
+  // every rc of the same version.
+  const final = rc === undefined ? 1n : 0n;
+  const rcNumber = rc === undefined ? 0n : BigInt(rc.slice("-rc.".length));
+  return [BigInt(major), BigInt(minor), BigInt(patch), final, rcNumber];
 }
 
 function compareRankDesc(a, b) {

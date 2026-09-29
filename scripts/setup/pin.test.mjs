@@ -4,7 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { COMPARED_ROOTS, MAX_FILES, PinError, resolvePin, runGit } from "./pin.mjs";
+import { devNull } from "node:os";
+import { COMPARED_ROOTS, MAX_FILES, PinError, gitEnv, resolvePin, runGit } from "./pin.mjs";
 
 // Fixture git runs ignore the machine's global and system config (signing,
 // hooks, default branch), so the fixture remote is the same everywhere.
@@ -71,6 +72,7 @@ function makePlugin(dir, version, files) {
 function recordingGit() {
   const cwds = new Set();
   const git = (args, options) => {
+    assert.equal(options.gitDir, options.cwd, `git ${args[0]} must name the temporary repository`);
     cwds.add(options.cwd);
     return runGit(args, options);
   };
@@ -402,4 +404,144 @@ test("runGit throws on a non-zero exit and on a spawn error", (t) => {
   assert.throws(() => runGit(["not-a-git-command"], { cwd: dir }), /^Error: git not-a-git-command exited 1: /);
   assert.throws(() => runGit(["--version"], { cwd: join(dir, "missing") }), /ENOENT/);
   assert.match(String(runGit(["--version"], { cwd: dir })), /^git version /);
+});
+
+/** Runs fn with process.env changed as given (undefined deletes), then restores it. */
+function withEnv(vars, fn) {
+  const saved = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]));
+  const apply = (values) => {
+    for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+  apply(vars);
+  try {
+    return fn();
+  } finally {
+    apply(saved);
+  }
+}
+
+/** Everything about a repository that a pin must never change. */
+function repoState(gitDir) {
+  return {
+    refs: fx(gitDir, "for-each-ref", "--format=%(objectname) %(refname)"),
+    objects: fx(gitDir, "count-objects", "-v"),
+    commits: fx(gitDir, "rev-list", "--all", "--count"),
+    shallow: existsSync(join(gitDir, "shallow")),
+    fetchHead: existsSync(join(gitDir, "FETCH_HEAD")),
+  };
+}
+
+/** A full clone of the fixture remote standing in for the caller's own repository. */
+function callerRepo(dir, remote) {
+  const clone = join(dir, "caller");
+  fx(dir, "clone", "--quiet", remote, clone);
+  return clone;
+}
+
+test("an inherited GIT_DIR naming a repository with a replace ref does not change the result", (t) => {
+  const { remote, commit, pluginRoot } = forgedCase(t);
+  const dir = dirname(remote);
+  const caller = callerRepo(dir, remote);
+  writeFileSync(join(caller, "templates/callers/review.yml"), "on: push\n");
+  fx(caller, "commit", "--quiet", "--no-gpg-sign", "-am", "evil");
+  fx(caller, "replace", commit, fx(caller, "rev-parse", "HEAD"));
+  writeFileSync(join(pluginRoot, "templates/callers/review.yml"), "on: push\n");
+  const gitDir = join(caller, ".git");
+  const before = repoState(gitDir);
+  withEnv({ GIT_DIR: gitDir }, () => {
+    assertPinError(() => resolvePin({ pluginRoot, remote }), /^templates\/callers\/review\.yml differs/);
+  });
+  assert.deepEqual(repoState(gitDir), before);
+});
+
+test("the caller's repository is unchanged by a pin run under an inherited GIT_DIR", (t) => {
+  const { remote, commit, pluginRoot } = forgedCase(t);
+  const caller = callerRepo(dirname(remote), remote);
+  const gitDir = join(caller, ".git");
+  const before = repoState(gitDir);
+  assert.equal(before.shallow, false);
+  for (const vars of [
+    { GIT_DIR: gitDir },
+    { GIT_DIR: gitDir, GIT_WORK_TREE: caller, GIT_INDEX_FILE: join(gitDir, "index"), GIT_OBJECT_DIRECTORY: join(gitDir, "objects") },
+  ]) {
+    withEnv(vars, () => {
+      assert.equal(resolvePin({ pluginRoot, remote }).sha, commit);
+    });
+    assert.deepEqual(repoState(gitDir), before);
+  }
+});
+
+/** A second remote whose tag carries a differing template, and a plugin matching it. */
+function decoyCase(t) {
+  const { remote, pluginRoot } = forgedCase(t);
+  const decoyDir = join(dirname(remote), "decoy");
+  mkdirSync(decoyDir);
+  const decoy = makeRemote(decoyDir, { ...FILES, "templates/callers/review.yml": "on: push\n" }, [{ name: "ship-kit--v0.2.0", annotated: true }]);
+  writeFileSync(join(pluginRoot, "templates/callers/review.yml"), "on: push\n");
+  assert.equal(resolvePin({ pluginRoot, remote: decoy.remote }).sha, decoy.commit);
+  return { remote, pluginRoot, decoy: decoy.remote };
+}
+
+test("inherited GIT_CONFIG_* variables cannot redirect the remote", (t) => {
+  const { remote, pluginRoot, decoy } = decoyCase(t);
+  withEnv({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `url.${decoy}.insteadOf`, GIT_CONFIG_VALUE_0: remote }, () => {
+    assertPinError(() => resolvePin({ pluginRoot, remote }), /^templates\/callers\/review\.yml differs/);
+  });
+});
+
+test("the user's global git config cannot redirect the remote", (t) => {
+  const { remote, pluginRoot, decoy } = decoyCase(t);
+  const home = join(dirname(remote), "home");
+  mkdirSync(home);
+  writeFileSync(join(home, ".gitconfig"), `[url "${decoy}"]\n\tinsteadOf = ${remote}\n`);
+  withEnv({ HOME: home, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: undefined }, () => {
+    assertPinError(() => resolvePin({ pluginRoot, remote }), /^templates\/callers\/review\.yml differs/);
+  });
+});
+
+test("a symlink on both sides at the same path is refused", (t) => {
+  const dir = scratch(t);
+  const { remote } = makeRemote(dir, FILES, []);
+  fx(remote, "checkout", "--quiet", "HEAD~1");
+  symlinkSync("gate-step.sh", join(remote, "templates/blocks/link.sh"));
+  fx(remote, "add", "--all");
+  fx(remote, "commit", "--quiet", "--no-gpg-sign", "-m", "link");
+  fx(remote, "tag", "ship-kit--v0.2.0");
+  const pluginRoot = makePlugin(dir, "0.2.0", FILES);
+  symlinkSync("gate-step.sh", join(pluginRoot, "templates/blocks/link.sh"));
+  assertPinError(() => resolvePin({ pluginRoot, remote }), /^templates\/blocks\/link\.sh differs/);
+});
+
+test("a gitlink in the tag's tree is refused even when its id equals the plugin file's blob", (t) => {
+  const dir = scratch(t);
+  const { remote } = makeRemote(dir, FILES, []);
+  fx(remote, "checkout", "--quiet", "HEAD~1");
+  writeFileSync(join(dir, "sub"), "x\n");
+  const blob = fx(remote, "hash-object", "--no-filters", join(dir, "sub"));
+  fx(remote, "update-index", "--add", "--cacheinfo", `160000,${blob},templates/sub`);
+  fx(remote, "commit", "--quiet", "--no-gpg-sign", "-m", "gitlink");
+  fx(remote, "tag", "ship-kit--v0.2.0");
+  const pluginRoot = makePlugin(dir, "0.2.0", { ...FILES, "templates/sub": "x\n" });
+  assertPinError(() => resolvePin({ pluginRoot, remote }), /^templates\/sub differs/);
+});
+
+test("gitEnv drops every inherited GIT_* variable and isolates config", () => {
+  const inherited = {
+    PATH: "/bin", HOME: "/home/x", https_proxy: "http://proxy.example:3128",
+    GIT_DIR: "/caller/.git", GIT_WORK_TREE: "/caller", GIT_INDEX_FILE: "/i", GIT_OBJECT_DIRECTORY: "/o",
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: "/a", GIT_COMMON_DIR: "/c", GIT_NAMESPACE: "n", GIT_CEILING_DIRECTORIES: "/",
+    GIT_REPLACE_REF_BASE: "refs/r/", GIT_SHALLOW_FILE: "/s", GIT_CONFIG_PARAMETERS: "'a.b'='c'",
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "k", GIT_CONFIG_VALUE_0: "v", GIT_CONFIG_GLOBAL: "/g", GIT_CONFIG_SYSTEM: "/s",
+    GIT_SSH_COMMAND: "evil", GIT_ASKPASS: "evil", GIT_EXEC_PATH: "/evil", git_dir: "/lower",
+  };
+  const expected = {
+    PATH: "/bin", HOME: "/home/x", https_proxy: "http://proxy.example:3128",
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull, GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0",
+  };
+  assert.deepEqual(gitEnv(undefined, inherited), expected);
+  assert.deepEqual(gitEnv("/tmp/work", inherited), { ...expected, GIT_DIR: "/tmp/work" });
+  assert.equal(gitEnv(undefined).GIT_DIR, undefined);
 });

@@ -154,3 +154,17 @@ test("the ranking compares every version component", () => {
   ]);
   assert.equal(releaseTagFor(patch, A), "ship-kit--v2.0.3");
 });
+
+test("the ranking is exact beyond 2^53, in either insertion order", () => {
+  const low = "ship-kit--v1.0.0-rc.9007199254740992";
+  const high = "ship-kit--v1.0.0-rc.9007199254740993";
+  for (const order of [[low, high], [high, low]]) {
+    const tags = new Map(order.map((name) => [name, { commit: A, annotated: false }]));
+    assert.equal(releaseTagFor(tags, A), high);
+  }
+  const big = new Map([
+    ["ship-kit--v9007199254740993.0.0", { commit: A, annotated: false }],
+    ["ship-kit--v9007199254740992.0.0", { commit: A, annotated: false }],
+  ]);
+  assert.equal(releaseTagFor(big, A), "ship-kit--v9007199254740993.0.0");
+});

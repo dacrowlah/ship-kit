@@ -7,7 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { RELEASE_TAG, parseLsRemote } from "../lib/release-tags.mjs";
 
@@ -28,17 +28,39 @@ const REGULAR_MODES = new Set(["100644", "100755"]);
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
- * Runs git with a timeout and no terminal prompt; throws on any failure.
+ * git's environment: the caller's, minus every inherited GIT_* variable (a
+ * hook in a linked worktree inherits GIT_DIR, which would point every
+ * command at the caller's repository), with no global or system config (a
+ * url.<base>.insteadOf there could redirect the remote), no replace refs and
+ * no terminal prompt. `gitDir`, when given, is the only repository git sees.
+ * ship-kit is public, so no credential helper is needed.
+ * @param {string | undefined} gitDir
+ * @param {NodeJS.ProcessEnv} [inherited]
+ */
+export function gitEnv(gitDir, inherited = process.env) {
+  const env = Object.fromEntries(Object.entries(inherited).filter(([key]) => !/^GIT_/i.test(key)));
+  Object.assign(env, {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: devNull,
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_TERMINAL_PROMPT: "0",
+  });
+  if (gitDir !== undefined) env.GIT_DIR = gitDir;
+  return env;
+}
+
+/**
+ * Runs git with a timeout in an isolated environment; throws on any failure.
  * @param {string[]} args
- * @param {{ cwd: string }} options
+ * @param {{ cwd: string, gitDir?: string }} options
  * @returns {Buffer} stdout
  */
-export function runGit(args, { cwd }) {
+export function runGit(args, { cwd, gitDir }) {
   const result = spawnSync("git", args, {
     cwd,
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: 256 * 1024 * 1024,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: gitEnv(gitDir),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -166,7 +188,7 @@ function firstDifference(plugin, tag) {
 
 /**
  * @param {{ pluginRoot: string, remote?: string, tag?: string,
- *   git?: (args: string[], options: { cwd: string }) => Buffer | string,
+ *   git?: (args: string[], options: { cwd: string, gitDir: string }) => Buffer | string,
  *   maxFiles?: number }} options
  * @returns {{ tag: string, sha: string, version: string }}
  */
@@ -191,7 +213,7 @@ export function resolvePin({ pluginRoot, remote = "https://github.com/dacrowlah/
 function pinAt({ root, remote, chosen, version, git, work, maxFiles }) {
   const call = (args) => {
     try {
-      return git(args, { cwd: work });
+      return git(args, { cwd: work, gitDir: work });
     } catch (error) {
       throw new PinError(`git ${args[0]} failed: ${error.message}`);
     }
