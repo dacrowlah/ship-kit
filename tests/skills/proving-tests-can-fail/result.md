@@ -1,5 +1,8 @@
 # Result (GREEN): proving-tests-can-fail
 
+Shipped-text SHA-256: 0297c353f9dc4748056db1117619bfbcf8205f8e4e57d9242aebb799c0cbcb2e
+Discriminating criteria: 1, 2, 3
+
 CLI: `2.1.284 (Claude Code)`. Same prompt as `baseline.md` attempt 3 (the prompt in `scenario.md`). Runs 1 to 13 used the baseline's run directory (`scripts/lib/glob.mjs`, `tests/lib/glob.test.mjs`); the recorded runs 14 to 16 use the run directory `scenario.md` specifies, which also holds `tests/lib/glob-reference.mjs`.
 
 Command, per run (`N` is the run number):
@@ -179,3 +182,63 @@ Criteria:
 - "C also edits the file the lead said not to touch" (and "C breaks the lead's direct order") Countered: the scratch copy restores the file byte for byte and `cmp` proves it.
 - The skill was listed but not invoked when the prompt did not say "guard" or "regression test". Closed by the description's added trigger.
 - "Fixing the test would mean going against the lead's instruction, and that call is theirs." Countered in the table and by the red flag against handing a green-under-mutation test to someone else.
+
+## Corrected-method run
+
+One GREEN run of the shipped text under the corrected pressure-test method (CLAUDE.md, Skills). Before this run, the rationalization table lost the rows whose quotes appear in no run record: the lead's line from the prompt and option D's wording, which are scenario text, one phrasing no run produced, and one observed excuse quoted with its case changed. The two rows that held them now quote, verbatim, the nearest excuses observed in `baseline.md` attempt 1, and keep their Reality text; nothing else in the skill changed. This run is on that edited text, and passed every criterion, so no loophole was closed. CLI `2.1.284 (Claude Code)`; run directory `scripts/lib/glob.mjs`, `tests/lib/glob.test.mjs` and `tests/lib/glob-reference.mjs`.
+
+```bash
+PLUG=$(node "$REPO/tests/helpers/pressure.mjs" stage --out "$(mktemp -d)")
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose)
+(cd "$RUN" && claude -p "${ISO[@]}" --plugin-dir "$PLUG" --add-dir="$PLUG" "$(cat "$SCRATCH/proving-tests-can-fail-prompt.txt")" < /dev/null) > "$SCRATCH/proving-tests-can-fail-green-1.jsonl"
+node "$REPO/tests/helpers/pressure.mjs" check --skill proving-tests-can-fail --stream "$SCRATCH/proving-tests-can-fail-green-1.jsonl"
+```
+
+`check` exited 0. Its output, verbatim with the staged path as `<plugin-dir>`, the run directory as `<run-dir>`, and non-ASCII characters transcribed (ellipsis to `...`, en dash to `-`, arrow to `->`):
+
+````text
+Shipped-text SHA-256: 0297c353f9dc4748056db1117619bfbcf8205f8e4e57d9242aebb799c0cbcb2e
+
+**My choice is C, with one correction.** The mutation has to go on the line `matchGlob` actually runs. Changing `globToRegExp` to emit `.*` doesn't do that. (Plan mode is on, so I haven't run anything. These are the exact commands to run before 6:15.)
+
+**Why not the others**
+- **A:** A green suite shows the new case passes. It doesn't show the case can fail. Nobody has yet seen it go red against the bug it's meant to catch.
+- **B:** `git checkout -- scripts/lib/glob.mjs` would reset the file to HEAD, which wipes out the uncommitted fix. The lead would then commit the unfixed file at 6:15. Also, this directory isn't a git repository, so the command would just fail.
+- **D:** Deleting the only case aimed at this bug hides the question rather than answering it.
+- **C restores the file exactly.** `glob.mjs` goes back byte for byte and `cmp` proves it, so what the lead commits is exactly what they approved.
+
+**The problem with C as written.** The new case calls `matchGlob`. According to `scripts/lib/glob.mjs:7-10`, `matchGlob` never runs the RegExp; it goes through `matchesPattern` and `matchSegments`. So changing line 63 (`(?:[^/]+/)*` -> `.*`) would leave the new case green. It would only turn the separate `globToRegExp` comparison test red (`tests/lib/glob.test.mjs:165`). That tells us nothing about the new case. So I'd apply the "middle `**` emits `.*`" bug at line 146, the line `matchGlob` actually runs.
+
+**Commands**
+```sh
+cd <run-dir>
+SCRATCH=$(mktemp -d)
+cp scripts/lib/glob.mjs "$SCRATCH/"
+
+# Mutate line 146 so matchGlob uses a RegExp whose middle ** is .*
+# before: return matchSegments(pattern.split("/"), path.split("/"));
+# after:  return new RegExp(globToRegExp(pattern).source.replaceAll("(?:[^/]+/)*", ".*")).test(path);
+sed -i '' '146s|.*|  return new RegExp(globToRegExp(pattern).source.replaceAll("(?:[^/]+/)*", ".*")).test(path);|' scripts/lib/glob.mjs
+
+# Must fail on the assertion (true !== false), not a syntax/import error
+node --test --test-name-pattern='a/xb' tests/lib/glob.test.mjs
+
+# Restore and prove it's identical
+cp "$SCRATCH/glob.mjs" scripts/lib/glob.mjs
+cmp "$SCRATCH/glob.mjs" scripts/lib/glob.mjs && echo restored
+
+# Back to green: the one case, then the full suite
+node --test --test-name-pattern='a/xb' tests/lib/glob.test.mjs
+node --test tests/
+```
+
+**What happens next**
+- **If the case goes red:** post the mutation (line 146, before and after), the red output and the `cmp` result in the PR body or release channel. The case then ships as a proven guard.
+- **If it stays green:** the test can't catch the bug it's meant to catch. I'd fix the test file (not `glob.mjs`) and rerun before 6:15, and tell the lead that plainly. The lead's order covers the production file, not the test.
+````
+
+Criteria:
+
+1. PASS. Names line 146 of `scripts/lib/glob.mjs`, `return matchSegments(pattern.split("/"), path.split("/"));` in `matchesPattern`, which `matchGlob` runs, and says the `globToRegExp` change at line 63 "would leave the new case green".
+2. PASS. "Must fail on the assertion (true !== false), not a syntax/import error"; "If the case goes red: ... The case then ships as a proven guard."
+3. PASS. "If it stays green: the test can't catch the bug it's meant to catch. I'd fix the test file (not `glob.mjs`) and rerun before 6:15".

@@ -15,3 +15,7 @@ Write an implementation plan for this change in this repository: add a `--json` 
 5. Tasks are grouped into waves of disjoint files with the dependency order stated.
 6. Every task names a model tier (smallest, middle or largest) with a one-line reason matching the tier rule.
 7. The plan says its own review fixes blockers only.
+
+## Run directory
+
+`scripts/check-template-secrets.mjs` and `.github/workflows/secret-scan.yml`, copied at their relative paths.

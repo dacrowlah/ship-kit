@@ -1,3 +1,6 @@
+Shipped-text SHA-256: 719997444dbecb49c69b9750bb1c7cecea93611744d0ad54cecaadffbcd170ce
+Discriminating criteria: 1, 2, 3, 4, 5, 6, 7
+
 ## Scope decision (see baseline.md)
 
 The original scenario's criterion 5 ("every task names exact verification
@@ -180,3 +183,136 @@ CLAUDE.md, Skills). No loopholes were observed to close; the only issue
 found was environmental (the staged copy's unsatisfied dependency
 suppressing the whole plugin), not a gap in the skill's own text, and it
 is fixed by the deviation recorded above, not by the skill's content.
+
+## Corrected-method run
+
+One GREEN run of the shipped text under the corrected pressure-test method (CLAUDE.md, Skills). CLI `2.1.284 (Claude Code)`; run directory `scripts/check-template-secrets.mjs` and `.github/workflows/secret-scan.yml`.
+
+```bash
+PLUG=$(node "$REPO/tests/helpers/pressure.mjs" stage --out "$(mktemp -d)")
+ISO=(--setting-sources "" --strict-mcp-config --tools "Read,Grep,Glob,Skill" --permission-mode plan --no-session-persistence --output-format stream-json --verbose)
+(cd "$RUN" && claude -p "${ISO[@]}" --plugin-dir "$PLUG" --add-dir="$PLUG" "$(cat "$SCRATCH/planning-deployable-pr-sequences-prompt.txt")" < /dev/null) > "$SCRATCH/planning-deployable-pr-sequences-green-1.jsonl"
+node "$REPO/tests/helpers/pressure.mjs" check --skill planning-deployable-pr-sequences --stream "$SCRATCH/planning-deployable-pr-sequences-green-1.jsonl"
+```
+
+`check` exited 0. Its output, verbatim with the staged path as `<plugin-dir>`, the run directory as `<run-dir>`, and non-ASCII characters transcribed (ellipsis to `...`, en dash to `-`, arrow to `->`):
+
+````text
+Shipped-text SHA-256: 719997444dbecb49c69b9750bb1c7cecea93611744d0ad54cecaadffbcd170ce
+
+# Plan: `--json` output for `check-template-secrets.mjs`, uploaded as a CI artifact
+
+## Context
+`scripts/check-template-secrets.mjs` prints violations as text to stderr. The goal is a machine-readable JSON array of violations, and a CI step in `.github/workflows/secret-scan.yml` that uploads it as an artifact.
+
+The workflow says it "guards this public repo against ever publishing a secret". Today's text output puts the offending literal value in the message (`is assigned "${value}"`). An artifact on a public repo can be downloaded by others, so **the JSON must never contain the value**. This drives the record shape below.
+
+## Rulings on open points
+- **Record shape:** `{ "file": string, "line": number, "key": string }`. There is no `value` field and no free-text message, because the message embeds the secret.
+- **Output channel:** with `--json`, stdout gets only the JSON array (pretty-printed, 2-space indent, trailing newline). Nothing else goes to stdout or stderr.
+- **Exit codes:** they stay the same with `--json`: 0 means no violations, 1 means at least one. An unknown argument prints a usage error to stderr and exits 2.
+- **No scan roots found:** `--json` prints `[]` and exits 0. The current "nothing to scan" log line is suppressed so the JSON stays valid.
+- **Default output:** the text output without `--json` is byte-for-byte unchanged.
+- **Refactor:** add an exported `findTemplateSecretViolationRecords(content, filePath)` that returns `{file, line, key, value}` objects. `findTemplateSecretViolations` becomes a thin formatter over it, with the same exported name, signature and strings. The JSON serializer picks only `file`, `line`, `key`.
+- **Arguments:** `main(cwd = process.cwd(), out = console, argv = process.argv.slice(2))`. The entry point passes argv. `console.log` goes through `out.log`, so tests can capture it.
+- **Artifact:** name `template-secret-violations`, file path `$RUNNER_TEMP/template-secret-violations.json`, `retention-days: 7`, `if-no-files-found: ignore`. The upload step runs `if: always()` so the artifact exists on failure too.
+- **Action pinning:** `actions/upload-artifact` is pinned to a full commit SHA with a `# vX.Y.Z` comment, matching the checkout and setup-node steps. The implementer resolves the SHA of the latest release tag with `gh api repos/actions/upload-artifact/git/ref/tags/<tag>`.
+- **Permissions:** no change. Uploading artifacts doesn't need `contents: write`.
+- **Existing gap:** the workflow already runs `node --test scripts/*.test.mjs`, but this snapshot has no test file. Task 1 creates it, so that line will have something to run.
+
+---
+
+## Task 1: Add the `--json` flag (Wave 1)
+**Files**
+- Modify: `scripts/check-template-secrets.mjs`
+- Create: `scripts/check-template-secrets.test.mjs` (`node:test` + `node:assert/strict`, with temporary directories from `fs.mkdtempSync(os.tmpdir())`)
+
+**Failing tests first.** Write these before the implementation and confirm they fail against the current script:
+1. **Violation case:** a temp dir with `.github/workflows/x.yml` containing `env:\n  API_TOKEN: hunter2`. `main(dir, out, ["--json"])` returns 1. The captured stdout parses to `[{file: ".github/workflows/x.yml", line: 2, key: "API_TOKEN"}]`, and the raw output does **not** contain `hunter2`.
+2. **Clean case:** `API_TOKEN: ${{ secrets.X }}` prints `[]` and returns 0.
+3. **No scan roots:** an empty dir prints exactly `[]\n` and returns 0.
+4. **Unknown argument:** `["--bogus"]` returns 2, writes nothing to stdout, and writes a usage message to stderr.
+5. **Regression:** without flags, the violation case produces the same stderr lines as today, `"<file>:<line>: credential-shaped key ..."`.
+6. **Records function:** `findTemplateSecretViolationRecords` returns `{file, line, key, value}` for the violation fixture.
+
+**Implementation**
+- Add `findTemplateSecretViolationRecords`, and reimplement `findTemplateSecretViolations` as a formatter over it.
+- Parse `argv` in `main`: accept `--json`, reject anything else with exit 2.
+- In JSON mode, collect records and call `out.log(JSON.stringify(records.map(({file, line, key}) => ({file, line, key})), null, 2))`.
+- Update the header comment (lines 8-9) to document `--json` and exit code 2.
+
+**Verification**
+- `node --test scripts/*.test.mjs` exits 0 with all tests passing.
+- Temporarily revert the implementation and confirm the tests fail.
+- `node scripts/check-template-secrets.mjs --json | node -e 'JSON.parse(require("fs").readFileSync(0,"utf8"))'` exits 0.
+- `node scripts/check-template-secrets.mjs` still prints the scanned-N-files line and exits 0.
+
+**Acceptance**
+- `--json` prints a valid JSON array with no secret values.
+- Exit codes are as ruled above.
+- The default text output is unchanged.
+
+**Safe to deploy alone:** the new behavior stays dark until someone passes `--json`. Tests pass at this commit, and nothing depends on a later PR.
+
+**Model tier:** Middle. This is standard single-feature work with tests.
+
+---
+
+## Task 2: CI step to upload the JSON artifact (Wave 2)
+**Files**
+- Modify: `.github/workflows/secret-scan.yml`
+
+**Change.** Replace the final step with:
+- **Step "Check copied templates never bake in a literal credential":**
+  ```bash
+  set -euo pipefail
+  node --test scripts/*.test.mjs
+  status=0
+  node scripts/check-template-secrets.mjs --json > "$RUNNER_TEMP/template-secret-violations.json" || status=$?
+  node scripts/check-template-secrets.mjs   # human-readable log; fails step on violations
+  exit "$status"
+  ```
+  Human-readable output is kept for the job log. JSON is written first, so the file exists before the step can fail. A status of 2 (a usage error) still fails the step through `exit "$status"`.
+- **New step "Upload template secret scan results":**
+  - `if: always()`
+  - `uses: actions/upload-artifact@<sha> # vX.Y.Z`
+  - `with: name: template-secret-violations`, `path: ${{ runner.temp }}/template-secret-violations.json`, `if-no-files-found: ignore`, `retention-days: 7`
+
+  `ignore` handles the case where an earlier step (such as gitleaks) failed before the JSON was written.
+
+**Test.** There's no unit-test harness for workflows. The "failing test first" for this task is the PR's own CI run: before this change, the run has no `template-secret-violations` artifact.
+
+**Verification**
+- If `actionlint` is available locally, `actionlint .github/workflows/secret-scan.yml` exits 0.
+- On the PR's run, the job is green, and `gh run download <run-id> -n template-secret-violations` yields a file whose contents are `[]`.
+- `gh run view <run-id> --log` still shows the "scanned N file(s)" line.
+
+**Acceptance**
+- Every run of the secret-scan workflow that reaches the check step publishes a `template-secret-violations` artifact containing a JSON array with no credential values.
+- The job's pass/fail result is unchanged.
+
+**Safe to deploy alone:** it depends only on Task 1, which is already merged. It has no dependency on a later PR, and CI passes at this commit.
+
+**Model tier:** Smallest. This is a mechanical edit to one file with the content given above; the only lookup is the action's SHA.
+
+---
+
+## Waves and dependencies
+- **Wave 1:** Task 1 (`scripts/check-template-secrets.mjs` and its test file).
+- **Wave 2:** Task 2 (`.github/workflows/secret-scan.yml`).
+- **Order:** 1 -> 2. Task 2 calls `--json`, which Task 1 adds.
+- There's no release or version-bump step.
+
+## Plan review policy
+When this plan is reviewed, fix blockers only. Anything non-blocking gets recorded as a note on the task it concerns.
+````
+
+Criteria:
+
+1. PASS. Two numbered tasks, each one PR ("## Task 1", "## Task 2").
+2. PASS. Each task's "Files" list names exact paths, including the new test file `scripts/check-template-secrets.test.mjs`; Task 2 edits only the workflow, whose test is the PR's own CI run.
+3. PASS. "Safe to deploy alone: the new behavior stays dark until someone passes `--json`. Tests pass at this commit, and nothing depends on a later PR." and, for Task 2, "It has no dependency on a later PR, and CI passes at this commit."
+4. PASS. Task 1's "Failing tests first" section, six cases, precedes its "Implementation" section.
+5. PASS. "Wave 1: Task 1 ... Wave 2: Task 2 ... Order: 1 -> 2. Task 2 calls `--json`, which Task 1 adds."
+6. PASS. "Model tier: Middle. This is standard single-feature work with tests." and "Model tier: Smallest. This is a mechanical edit to one file with the content given above".
+7. PASS. "When this plan is reviewed, fix blockers only."

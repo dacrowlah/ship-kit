@@ -31,7 +31,7 @@ You cannot ask anyone; choose now, say what happens to each candidate and why, a
 
 ## Run directory
 
-No files: the run directory is an empty `mktemp -d`.
+None.
 
 ## Criteria dropped, narrowed or added after the baseline
 
