@@ -273,6 +273,81 @@ test("minimum and maximum bound numbers", () => {
   assert.equal(validate(schema, 4).ok, false);
 });
 
+test("validate never returns an array that aliases the input, even without an items keyword", () => {
+  const schema = { type: "object", properties: { list: { type: "array" } } };
+  const inputArray = [1, 2, 3];
+  const result = validate(schema, { list: inputArray });
+  assert.equal(result.ok, true);
+  assert.notEqual(result.value.list, inputArray);
+  result.value.list.push("mutated");
+  assert.deepEqual(inputArray, [1, 2, 3]);
+});
+
+test("a bare type: array schema still returns a copy of the input array", () => {
+  const inputArray = [9, 9, 9];
+  const result = validate({ type: "array" }, inputArray);
+  assert.equal(result.ok, true);
+  assert.notEqual(result.value, inputArray);
+  result.value.push("mutated");
+  assert.deepEqual(inputArray, [9, 9, 9]);
+});
+
+test("additionalProperties as a schema also returns copies, not the input array", () => {
+  const schema = { type: "object", properties: {}, additionalProperties: { type: "array" } };
+  const inputArray = ["a", "b"];
+  const result = validate(schema, { extra: inputArray });
+  assert.equal(result.ok, true);
+  assert.notEqual(result.value.extra, inputArray);
+  result.value.extra.push("mutated");
+  assert.deepEqual(inputArray, ["a", "b"]);
+});
+
+test("two validations sharing a default never share any nested object or array", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      settings: { type: "object", default: { tags: ["x"] }, properties: { tags: { type: "array" } } },
+    },
+  };
+  const first = validate(schema, {});
+  const second = validate(schema, {});
+  assert.notEqual(first.value.settings, second.value.settings);
+  assert.notEqual(first.value.settings.tags, second.value.settings.tags);
+  first.value.settings.tags.push("mutated");
+  assert.deepEqual(second.value.settings.tags, ["x"]);
+  assert.deepEqual(schema.properties.settings.default, { tags: ["x"] });
+});
+
+test("NaN, Infinity and -Infinity never satisfy type number or integer", () => {
+  const numberSchema = { type: "number" };
+  assert.equal(validate(numberSchema, NaN).ok, false);
+  assert.equal(validate(numberSchema, Infinity).ok, false);
+  assert.equal(validate(numberSchema, -Infinity).ok, false);
+
+  const integerSchema = { type: "integer" };
+  assert.equal(validate(integerSchema, NaN).ok, false);
+  assert.equal(validate(integerSchema, Infinity).ok, false);
+});
+
+test("NaN bypasses neither minimum nor maximum", () => {
+  const schema = { type: "number", minimum: 1, maximum: 10 };
+  const result = validate(schema, NaN);
+  assert.equal(result.ok, false);
+});
+
+test("-0 satisfies type number and integer and compares as 0 against bounds", () => {
+  const schema = { type: "number", minimum: 0 };
+  assert.equal(validate(schema, -0).ok, true);
+  assert.equal(validate({ type: "integer" }, -0).ok, true);
+});
+
+test("a large integer beyond Number.MAX_SAFE_INTEGER still validates as an integer", () => {
+  const bigInt = Number.MAX_SAFE_INTEGER * 4;
+  assert.ok(Number.isInteger(bigInt));
+  assert.equal(validate({ type: "integer" }, bigInt).ok, true);
+  assert.equal(validate({ type: "number" }, bigInt).ok, true);
+});
+
 test("a required property missing after default-filling is an error", () => {
   const schema = {
     type: "object",

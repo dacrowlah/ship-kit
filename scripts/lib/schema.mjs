@@ -60,8 +60,8 @@ function matchesType(value, typeName) {
     case "object": return isPlainObject(value);
     case "array": return Array.isArray(value);
     case "string": return typeof value === "string";
-    case "integer": return typeof value === "number" && Number.isInteger(value);
-    case "number": return typeof value === "number";
+    case "integer": return Number.isInteger(value);
+    case "number": return Number.isFinite(value);
     case "boolean": return typeof value === "boolean";
     case "null": return value === null;
     default: return false;
@@ -241,10 +241,13 @@ function validateArrayNode(schema, value, path, depth, errors) {
   if (Object.hasOwn(schema, "maxItems") && value.length > schema.maxItems) {
     errors.push({ path, message: `must have at most ${schema.maxItems} item(s)` });
   }
-  if (!Object.hasOwn(schema, "items")) {
-    return value;
-  }
-  return value.map((item, index) => validateNode(schema.items, item, pointerAppend(path, index), depth + 1, errors));
+  // Always rebuild the array element-by-element, even when the schema has
+  // no `items` keyword: the result must never alias the caller's array
+  // (or anything reachable from it), so every element still goes through
+  // `validateNode` (with an open `{}` schema when there is no `items`)
+  // instead of being copied back by reference.
+  const itemSchema = Object.hasOwn(schema, "items") ? schema.items : {};
+  return value.map((item, index) => validateNode(itemSchema, item, pointerAppend(path, index), depth + 1, errors));
 }
 
 function validateStringNode(schema, value, path, errors) {
