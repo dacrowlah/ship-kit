@@ -342,27 +342,73 @@ const BYPASS_TEMPLATES = {
   "control (plain key)": ["jobs:", "  evil:", `    run: "echo ${EXPR}"`].join("\n"),
 };
 
+/** Renders one in-memory template the way the real pipeline would. */
+function gateInMemoryTemplate(path, template, variants, violations) {
+  gateRenderedTemplates(
+    () =>
+      renderedTemplateVariants({
+        glob: () => [path],
+        registry: { [path]: variants },
+        read: (requested) => {
+          if (requested !== path) throw new Error(`read of an unexpected path: ${requested}`);
+          return template;
+        },
+      }),
+    violations,
+  );
+}
+
 for (const [form, text] of Object.entries(BYPASS_TEMPLATES)) {
-  test(`a registered template variant using a ${form} is reported by the rendered-template gate`, () => {
-    const registry = { "templates/evil.yml": [{ name: form, render: () => `${text}\n` }] };
+  test(`a registered template using a ${form} is reported by the rendered-template gate`, () => {
     const violations = [];
-    gateRenderedTemplates(() => renderedTemplateVariants(() => ["templates/evil.yml"], registry), violations);
+    gateInMemoryTemplate("templates/evil.yml", `${text}\n`, [{ name: form, values: () => ({}) }], violations);
     assert.equal(violations.length, 1, JSON.stringify(violations));
     assert.match(violations[0], /^templates\/evil\.yml \[/);
   });
 }
 
-test("a template file with no registered renderer is a violation, not a silent skip", () => {
+test("a placeholder-bearing template using a quoted run key is gated once rendered with its own values", () => {
+  const template = `jobs:\n<<job>>\n`;
+  const values = () => ({ job: `  evil:\n    "run": "echo ${EXPR}"` });
   const violations = [];
-  gateRenderedTemplates(() => renderedTemplateVariants(() => ["templates/new.yml"], {}), violations);
+  gateInMemoryTemplate("templates/evil.yml", template, [{ name: "with job", values }], violations);
+  assert.equal(violations.length, 1, JSON.stringify(violations));
+  assert.match(violations[0], /run:\/script: value contains an expression/);
+});
+
+test("a template file with no registered values is a violation, not a silent skip", () => {
+  const violations = [];
+  gateRenderedTemplates(() => renderedTemplateVariants({ glob: () => ["templates/new.yml"], registry: {} }), violations);
   assert.equal(violations.length, 1);
-  assert.match(violations[0], /no renderer registered/);
+  assert.match(violations[0], /no values registered/);
+});
+
+test("a template that renders to empty output is a violation, not a vacuous pass", () => {
+  const violations = [];
+  gateInMemoryTemplate("templates/t.yml", "<<body>>\n", [{ name: "blank", values: () => ({ body: "" }) }], violations);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /rendered to empty output/);
+});
+
+test("values for one template registered against a different template's file are a violation", () => {
+  const violations = [];
+  gateInMemoryTemplate("templates/evil.yml", "jobs: {}\n<<only_in_evil>>\n", [{ name: "wrong values", values: () => ({ seat: "general" }) }], violations);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /cannot be rendered for the gate/);
 });
 
 test("a rendered variant that still holds a placeholder is a violation", () => {
-  const registry = { "templates/t.yml": [{ name: "leaky", render: () => "jobs:\n<<boot_job>>\n" }] };
   const violations = [];
-  gateRenderedTemplates(() => renderedTemplateVariants(() => ["templates/t.yml"], registry), violations);
+  gateRenderedTemplates(
+    () =>
+      renderedTemplateVariants({
+        glob: () => ["templates/t.yml"],
+        registry: { "templates/t.yml": [{ name: "leaky", values: () => ({}) }] },
+        read: () => "a: 1\n",
+        renderTemplate: () => "a: 1\n<<boot_job>>\n",
+      }),
+    violations,
+  );
   assert.equal(violations.length, 1);
   assert.match(violations[0], /unrendered placeholders/);
 });

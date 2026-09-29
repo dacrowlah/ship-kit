@@ -67,24 +67,34 @@ export function buildValues(fixture) {
 }
 
 /**
- * Renders the caller for a fixture, with a correctly stamped first line: the
- * template is rendered once with a placeholder `stamp_json`, then
- * `stampFile` recomputes the real stamp over the rendered body, exactly as
- * `stampFile`'s own contract requires (it recomputes its stub internally, so
- * the placeholder value used for the first pass never appears in the
- * result).
+ * The complete `<<key>>` values map for a fixture, with `stamp_json` set to
+ * a valid stub stamp. A stub is enough wherever the rendered text is only
+ * inspected (a stamp line never holds a `run:`); `renderCaller` replaces it
+ * with the real stamp.
  * @param {{auth: "oauth"|"api-key", boot: string|null, seat: string, default_branch: string, ship_kit_sha: string, ship_kit_version: string}} fixture
- * @returns {string}
+ * @returns {Record<string, string>}
  */
-export function renderCaller(fixture) {
-  const values = buildValues(fixture);
+export function callerValues(fixture) {
   const stubStamp = formatStamp({
     template: TEMPLATE_META_PATH,
     version: fixture.ship_kit_version,
     sha: "0".repeat(40),
     body: "0".repeat(64),
   });
-  const stubRendered = render(templateText(), { ...values, stamp_json: stubStamp });
+  return { ...buildValues(fixture), stamp_json: stubStamp };
+}
+
+/**
+ * Renders the caller for a fixture, with a correctly stamped first line: the
+ * template is rendered once with a stub `stamp_json`, then `stampFile`
+ * recomputes the real stamp over the rendered body, exactly as
+ * `stampFile`'s own contract requires (it recomputes its stub internally, so
+ * the stub used for the first pass never appears in the result).
+ * @param {{auth: "oauth"|"api-key", boot: string|null, seat: string, default_branch: string, ship_kit_sha: string, ship_kit_version: string}} fixture
+ * @returns {string}
+ */
+export function renderCaller(fixture) {
+  const stubRendered = render(templateText(), callerValues(fixture));
   const firstNewline = stubRendered.indexOf("\n");
   const body = stubRendered.slice(firstNewline + 1);
   const meta = { template: TEMPLATE_META_PATH, version: fixture.ship_kit_version, sha: fixture.ship_kit_sha };
