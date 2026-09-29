@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { checkHuntList, parseShapes } from "./format.mjs";
+import { loadConfig } from "../../scripts/lib/config.mjs";
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), "utf8");
 
@@ -93,6 +94,16 @@ test("both shared lists point at the format document", () => {
   for (const rel of ["review/hunt-lists/design-shared.md", "review/hunt-lists/code-shared.md"]) {
     assert.ok(read(rel).includes("skills/mining-defect-shapes/hunt-list-format.md"), rel);
   }
+});
+
+test("ship-kit's own code list, at the path its config names, is a valid repo list", () => {
+  const loaded = loadConfig(read(".ship-kit/config.json"));
+  assert.equal(loaded.ok, true, loaded.reason);
+  const path = loaded.config.review.huntLists.code;
+  const text = read(path);
+  assert.deepEqual(checkHuntList(text, { prefix: "R", shared: false }), []);
+  assert.ok(parseShapes(text).length > 0, `${path} holds no shapes`);
+  assert.ok(text.includes("skills/mining-defect-shapes/hunt-list-format.md"), `${path} does not name the format document`);
 });
 
 test("the format document's example repo list passes the checker", () => {
