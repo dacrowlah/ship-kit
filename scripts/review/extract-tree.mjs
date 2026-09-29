@@ -86,7 +86,7 @@ export function parseLsTree(buffer) {
 /** @param {string} path @returns {string | null} why the path is refused, or null */
 export function refusalReason(path) {
   if (path === "") return "empty path";
-  if (path.includes("�")) return "not valid UTF-8";
+  if (path.includes("\ufffd")) return "not valid UTF-8";
   if (path.startsWith("/")) return "absolute path";
   if (path.includes("\\")) return "a backslash";
   const components = path.split("/");

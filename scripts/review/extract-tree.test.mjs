@@ -115,7 +115,7 @@ test("a backslash, which is a separator on Windows, is refused", () => {
 test("a path whose bytes are not UTF-8 is refused", () => {
   const raw = Buffer.concat([Buffer.from(`100644 blob ${SHA}\tbad`), Buffer.from([0xff, 0xfe]), Buffer.from([0])]);
   const entries = parseLsTree(raw);
-  assert.equal(entries[0].path, "bad��");
+  assert.equal(entries[0].path, "bad\ufffd\ufffd");
   const { result } = extract(entries);
   assert.equal(reasonFor(result, entries[0].path), "not valid UTF-8");
 });
