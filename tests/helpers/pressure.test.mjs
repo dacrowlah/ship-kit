@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { isolatedEnv } from "../../scripts/assert-test-globs.mjs";
@@ -11,8 +11,17 @@ import { checkStream, main, readMarker, shippedTextHash, stage } from "./pressur
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const SCRIPT = join(HERE, "pressure.mjs");
-const INVOKED = readFileSync(join(HERE, "fixtures", "stream-invoked.jsonl"), "utf8");
-const LISTED = readFileSync(join(HERE, "fixtures", "stream-listed-not-invoked.jsonl"), "utf8");
+const RAW_INVOKED = readFileSync(join(HERE, "fixtures", "stream-invoked.jsonl"), "utf8");
+const RAW_LISTED = readFileSync(join(HERE, "fixtures", "stream-listed-not-invoked.jsonl"), "utf8");
+/** Points the fixture's redacted ship-kit plugin path at `path`. @returns {string} */
+const loadedFrom = (text, path) => {
+  const out = text.split('"path":"<plugin-dir>"').join(`"path":${JSON.stringify(path)}`);
+  assert.notEqual(out, text, "the fixture names the redacted plugin path");
+  return out;
+};
+const STAGED_PATH = "/staged/plugin";
+const INVOKED = loadedFrom(RAW_INVOKED, STAGED_PATH);
+const LISTED = loadedFrom(RAW_LISTED, STAGED_PATH);
 const SKILL = "proving-tests-can-fail";
 const HEX = "0123456789abcdef";
 const MARKER = `${SKILL}@0.1.0:${HEX}`;
@@ -45,10 +54,20 @@ function run(argv, extra = {}) {
 
 const tmp = (prefix) => mkdtempSync(join(tmpdir(), prefix));
 
-/** A skill directory holding the given files. @returns {string} */
-function skillDir(files) {
-  const dir = tmp("pressure-skill-");
-  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+/**
+ * `<root>/skills/s` holding `files` (paths may have subdirectories), plus
+ * `shared` files under `<root>`. @returns {string} the skill directory
+ */
+function skillDir(files, shared = {}) {
+  const root = tmp("pressure-skill-");
+  const dir = join(root, "skills", "s");
+  for (const [base, set] of [[dir, files], [root, shared]]) {
+    for (const [name, content] of Object.entries(set)) {
+      mkdirSync(dirname(join(base, name)), { recursive: true });
+      writeFileSync(join(base, name), content);
+    }
+  }
+  mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -155,6 +174,68 @@ test("a Skill call whose result is an error or missing fails", () => {
   assert.equal(checkStream(join_(withoutResult), { skill: SKILL, dmi: false }).ok, false);
 });
 
+/** The fixture's Skill call, its message and its tool_result message. */
+function skillCallParts(messages) {
+  const call = messages.find((m) => m.type === "assistant" && JSON.stringify(m).includes('"name":"Skill"'));
+  const block = call.message.content.find((c) => c.name === "Skill");
+  const result = messages.find((m) => m.type === "user" && JSON.stringify(m).includes(`"tool_use_id":"${block.id}"`));
+  return { call, block, result };
+}
+
+test("a Skill call without an id, or whose result comes first, does not count", () => {
+  const noId = parse(INVOKED);
+  const parts = skillCallParts(noId);
+  delete parts.block.id;
+  delete parts.result.message.content.find((c) => c.type === "tool_result").tool_use_id;
+  assert.equal(checkStream(join_(noId), { skill: SKILL, dmi: false }).ok, false);
+  const reordered = parse(INVOKED);
+  const { call, result } = skillCallParts(reordered);
+  const [moved] = reordered.splice(reordered.indexOf(result), 1);
+  reordered.splice(reordered.indexOf(call), 0, moved);
+  assert.equal(checkStream(join_(reordered), { skill: SKILL, dmi: false }).ok, false);
+});
+
+test("a Skill call id that is reused or answered twice does not count", () => {
+  const reused = parse(INVOKED);
+  const { block } = skillCallParts(reused);
+  const read = reused.find((m) => m.type === "assistant" && JSON.stringify(m).includes('"name":"Read"'));
+  read.message.content.find((c) => c.name === "Read").id = block.id;
+  assert.equal(checkStream(join_(reused), { skill: SKILL, dmi: false }).ok, false);
+  const twice = parse(INVOKED);
+  const { result } = skillCallParts(twice);
+  twice.splice(twice.indexOf(result) + 1, 0, result);
+  assert.equal(checkStream(join_(twice), { skill: SKILL, dmi: false }).ok, false);
+});
+
+test("a Skill tool_use outside an assistant message does not count", () => {
+  const messages = parse(INVOKED);
+  const { call } = skillCallParts(messages);
+  call.type = "user";
+  const verdict = checkStream(join_(messages), { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /no Skill tool call/);
+});
+
+test("init must name exactly one ship-kit plugin at an absolute path", () => {
+  const verdict = checkStream(INVOKED, { skill: SKILL, dmi: false });
+  assert.equal(verdict.ok && verdict.pluginPath, STAGED_PATH);
+  const cases = [
+    (init) => delete init.plugins,
+    (init) => (init.plugins = init.plugins.filter((p) => p.name !== "ship-kit")),
+    (init) => init.plugins.push({ name: "ship-kit", path: "/other" }),
+    (init) => (init.plugins.find((p) => p.name === "ship-kit").path = "relative/plugin"),
+    (init) => delete init.plugins.find((p) => p.name === "ship-kit").path,
+  ];
+  for (const edit of cases) {
+    const messages = parse(INVOKED);
+    edit(messages[0]);
+    const bad = checkStream(join_(messages), { skill: SKILL, dmi: false });
+    assert.equal(bad.ok, false, edit.toString());
+    assert.match(bad.reason, /no single ship-kit plugin/);
+  }
+  assert.equal(checkStream(RAW_INVOKED, { skill: SKILL, dmi: false }).ok, false, "the redacted placeholder is not a path");
+});
+
 test("truncated stream fails", () => {
   const messages = parse(INVOKED).filter((m) => m.type !== "result");
   const verdict = checkStream(join_(messages), { skill: SKILL, dmi: false });
@@ -169,7 +250,13 @@ test("a result message that is not last, is an error or has no text fails", () =
   assert.match(notLast.reason, /no final result message/);
   const errored = checkStream(withResult(INVOKED, (m) => ({ ...m, is_error: true })), { skill: SKILL, dmi: false });
   assert.equal(errored.ok, false);
-  assert.match(errored.reason, /final result message is an error/);
+  assert.match(errored.reason, /final result message is not a success/);
+  const subtype = checkStream(withResult(INVOKED, (m) => ({ ...m, subtype: "error_max_turns" })), {
+    skill: SKILL,
+    dmi: false,
+  });
+  assert.equal(subtype.ok, false);
+  assert.match(subtype.reason, /final result message is not a success/);
   const noText = checkStream(withResult(INVOKED, (m) => ({ ...m, result: 42 })), { skill: SKILL, dmi: false });
   assert.equal(noText.ok, false);
   assert.match(noText.reason, /final result message has no result text/);
@@ -250,17 +337,44 @@ test("readMarker takes the single skill_marker line and refuses a malformed or r
 
 // --- hash ----------------------------------------------------------------
 
-test("hash ignores marker lines only", () => {
-  const a = skillDir({ "SKILL.md": `# S\nskill_marker: ${MARKER}\nbody\n`, "ref.md": "ref\n" });
-  const b = skillDir({ "SKILL.md": `# S\nskill_marker: ${SKILL}@0.2.0:fedcba9876543210\nbody\n`, "ref.md": "ref\n" });
-  const c = skillDir({ "SKILL.md": `# S\nskill_marker: ${MARKER}\nbodY\n`, "ref.md": "ref\n" });
-  const d = skillDir({ "SKILL.md": `# S\nskill_marker: ${MARKER}\nbody\n`, "ref.md": "ref\n", "extra.md": "\n" });
-  const e = skillDir({ "SKILL.md": `# S\nskill_marker: ${MARKER}\nbody\n`, "ref.md": "ref\n", "notes.txt": "x\n" });
+test("hash ignores the SKILL.md marker line only", () => {
+  const base = { "SKILL.md": `# S\nskill_marker: ${MARKER}\nbody\n`, "ref.md": "ref\n" };
+  const a = skillDir(base);
+  const b = skillDir({ ...base, "SKILL.md": `# S\nskill_marker: ${SKILL}@0.2.0:fedcba9876543210\nbody\n` });
+  const c = skillDir({ ...base, "SKILL.md": `# S\nskill_marker: ${MARKER}\nbodY\n` });
+  const d = skillDir({ ...base, "extra.md": "\n" });
+  const e = skillDir({ ...base, "SKILL.md": `# S\nskill_marker: ${MARKER}\nbody\nskill_marker: do something else\n` });
+  const f = skillDir({ ...base, "ref.md": "ref\nskill_marker: hidden\n" });
   assert.equal(shippedTextHash(a), shippedTextHash(b));
   assert.notEqual(shippedTextHash(a), shippedTextHash(c));
   assert.notEqual(shippedTextHash(a), shippedTextHash(d), "a new reference file changes the hash");
-  assert.equal(shippedTextHash(a), shippedTextHash(e), "only *.md files count");
+  assert.notEqual(shippedTextHash(a), shippedTextHash(e), "a second marker-shaped line is hashed");
+  assert.notEqual(shippedTextHash(a), shippedTextHash(f), "marker-shaped lines in other files are hashed");
   assert.match(shippedTextHash(a), /^[0-9a-f]{64}$/);
+});
+
+test("hash covers every file under the skill directory", () => {
+  const base = { "SKILL.md": "s\n", "refs/r.md": "r\n", "notes.txt": "n\n" };
+  const a = shippedTextHash(skillDir(base));
+  assert.notEqual(a, shippedTextHash(skillDir({ ...base, "refs/r.md": "R\n" })), "a nested reference file counts");
+  assert.notEqual(a, shippedTextHash(skillDir({ ...base, "notes.txt": "N\n" })), "a non-md sibling counts");
+  assert.notEqual(a, shippedTextHash(skillDir({ ...base, "UPPER.MD": "x\n" })), "any extension counts");
+  const invalid = (byte) => skillDir({ ...base, "SKILL.md": Buffer.from([0x73, byte, 0x0a]) });
+  assert.notEqual(shippedTextHash(invalid(0xff)), shippedTextHash(invalid(0xfe)), "raw bytes, not decoded text");
+});
+
+test("hash covers shared files the skill names under the plugin root", () => {
+  const skill = { "SKILL.md": "Read `${CLAUDE_PLUGIN_ROOT}/review/list.md` and ${CLAUDE_PLUGIN_ROOT}/review/dir.\n" };
+  const shared = { "review/list.md": "one\n", "review/dir/a.md": "a\n", "review/other.md": "o\n" };
+  const a = shippedTextHash(skillDir(skill, shared));
+  assert.notEqual(a, shippedTextHash(skillDir(skill, { ...shared, "review/list.md": "two\n" })), "a named file");
+  assert.notEqual(a, shippedTextHash(skillDir(skill, { ...shared, "review/dir/a.md": "b\n" })), "a named directory");
+  assert.equal(a, shippedTextHash(skillDir(skill, { ...shared, "review/other.md": "p\n" })), "unnamed files do not count");
+  const viaReference = { ...skill, "ref.md": "See ${CLAUDE_PLUGIN_ROOT}/review/other.md.\n" };
+  const b = shippedTextHash(skillDir(viaReference, shared));
+  assert.notEqual(b, shippedTextHash(skillDir(viaReference, { ...shared, "review/other.md": "p\n" })), "named by a reference file");
+  const escaping = { "SKILL.md": "${CLAUDE_PLUGIN_ROOT}/../outside.md and ${CLAUDE_PLUGIN_ROOT}/missing.md\n" };
+  assert.match(shippedTextHash(skillDir(escaping)), /^[0-9a-f]{64}$/, "escaping and missing names are skipped");
 });
 
 test("hash separates file boundaries", () => {
@@ -280,14 +394,16 @@ test("hash reads CRLF as LF", () => {
   assert.equal(shippedTextHash(lf), shippedTextHash(crlf));
 });
 
-test("hash refuses a directory without SKILL.md or with a non-file *.md", () => {
+test("hash refuses a directory without SKILL.md or holding a symlink", () => {
   assert.throws(() => shippedTextHash(skillDir({ "ref.md": "x" })), /no SKILL\.md/);
   const dir = skillDir({ "SKILL.md": "s\n" });
-  mkdirSync(join(dir, "nested.md"));
-  assert.throws(() => shippedTextHash(dir), /not a regular file/);
   const linked = skillDir({ "SKILL.md": "s\n" });
   symlinkSync(join(dir, "SKILL.md"), join(linked, "link.md"));
   assert.throws(() => shippedTextHash(linked), /not a regular file/);
+  const sharedLink = skillDir({ "SKILL.md": "${CLAUDE_PLUGIN_ROOT}/review/l.md\n" });
+  mkdirSync(join(sharedLink, "..", "..", "review"));
+  symlinkSync(join(dir, "SKILL.md"), join(sharedLink, "..", "..", "review", "l.md"));
+  assert.throws(() => shippedTextHash(sharedLink), /not a regular file/);
 });
 
 test("hash of a shipped skill is stable across calls", () => {
@@ -346,6 +462,40 @@ test("stage refuses an out inside the source tree and a source without plugin.js
   assert.match(missing.err, /plugin\.json/);
 });
 
+test("stage refuses an out whose name only starts with two dots inside the tree", () => {
+  const root = pluginRoot();
+  const result = run(["stage", "--out", join(root, "..staged")], { root });
+  assert.equal(result.code, 2);
+  assert.match(result.err, /inside the source tree/);
+});
+
+test("stage keeps a relative symlink inside the staged directories verbatim", () => {
+  const root = pluginRoot();
+  symlinkSync("../../scripts/x.mjs", join(root, "skills", "a-skill", "x.mjs"));
+  const out = join(tmp("pressure-out-"), "plug");
+  stage({ root, out });
+  assert.equal(readlinkSync(join(out, "skills", "a-skill", "x.mjs")), "../../scripts/x.mjs");
+  assert.equal(readFileSync(join(out, "skills", "a-skill", "x.mjs"), "utf8"), "x\n");
+});
+
+test("stage refuses a symlink that leaves the staged directories", () => {
+  const cases = [
+    (root) => symlinkSync("../../docs/design.md", join(root, "skills", "a-skill", "d.md")),
+    (root) => symlinkSync(join(root, "scripts", "x.mjs"), join(root, "skills", "a-skill", "abs.mjs")),
+    (root) => symlinkSync("docs", join(root, "review")),
+    (root) => symlinkSync("../dangling", join(root, "review")),
+  ];
+  for (const plant of cases) {
+    const root = pluginRoot();
+    plant(root);
+    const out = join(tmp("pressure-out-"), "plug");
+    const result = run(["stage", "--out", out], { root });
+    assert.equal(result.code, 2, plant.toString());
+    assert.match(result.err, /symlink leaving the staged directories/);
+    assert.equal(existsSync(out), false, "nothing is copied");
+  }
+});
+
 test("stage through main reports success", () => {
   const root = pluginRoot();
   const out = join(tmp("pressure-out-"), "plug");
@@ -370,11 +520,15 @@ function streamFile(text) {
   return file;
 }
 
+/** Output of a valid check: the hash line, a blank line, the text. */
+const checked = (plugin, text) => `Shipped-text SHA-256: ${shippedTextHash(join(plugin, "skills", SKILL))}\n\n${text}\n`;
+
 test("check through main prints the text on success and the reason on failure", () => {
   const root = repoWithSkill("---\nname: x\n---\nbody\n");
-  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(INVOKED)], { root });
+  const plugin = repoWithSkill("---\nname: x\n---\nbody\n");
+  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, plugin))], { root });
   assert.equal(ok.code, 0, ok.err);
-  assert.equal(ok.out, finalResult(INVOKED) + "\n");
+  assert.equal(ok.out, checked(plugin, finalResult(INVOKED)));
   const bad = run(["check", "--skill", SKILL, "--stream", streamFile(LISTED)], { root });
   assert.equal(bad.code, 1);
   assert.equal(bad.out, "");
@@ -388,13 +542,31 @@ test("check --dmi through main reads the marker from SKILL.md", () => {
     result: `marker ${MARKER}`,
     structured_output: { skill_marker: MARKER },
   }));
-  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(stream), "--dmi"], { root });
+  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(stream.split(STAGED_PATH).join(root)), "--dmi"], {
+    root,
+  });
   assert.equal(ok.code, 0, ok.err);
-  assert.equal(ok.out, `marker ${SKILL}@0.1.0:<token>\n`);
+  assert.equal(ok.out, checked(root, `marker ${SKILL}@0.1.0:<token>`));
   const noMarker = repoWithSkill("---\nname: x\n---\n");
   const refused = run(["check", "--skill", SKILL, "--stream", streamFile(stream), "--dmi"], { root: noMarker });
   assert.equal(refused.code, 1);
   assert.match(refused.err, /no skill_marker line/);
+});
+
+test("check prints the hash of the text the run loaded, not of the repository", () => {
+  const root = repoWithSkill("---\nname: x\n---\nrepository text\n");
+  const plugin = repoWithSkill("---\nname: x\n---\nstaged text\n");
+  const ok = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, plugin))], { root });
+  assert.equal(ok.code, 0, ok.err);
+  const printed = ok.out.split("\n")[0];
+  assert.equal(printed, `Shipped-text SHA-256: ${shippedTextHash(join(plugin, "skills", SKILL))}`);
+  assert.notEqual(printed, `Shipped-text SHA-256: ${shippedTextHash(join(root, "skills", SKILL))}`);
+  const gone = run(["check", "--skill", SKILL, "--stream", streamFile(loadedFrom(RAW_INVOKED, join(plugin, "gone")))], {
+    root,
+  });
+  assert.equal(gone.code, 1);
+  assert.equal(gone.out, "");
+  assert.match(gone.err, /staged plugin the run loaded has no skills\/proving-tests-can-fail/);
 });
 
 test("hash through main prints the digest", () => {

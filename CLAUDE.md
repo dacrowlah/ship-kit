@@ -77,9 +77,11 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
   missing is dropped, so without this GREEN silently equals RED.
 - A GREEN run counts only when `node tests/helpers/pressure.mjs check
   --skill <name> --stream <file>` exits 0: the init message lists
-  `ship-kit:<name>` and the run invoked it (a `Skill` call naming it; for a
-  seat skill run by its slash command, `--dmi` and a returned
-  `skill_marker` equal to the SKILL.md marker). Other runs are discarded.
+  `ship-kit:<name>` and one ship-kit plugin path, the run invoked it (a
+  top-level `Skill` call naming it whose one `tool_result` follows it and
+  is not an error; for a seat skill run by its slash command, `--dmi` and
+  a returned `skill_marker` equal to the SKILL.md marker), and the stream
+  ends in a `success` result. Other runs are discarded.
 - `result.md` records `Discriminating criteria: <numbers>`, the criteria
   that failed in at least one RED attempt; only those count in a headline.
 - Every rationalization-table row quotes an excuse observed in a RED or
@@ -87,9 +89,15 @@ Every skill ships `tests/skills/<skill>/{scenario,baseline,result}.md`;
 - Records and fixtures write every `skill_marker` token as `<token>`; the
   `check` output already does. A live token anywhere but its SKILL.md
   fails `tests/skills/marker.test.mjs`.
-- `result.md` records `Shipped-text SHA-256: <hex>` from `node
-  tests/helpers/pressure.mjs hash --skill <name>`; any edit to a skill
-  reruns GREEN before merge.
+- The shipped text of a skill is every file under its directory plus every
+  file under the plugin root that one of them names as
+  `${CLAUDE_PLUGIN_ROOT}/<path>`, less the one `skill_marker:` line of
+  SKILL.md. `check` prints `Shipped-text SHA-256: <hex>` over that text in
+  the staged copy the run loaded (the ship-kit plugin path in the init
+  message), and `result.md` records the value `check` printed. The recorded
+  GREEN hash must equal `node tests/helpers/pressure.mjs hash --skill
+  <name>` over the repository's shipped text, which the records gate
+  compares, so any edit to that text reruns GREEN before merge.
 
 ### Commands
 
