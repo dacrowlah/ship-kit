@@ -761,24 +761,29 @@ into this run's `output.md`, 6.3 plan step 4) and `skill_marker`. Full
 mode adds, from release 5, `findings[]` with `severity`, `file`, `line`,
 `finding`, `failure_scenario`; design-doc mode adds the fields in 8.3.
 
-`skill_marker` proves the seat's own skill text was in context. Each seat
-SKILL.md carries one literal line, `skill_marker:
+`skill_marker` is evidence that the seat's own skill text was in context.
+Each seat SKILL.md carries one literal line, `skill_marker:
 <skill name>@<plugin version>:<token>`, where `<token>` is 16 random hex
 characters that appear nowhere else in the repository.
 `scripts/release/bump-version.mjs`, run in the PR that bumps
 `plugin.json`, regenerates every token; `tests/skills/marker.test.mjs`
 fails when a marker's version differs from `plugin.json` or two tokens
 match. Aggregate reads the expected marker from `src/`, which no seat can
-read (6.3). The seat's readable directories can still hold the expected
-value: the token is public in the released SKILL.md, so a PR can plant
-it anywhere in its own tree, which the seat reads under `pr/`. What keeps
-a planted token from answering for an unloaded skill is the contract's
-wording, not the directory layout: a seat takes every verdict field from
-its seat skill and `review/contract/`, never from PR content, and copies
-`skill_marker` only from its seat skill's text
-(`review/contract/output.md`, `review/contract/untrusted-data.md`).
+read (6.3), but what a seat reads can still hold the expected value: the
+token is public in the released SKILL.md, so a PR can plant it in
+anything it authors that a seat reads, which is its tree under `pr/`,
+its title and body (`pr.txt`) and its diff (`diff.patch`, `stat.txt`).
+The defence against a planted token is behavioural, not structural: the
+contract tells a seat that its instructions come only from its seat
+skill and `review/contract/`, to copy `skill_marker` only from its seat
+skill's text, and to report any other statement about the marker as a
+claim (`review/contract/output.md`, `review/contract/untrusted-data.md`).
+It holds only as far as a seat follows that text; runs made while the
+seat skills were reviewed declined a planted token, and no recorded
+pressure test covers the case. The residual risk: a seat that never
+loaded its skill but copies a planted token passes the marker check.
 
-Why both fields, and why this closes a seat that never loaded its skill:
+Why both fields, and how they catch a seat that never loaded its skill:
 the nonce alone is not enough, because it sits in `review/contract/output.md`,
 which a model given only the literal prompt text and the schema could
 find by listing the directory it was named. Among the files a seat takes
@@ -788,7 +793,8 @@ the ship-kit version string alone would not do, because the adopting
 repo's config and caller comments carry it. A seat that loaded an older
 ship-kit (F25) returns that release's token. The nonce adds that this
 run's contract was read, so an output cannot be a replay. Neither guards
-against a seat trying to deceive, which is outside this check's purpose.
+against a seat trying to deceive, which is outside this check's purpose,
+nor against the planted token above.
 One exception: on ship-kit's own reviews both the workspace root (its
 default branch) and the PR tree contain the seat SKILL.md files with the
 released tokens, so there the marker proves nothing and the canary's

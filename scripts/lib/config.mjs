@@ -10,6 +10,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { devNull } from "node:os";
 import { checkSchema, validate } from "./schema.mjs";
 import { MIGRATIONS, checkChain } from "../setup/migrations/index.mjs";
 
@@ -25,7 +26,9 @@ const FILE = new RegExp(SCHEMA.properties.review.properties.huntLists.properties
 const SHA = /^[0-9a-f]{40}$/;
 const GIT_TIMEOUT_MS = 120_000;
 const REGULAR_MODES = new Set(["100644", "100755"]);
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+// ignoreBOM keeps a leading BOM in the text, so loadConfig alone decides
+// how many it accepts (one).
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -41,6 +44,11 @@ function deepFreeze(value) {
 
 function copy(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+/** A thrown value's message; migrations and injected runners may throw anything. */
+function describe(err) {
+  return err instanceof Error ? err.message : `threw a non-Error value (${err === null ? "null" : typeof err})`;
 }
 
 /**
@@ -68,7 +76,7 @@ function migrate(value, from, migrations) {
   try {
     checkChain(migrations, SCHEMA_VERSION);
   } catch (err) {
-    return { ok: false, reason: `invalid migration chain: ${err.message}` };
+    return { ok: false, reason: `invalid migration chain: ${describe(err)}` };
   }
   let current = value;
   for (let version = from; version < SCHEMA_VERSION; version += 1) {
@@ -78,7 +86,7 @@ function migrate(value, from, migrations) {
     try {
       next = step.migrate(deepFreeze(copy(current)));
     } catch (err) {
-      return { ok: false, reason: `migration from schemaVersion ${version} failed: ${err.message}` };
+      return { ok: false, reason: `migration from schemaVersion ${version} failed: ${describe(err)}` };
     }
     if (!isPlainObject(next) || next.schemaVersion !== step.to) {
       return { ok: false, reason: `migration from schemaVersion ${version} did not produce schemaVersion ${step.to}` };
@@ -100,7 +108,7 @@ export function loadConfig(text, { migrations = MIGRATIONS } = {}) {
   try {
     value = JSON.parse(text.startsWith("\uFEFF") ? text.slice(1) : text);
   } catch (err) {
-    return { ok: false, reason: `not valid JSON: ${err.message}` };
+    return { ok: false, reason: `not valid JSON: ${describe(err)}` };
   }
   if (!isPlainObject(value)) return { ok: false, reason: "config must be a JSON object" };
   const version = value.schemaVersion;
@@ -125,8 +133,9 @@ export function loadConfig(text, { migrations = MIGRATIONS } = {}) {
 
 /**
  * The config a run uses when the trusted one is absent or invalid (design
- * 5.3): every default, no design-doc directories, every seat required, and
- * maintainer approval only from an admin. It describes no install, so it has
+ * 5.3): every default, no design-doc directories, every seat required,
+ * maintainer approval only from an admin, and agents that ask before they
+ * commit or push and never admin-merge. It describes no install, so it has
  * no `shipKit`.
  */
 export function strictConfig() {
@@ -136,18 +145,20 @@ export function strictConfig() {
   filled.review.planDirs = [];
   for (const seat of Object.values(filled.review.seats)) seat.mode = "required";
   filled.review.override.minPermission = "admin";
+  filled.agents.commitAndPush = false;
   return filled;
 }
 
 /**
- * A git runner for `cwd`: bounded, never prompting, ignoring replace refs.
- * Returns stdout as a Buffer and throws on any failure.
+ * A git runner for `cwd`: bounded, never prompting, ignoring replace refs and
+ * running no hooks (a checked-out branch's hooks must not move the ref this
+ * module reads). Returns stdout as a Buffer and throws on any failure.
  * @param {string} [cwd]
  * @returns {(args: string[]) => Buffer}
  */
 export function makeGit(cwd = process.cwd()) {
   return (args) => {
-    const result = spawnSync("git", args, {
+    const result = spawnSync("git", ["-c", `core.hooksPath=${devNull}`, ...args], {
       cwd,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: 4 * MAX_CONFIG_BYTES,
@@ -167,8 +178,9 @@ function text(output) {
 
 /**
  * Reads and loads the config file `path` at `ref`, which is a full commit SHA
- * or `refs/ship-kit/default`. Only a regular file counts: a symlink,
- * submodule or directory at `path` is refused.
+ * or exactly the ref `refs/ship-kit/default` (never a branch or tag that
+ * abbreviates to it). Only a regular file counts: a symlink, submodule or
+ * directory at `path` is refused.
  * @param {string} ref
  * @param {string} path
  * @param {{git: (args: string[]) => Buffer | string, migrations?: readonly object[]}} options
@@ -182,7 +194,9 @@ export function readConfigAt(ref, path, { git, migrations = MIGRATIONS }) {
     return { ok: false, reason: `config path ${JSON.stringify(path)} is not a relative file path` };
   }
   try {
-    const sha = text(git(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
+    const target = ref === DEFAULT_REF ? text(git(["show-ref", "--verify", "--hash", DEFAULT_REF])).trim() : ref;
+    if (!SHA.test(target)) return { ok: false, reason: `could not resolve ${ref} to a commit` };
+    const sha = text(git(["rev-parse", "--verify", "--end-of-options", `${target}^{commit}`])).trim();
     if (!SHA.test(sha)) return { ok: false, reason: `could not resolve ${ref} to a commit` };
     const listing = text(git(["ls-tree", "-l", "-z", "--full-tree", sha, "--", path])).split("\0").filter(Boolean);
     if (listing.length === 0) return { ok: false, reason: `${path} is absent at ${ref}` };
@@ -200,7 +214,7 @@ export function readConfigAt(ref, path, { git, migrations = MIGRATIONS }) {
     if (!loaded.ok) return { ok: false, reason: `${path} at ${ref}: ${loaded.reason}` };
     return { ...loaded, sha };
   } catch (err) {
-    return { ok: false, reason: `could not read ${path} at ${ref}: ${err.message}` };
+    return { ok: false, reason: `could not read ${path} at ${ref}: ${describe(err)}` };
   }
 }
 
@@ -232,7 +246,7 @@ export function readDefaultBranchConfig({ git = makeGit(), path = ".ship-kit/con
     }
     git(["fetch", "--no-tags", "--quiet", "origin", `+refs/heads/${branch}:${DEFAULT_REF}`]);
   } catch (err) {
-    return { ok: false, reason: `could not fetch origin's default branch: ${err.message}`, ...(branch === undefined ? {} : { branch }) };
+    return { ok: false, reason: `could not fetch origin's default branch: ${describe(err)}`, ...(branch === undefined ? {} : { branch }) };
   }
   const read = readConfigAt(DEFAULT_REF, path, { git, migrations });
   return { ...read, branch };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -243,20 +243,29 @@ test("a migration that mutates its input, throws or yields the wrong version is 
   assert.match(load({ schemaVersion: 0 }, { migrations: [notObject] }).reason, /did not produce schemaVersion 1/);
 });
 
+test("a migration that throws a non-Error value is refused, not rethrown", () => {
+  for (const [thrown, kind] of [[null, "null"], ["text", "string"], [undefined, "undefined"]]) {
+    const throwing = { from: 0, to: 1, migrate: () => { throw thrown; } };
+    const result = load({ schemaVersion: 0 }, { migrations: [throwing] });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, `migration from schemaVersion 0 failed: threw a non-Error value (${kind})`);
+  }
+});
+
 test("the loaded config never aliases the parsed input", () => {
   const first = load(minimal()).config;
   first.review.specDirs.push("x/");
   assert.deepEqual(load(minimal()).config.review.specDirs, []);
 });
 
-test("strictConfig: every seat required, no design-doc dirs, admin approvals", () => {
+test("strictConfig: every seat required, no design-doc dirs, admin approvals, agents ask", () => {
   const strict = strictConfig();
   assert.equal(Object.hasOwn(strict, "shipKit"), false);
   assert.deepEqual(strict.review.specDirs, []);
   assert.deepEqual(strict.review.planDirs, []);
   for (const seat of SEATS) assert.equal(strict.review.seats[seat].mode, "required", seat);
   assert.equal(strict.review.override.minPermission, "admin");
-  assert.equal(strict.agents.commitAndPush, true);
+  assert.equal(strict.agents.commitAndPush, false);
   assert.equal(strict.agents.adminMerge, false);
   strict.review.seats.general.mode = "shadow";
   assert.equal(strictConfig().review.seats.general.mode, "required");
@@ -312,8 +321,9 @@ test("readConfigAt validates its ref and path before running git", () => {
 test("readConfigAt refuses a missing commit and unexpected git output", (t) => {
   const { dir } = repoWith(t, { "x.txt": "x" });
   assert.match(readConfigAt(SHIP_KIT.sha, "c.json", { git: makeGit(dir) }).reason, /could not read c.json at/);
-  const fake = (answers) => (args) => answers[args[0]] ?? assert.fail(`unexpected git ${args[0]}`);
   const oid = "a".repeat(40);
+  const fake = (answers) => (args) => ({ "show-ref": `${oid}\n`, ...answers })[args[0]] ?? assert.fail(`unexpected git ${args[0]}`);
+  assert.match(readConfigAt(DEFAULT_REF, "c.json", { git: fake({ "show-ref": "nope\n" }) }).reason, /could not resolve/);
   assert.match(readConfigAt(DEFAULT_REF, "c.json", { git: fake({ "rev-parse": "nope\n" }) }).reason, /could not resolve/);
   const twoEntries = `100644 blob ${oid}      2\tc.json\x00100644 blob ${oid}      2\tc.json\x00`;
   assert.match(readConfigAt(DEFAULT_REF, "c.json", { git: fake({ "rev-parse": `${oid}\n`, "ls-tree": twoEntries }) }).reason, /unexpected tree listing/);
@@ -325,6 +335,42 @@ test("readConfigAt refuses a missing commit and unexpected git output", (t) => {
   assert.match(readConfigAt(DEFAULT_REF, "c.json", { git: fake({ "rev-parse": `${oid}\n`, "ls-tree": submodule }) }).reason, /not a regular file \(mode 160000\)/);
   const blob = `100644 blob ${oid}      2\tc.json\x00`;
   assert.match(readConfigAt(DEFAULT_REF, "c.json", { git: fake({ "rev-parse": `${oid}\n`, "ls-tree": blob, "cat-file": "tree\n" }) }).reason, /is not a blob/);
+});
+
+test("readConfigAt accepts one leading BOM in the file and refuses two", (t) => {
+  const body = configText({ commitAndPush: false });
+  const { dir, sha } = repoWith(t, { "one.json": `\uFEFF${body}`, "two.json": `\uFEFF\uFEFF${body}` });
+  const git = makeGit(dir);
+  assert.equal(readConfigAt(sha, "one.json", { git }).ok, true);
+  const two = readConfigAt(sha, "two.json", { git });
+  assert.equal(two.ok, false);
+  assert.match(two.reason, /two.json at [0-9a-f]{40}: not valid JSON/);
+});
+
+test("readConfigAt ignores replace refs", (t) => {
+  const { dir, sha } = repoWith(t, { "c.json": configText({ commitAndPush: false }) });
+  const trusted = sh(dir, "rev-parse", `${sha}:c.json`);
+  writeFile(dir, "evil.json", configText({ commitAndPush: true }));
+  const evil = sh(dir, "hash-object", "-w", "evil.json");
+  sh(dir, "replace", trusted, evil);
+  assert.match(sh(dir, "cat-file", "blob", trusted), /"commitAndPush": true/);
+  const result = readConfigAt(sha, "c.json", { git: makeGit(dir) });
+  assert.equal(result.ok, true, result.reason);
+  assert.equal(result.config.agents.commitAndPush, false);
+});
+
+test("readConfigAt resolves refs/ship-kit/default exactly, never a branch or tag of that name", (t) => {
+  const { dir, sha } = repoWith(t, { "c.json": configText({ commitAndPush: true }) });
+  const git = makeGit(dir);
+  for (const decoy of ["refs/heads/refs/ship-kit/default", "refs/tags/refs/ship-kit/default"]) {
+    sh(dir, "update-ref", decoy, sha);
+    const result = readConfigAt(DEFAULT_REF, "c.json", { git });
+    assert.equal(result.ok, false, decoy);
+    assert.match(result.reason, /could not read c.json at refs\/ship-kit\/default/, decoy);
+    sh(dir, "update-ref", "-d", decoy);
+  }
+  sh(dir, "update-ref", DEFAULT_REF, sha);
+  assert.equal(readConfigAt(DEFAULT_REF, "c.json", { git }).config.agents.commitAndPush, true);
 });
 
 // --- readDefaultBranchConfig -------------------------------------------------
@@ -366,6 +412,25 @@ test("readDefaultBranchConfig uses the working directory's repository by default
   process.chdir(clone);
   t.after(() => process.chdir(cwd));
   assert.equal(readDefaultBranchConfig().config.agents.commitAndPush, false);
+});
+
+test("readDefaultBranchConfig runs no hooks, so a branch's hook cannot move the ref it reads", (t) => {
+  const { origin, clone } = fixtureClone(t);
+  const hook = [
+    "#!/bin/sh",
+    '[ "$1" = committed ] || exit 0',
+    '[ -n "$MOVED" ] && exit 0',
+    "grep -q refs/ship-kit/default || exit 0",
+    "MOVED=1 git update-ref refs/ship-kit/default refs/heads/feature",
+    "",
+  ].join("\n");
+  writeFile(clone, ".githooks/reference-transaction", hook);
+  chmodSync(join(clone, ".githooks/reference-transaction"), 0o755);
+  sh(clone, "config", "core.hooksPath", ".githooks");
+  const result = readDefaultBranchConfig({ git: makeGit(clone) });
+  assert.equal(result.ok, true, result.reason);
+  assert.equal(result.sha, origin.sha);
+  assert.equal(result.config.agents.commitAndPush, false);
 });
 
 test("readDefaultBranchConfig passes the path through", (t) => {
