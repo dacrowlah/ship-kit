@@ -88,6 +88,34 @@ export function anyCredential(value) {
   return false;
 }
 
+/** The smallest `max` fenceWithin accepts; below it a short text's own fence may not fit. */
+export const MIN_FENCED = 64;
+
+/**
+ * A fenced block of at most `max` characters: `fence(text)` when that fits,
+ * otherwise `fence(truncate(text, room))` for a room that leaves space for
+ * the fence the truncated text needs. Truncation happens before fencing, so
+ * the closing fence is never cut, and a fence longer than three backticks
+ * (a long backtick run in the text) is budgeted, not assumed.
+ * @param {string} text
+ * @param {number} max at least MIN_FENCED
+ * @returns {string}
+ */
+export function fenceWithin(text, max) {
+  requireString(text, "fenceWithin");
+  if (!Number.isSafeInteger(max) || max < MIN_FENCED) {
+    throw new RangeError(`fenceWithin max must be an integer of at least ${MIN_FENCED}`);
+  }
+  // A three-backtick fence adds 8 characters.
+  const first = fence(truncate(text, max - 8));
+  if (first.length <= max) return first;
+  // The first attempt's fence bounds every shorter prefix's fence, so a room
+  // of max minus that fence always fits.
+  const bar = first.indexOf("\n");
+  const room = max - 2 * (bar + 1);
+  return fence(truncate(text, Math.max(room, TRUNCATED.length)));
+}
+
 /**
  * At most `max` characters: the text unchanged when it fits, otherwise its
  * longest prefix of whole lines followed by a final line `[truncated]`.
