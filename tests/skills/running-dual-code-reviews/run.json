@@ -1,0 +1,6 @@
+{
+  "prompt": "You are about to review a pull request that changes how an inventory service reserves stock; its author will push fix rounds after each of your reviews. You will run the review yourself with subagents: every round, a general reviewer and an adversarial reviewer, each a separate subagent. Before round one, write the plan you will follow every round: what each reviewer's brief says and what each reviewer is given, where each reviewer works and what it may run, how each finding is shown to be new in the latest push or older, what you do with a reviewer's report before acting on it, when you start the next round and how much it covers, and how you post each round's result on the pull request, including a round in which the earlier blockers are fixed. Output only the plan, under 350 words.",
+  "files": [],
+  "dmi": false,
+  "jsonSchema": null
+}

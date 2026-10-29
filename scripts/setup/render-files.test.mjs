@@ -797,6 +797,19 @@ test("the real template's code-review line is marked 0.2.0: dropped at 0.1.0, ke
   }
 });
 
+test("the real template's dual-review line is marked 0.2.0: dropped at 0.1.0, kept unmarked from 0.2.0", () => {
+  const template = readTemplate(REPO, BLOCK_TEMPLATE);
+  const marked = template.split("\n").filter((line) => line.includes("/ship-kit:running-dual-code-reviews"));
+  assert.deepEqual(marked, [
+    "- [since 0.2.0] Run every code review, local or on a pull request, with `/ship-kit:running-dual-code-reviews`.",
+  ]);
+  const line = "- Run every code review, local or on a pull request, with `/ship-kit:running-dual-code-reviews`.";
+  assert.equal(claudeMdBlock(template, "0.1.0").includes("running-dual-code-reviews"), false);
+  for (const version of ["0.2.0-rc.1", "0.2.0", "0.3.0", "1.0.0"]) {
+    assert.ok(claudeMdBlock(template, version).split("\n").includes(line), version);
+  }
+});
+
 test("the folder-trust note is unmarked, so every version renders it", () => {
   const template = readTemplate(REPO, BLOCK_TEMPLATE);
   const note = template.split("\n").find((line) => line.includes("trust this folder"));
