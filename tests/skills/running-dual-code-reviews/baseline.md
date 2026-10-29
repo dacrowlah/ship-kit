@@ -75,12 +75,12 @@ Model: claude-opus-5-5
 | Criterion | Result |
 |---|---|
 | 1. Adversarial reviewer unanchored; general reviewer marks each prior finding | FAIL (the adversarial reviewer "gets the same inputs", which include "the earlier rounds' open findings") |
-| 2. Own copy, orchestrator fetches, write commands banned by name | FAIL (a "fresh read-only checkout pinned to the head SHA"; no command is named and nothing says who fetches) |
+| 2. Own copy, orchestrator fetches, nothing writes outside it, `gh` reads only | FAIL (a "fresh read-only checkout pinned to the head SHA"; nothing says who fetches, and `gh` is not limited to reads) |
 | 3. Every probe on both states labels the finding | FAIL (the label comes from "`git blame`"; only the orchestrator reruns a reproduction on the previous state, and only "For a behavioral claim") |
 | 4. Copy and citations checked before acting | FAIL (it reruns each finding but never checks which state the reviewer read or that its citations exist) |
 | 5. Length cap; exact inputs and outputs | FAIL (no cap; "file:line, severity (blocker / should-fix / nit) and evidence") |
-| 6. Ledger with the review id; wait for the push to settle | FAIL (a round starts "when the author pushes a new head SHA and says the fixes are done (or CI finishes)"; no review id) |
-| 7. Head re-read before posting | FAIL (not mentioned) |
+| 6. Ledger with the review id; head unchanged for about 30 minutes | FAIL (a round starts "when the author pushes a new head SHA and says the fixes are done (or CI finishes)"; no review id) |
+| 7. Head re-read before posting; a moved head gets the review on the reviewed commit, naming the newer head | FAIL (not mentioned) |
 | 8. Fixed-blocker round: comment, dismissal named, approval left to the owner | FAIL ("change the verdict to \"Approve\" only if no new blockers appeared") |
 
 ### Attempt 2
@@ -122,15 +122,17 @@ If any blocker is open, the verdict is "request changes." In a round where the e
 | Criterion | Result |
 |---|---|
 | 1. Adversarial reviewer unanchored; general reviewer marks each prior finding | FAIL (each round's inputs, given to both, include "the ledger of earlier findings with their status") |
-| 2. Own copy, orchestrator fetches, write commands banned by name | FAIL ("its own read-only worktree checked out at the head SHA"; no command is named and nothing says who fetches) |
+| 2. Own copy, orchestrator fetches, nothing writes outside it, `gh` reads only | FAIL ("its own read-only worktree checked out at the head SHA"; nothing says who fetches, and `gh` is not limited to reads) |
 | 3. Every probe on both states labels the finding | FAIL (the label comes from "`git diff <last-reviewed-SHA>..<head>` and `git blame`") |
 | 4. Copy and citations checked before acting | FAIL (it re-runs the repro but never checks which state the reviewer read or that its citations exist) |
 | 5. Length cap; exact inputs and outputs | FAIL (no cap; findings "cite `file:line`") |
-| 6. Ledger with the review id; wait for the push to settle | FAIL ("A round starts when a new head SHA appears and the author says it's ready"; the ledger holds findings, not the posted review's id) |
-| 7. Head re-read before posting | FAIL (not mentioned) |
+| 6. Ledger with the review id; head unchanged for about 30 minutes | FAIL ("A round starts when a new head SHA appears and the author says it's ready"; the ledger holds findings, not the posted review's id) |
+| 7. Head re-read before posting; a moved head gets the review on the reviewed commit, naming the newer head | FAIL (not mentioned) |
 | 8. Fixed-blocker round: comment, dismissal named, approval left to the owner | FAIL ("the verdict is \"no blockers remaining\" and the review is approved") |
 
 ### Outcome
+
+Criteria 2, 6 and 7 were reworded after these attempts, when the skill changed what it asks for: the reviewer's safety rule became "nothing that writes outside its own copy, and `gh` reads only" instead of a closed list of git commands; a state settles when the head is unchanged for about 30 minutes; and a head that moved after the review was written gets the review posted against the reviewed commit, naming the newer head, instead of a fresh review. The prompt did not change, so these outputs were re-scored against the new wording above, without new runs; each still fails, for the reason given.
 
 Criteria that failed in at least one attempt: 1, 2, 3, 4, 5, 6, 7, 8. They are the `Discriminating criteria` of `result.md`. No criterion passed in either attempt.
 

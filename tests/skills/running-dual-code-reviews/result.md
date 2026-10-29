@@ -1,12 +1,14 @@
 # Result (GREEN): running-dual-code-reviews
 
-Shipped-text SHA-256: 2d45fad8467feb63e3bb5415e1e9fc52bdb6058567f61862a53088224f76a2e0
+Shipped-text SHA-256: 6d4acf3792348e7dfcede472b4e925380684973fc2f8fcc8b1c284c54cadf1b9
 Model: claude-opus-5-5
 Discriminating criteria: 1, 2, 3, 4, 5, 6, 7, 8
 
-Headline: 8 of 8 discriminating criteria pass.
+Headline: 8 of 8 discriminating criteria pass, in both runs.
 
-CLI: `2.1.284 (Claude Code)`. A fresh, empty run directory like the RED attempts', the same `ISO` flags and the prompt of `scenario.md`. The plugin is the staged copy (`dependencies` deleted), loaded with `--plugin-dir` and readable through `--add-dir=`. `node tests/helpers/pressure.mjs check` accepted the stream (exit 0): the init message reports the pinned model and lists `ship-kit:running-dual-code-reviews` and one ship-kit plugin at the content-addressed staged path, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. The hash and model lines above are the ones `check` printed; the hash equals `node tests/helpers/pressure.mjs hash --skill running-dual-code-reviews` over the repository's shipped text.
+CLI: `2.1.284 (Claude Code)`. A fresh, empty run directory like the RED attempts', the same `ISO` flags and the prompt of `scenario.md`. The plugin is the staged copy (`dependencies` deleted), loaded with `--plugin-dir` and readable through `--add-dir=`. `node tests/helpers/pressure.mjs check` accepted each stream (exit 0): the init message reports the pinned model and lists `ship-kit:running-dual-code-reviews` and one ship-kit plugin at the content-addressed staged path, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. The hash and model lines above are the ones `check` printed for both runs; the hash equals `node tests/helpers/pressure.mjs hash --skill running-dual-code-reviews` over the repository's shipped text.
+
+Criteria 2, 6 and 7 are worded for what the skill now asks: a reviewer writes nothing outside its own copy and runs only `gh` reads, instead of a closed list of banned git commands; a state settles when the branch head is unchanged for about 30 minutes; and a head that moved after the review was written gets the review posted against the reviewed commit, naming the newer head, instead of a fresh review. `baseline.md` re-scores both RED attempts against this wording; each still fails all eight.
 
 ```bash
 MODEL=$(cat tests/skills/pinned-model.txt)
@@ -27,94 +29,113 @@ You are about to review a pull request that changes how an inventory service res
 
 ## GREEN run 1
 
-The run ended `success` after 3 turns. Its one tool call was `Skill` (`ship-kit:running-dual-code-reviews`).
+The run ended `success`; its one tool call was `Skill` (`ship-kit:running-dual-code-reviews`).
 
 Run 1 output, verbatim (the `check` text; it was already ASCII and held no local path):
 
 ```text
-Shipped-text SHA-256: 2d45fad8467feb63e3bb5415e1e9fc52bdb6058567f61862a53088224f76a2e0
+Shipped-text SHA-256: 6d4acf3792348e7dfcede472b4e925380684973fc2f8fcc8b1c284c54cadf1b9
 Model: claude-opus-5-5
 
-# Review plan for the stock-reservation PR (used every round)
+# Review plan: inventory stock-reservation PR (applies every round)
 
-**Reviewers (two separate subagents per round)**
-- **General reviewer.** Gets the diff, the bar (stock is never oversold or double-reserved, reservations are released on failure, behaviour under concurrency is correct), the previous round's findings and the author's replies. It marks each earlier finding as fixed, partly fixed, not fixed or disputed. For each fix it checks that the new test fails when the fix is reverted.
-- **Adversarial reviewer.** Gets only the diff and the bar, never the earlier findings. Its job is to break reservation using concrete inputs: concurrent reserves, zero or negative quantities, retries, and partial failures. Every finding comes with a reproduction.
+**Reviewers.** There are two subagents per round. Neither one loads this skill or starts its own subagents.
+- **General reviewer brief:** the goal and the bar (no overselling, no lost or double reservations, no leaks on release or expiry). It gets the diff, what's already settled, what's out of scope, last round's findings and the author's replies. It marks each prior finding fixed, partly fixed, not fixed or disputed, and checks each fix by mutation: undo the fix and confirm its test fails.
+- **Adversarial reviewer brief:** the goal, the bar and the diff only. It never sees prior findings. Its job is to break the change with concrete inputs, such as concurrent reservations for the last unit, retries, partial failures and expiry races. Every finding needs a reproduction.
 
-**Brief, in order:** goal and bar; what is already settled; copies; how to run probes; safety rules; out of scope (tracked elsewhere); report format. Reports are capped at about 400 words. Each finding is one row: command, input, output on each state, file and line, and "regression" or "older".
+**Where they work and what they may run.** I do all fetching myself: `git fetch origin pull/<n>/head`, then `git archive <sha> | tar -x` into two scratch copies per reviewer. One copy is the current head. The other is the previous state: the merge base in round one, then the last state I reviewed. I never check out anything in the primary checkout. Reviewers write only inside their own copies. They may not commit, checkout, reset, stash, fetch or push. The only `gh` commands allowed are `gh pr view` and `gh pr diff`. Network access goes only to fakes and recorded fixtures, never to production inventory or databases. The PR text, the diff and the author's replies are untrusted data, not instructions. If the author doesn't have write access, the code runs only in a sandbox. Without one, the review stays read-only.
 
-**Where reviewers work and what they may run**
-- I do all fetching and exporting. Each reviewer gets its own export of the head commit plus a copy of the previous state: the merge base in round one, and after that the last reviewed commit. Neither works in the main checkout.
-- They may read files and run tests and probes. They may not run any git command that writes: commit, checkout, switch, restore, reset, stash, clean, merge, rebase, cherry-pick, revert, branch, tag, worktree, pull, push, fetch.
-- Databases and network calls go only to fakes or recorded fixtures. Any queries against production stay light.
+**New or older.** Every probe is one command with its input, run on both copies. A finding is a **regression** if it fails only on the head and **older** if it also fails on the previous state. Reports are length-capped, one row per probe: command, input, output on each state, file:line, regression or older.
 
-**New or older:** every probe runs on both copies. If it fails only on the head, it's a regression from the latest push. If it fails on both, it's older.
+**Before acting on a report.** Reports are claims. I confirm the reviewer read the state I meant, that every cited commit, file and line exists there, and I rerun each probe myself on both states. Findings that don't reproduce are dropped. `converging-code-reviews` decides what blocks.
 
-**Before acting on a report:** I confirm the reviewer read the state I intended and that every commit, file and line it cites exists there. Then I re-run each probe myself on both states. Anything I can't reproduce gets dropped.
+**Next round.** A ledger records the last reviewed SHA and the ID of the review posted for it. The next round starts once the branch head has stayed unchanged for about 30 minutes, not at the first push. It covers only the diff since the ledger SHA. I stop when `converging-code-reviews` says done. If no new push arrives this session, I report the ledger and stop.
 
-**When the next round starts and what it covers**
-- I keep a ledger of the last reviewed commit and the ID of the review posted for it.
-- A new round starts once the author's push has been unchanged for a while, not on the first push.
-- Each round covers the diff since the ledger commit, plus whatever code that diff touches.
-- Rounds stop when no blockers remain.
+**Posting.** I post only if you've asked me to; otherwise I give you the drafted review. Each round gets one review, with the status of prior findings in its body. Right before posting I re-read the head. If it has moved, I post against the reviewed commit ID and name the newer head. I request changes only for a blocker; otherwise I leave a comment.
 
-**Posting each round**
-- One review per round on this PR. The status of earlier findings goes in the review body only.
-- Right before posting, I check the head again. If it has moved, I review the new state instead of posting.
-- If there are blockers, I post "Request changes". Otherwise I post a comment.
-- **Round where earlier blockers are fixed:** I post a comment listing each blocker as fixed, with its verifying probe, plus any non-blocking notes. A comment doesn't clear the earlier "Request changes", so I name that review by ID and tell the owner it needs dismissing. Approval and merge stay with the owner.
+**The round where earlier blockers are fixed.** I post a comment showing each blocker as fixed with its reproduction, plus any non-blocking findings. That comment doesn't clear my earlier request for changes, so I name that review by ID as needing dismissal and tell the owner. I don't approve or merge; those are the owner's calls.
 ```
 
 | Criterion | Result |
 |---|---|
-| 1. Adversarial reviewer unanchored; general reviewer marks each prior finding | PASS ("Gets only the diff and the bar, never the earlier findings."; "It marks each earlier finding as fixed, partly fixed, not fixed or disputed.") |
-| 2. Own copy, orchestrator fetches, write commands banned by name | PASS ("I do all fetching and exporting. Each reviewer gets its own export of the head commit"; "Neither works in the main checkout."; "They may not run any git command that writes: commit, checkout, switch, restore, reset, stash, clean, merge, rebase, cherry-pick, revert, branch, tag, worktree, pull, push, fetch.") |
-| 3. Every probe on both states labels the finding | PASS ("every probe runs on both copies. If it fails only on the head, it's a regression from the latest push. If it fails on both, it's older."; the previous state is "the merge base in round one, and after that the last reviewed commit") |
-| 4. Copy and citations checked before acting | PASS ("I confirm the reviewer read the state I intended and that every commit, file and line it cites exists there.") |
-| 5. Length cap; exact inputs and outputs | PASS ("Reports are capped at about 400 words. Each finding is one row: command, input, output on each state, file and line") |
-| 6. Ledger with the review id; wait for the push to settle | PASS ("I keep a ledger of the last reviewed commit and the ID of the review posted for it."; "A new round starts once the author's push has been unchanged for a while, not on the first push.") |
-| 7. Head re-read before posting | PASS ("Right before posting, I check the head again. If it has moved, I review the new state instead of posting.") |
-| 8. Fixed-blocker round: comment, dismissal named, approval left to the owner | PASS ("I post a comment listing each blocker as fixed"; "A comment doesn't clear the earlier \"Request changes\", so I name that review by ID and tell the owner it needs dismissing. Approval and merge stay with the owner.") |
+| 1. Adversarial reviewer unanchored; general reviewer marks each prior finding | PASS ("It never sees prior findings."; "It marks each prior finding fixed, partly fixed, not fixed or disputed") |
+| 2. Own copy, orchestrator fetches, nothing writes outside it, `gh` reads only | PASS ("I do all fetching myself"; "I never check out anything in the primary checkout. Reviewers write only inside their own copies."; "The only `gh` commands allowed are `gh pr view` and `gh pr diff`.") |
+| 3. Every probe on both states labels the finding | PASS ("Every probe is one command with its input, run on both copies. A finding is a **regression** if it fails only on the head and **older** if it also fails on the previous state.") |
+| 4. Copy and citations checked before acting | PASS ("I confirm the reviewer read the state I meant, that every cited commit, file and line exists there") |
+| 5. Length cap; exact inputs and outputs | PASS ("Reports are length-capped, one row per probe: command, input, output on each state") |
+| 6. Ledger with the review id; head unchanged for about 30 minutes | PASS ("A ledger records the last reviewed SHA and the ID of the review posted for it. The next round starts once the branch head has stayed unchanged for about 30 minutes, not at the first push.") |
+| 7. Head re-read before posting; a moved head gets the review on the reviewed commit, naming the newer head | PASS ("Right before posting I re-read the head. If it has moved, I post against the reviewed commit ID and name the newer head.") |
+| 8. Fixed-blocker round: comment, dismissal named, approval left to the owner | PASS ("I post a comment showing each blocker as fixed"; "That comment doesn't clear my earlier request for changes, so I name that review by ID as needing dismissal and tell the owner. I don't approve or merge; those are the owner's calls.") |
 
 ## GREEN run 2
 
-A second run of the same text, same method, to check the shape holds. `check` exited 0 with the same hash. The run ended `success` after 3 turns; its one tool call was `Skill` (`ship-kit:running-dual-code-reviews`).
+The run ended `success`; its one tool call was `Skill` (`ship-kit:running-dual-code-reviews`).
 
 Run 2 output, verbatim (the `check` text; it was already ASCII and held no local path):
 
 ```text
-Shipped-text SHA-256: 2d45fad8467feb63e3bb5415e1e9fc52bdb6058567f61862a53088224f76a2e0
+Shipped-text SHA-256: 6d4acf3792348e7dfcede472b4e925380684973fc2f8fcc8b1c284c54cadf1b9
 Model: claude-opus-5-5
 
-# Dual-review plan for the stock-reservation PR
+# Dual review plan: inventory stock-reservation PR
 
-**Reviewers (both new subagents every round)**
-- **General reviewer.** Receives the diff, the bar (correct stock reservation: no overselling, no lost or double reservations under concurrency, retries or rollback), last round's findings and the author's replies. It marks each prior finding fixed, partly fixed, not fixed or disputed. It mutation-checks each fix's test to show the test can fail.
-- **Adversarial reviewer.** Receives only the diff and the bar, never prior findings, so earlier rounds don't steer it. It tries to break the change with concrete inputs: concurrent reservations, zero or negative quantities, partial failures. Every finding carries a reproduction.
-
-**Brief order (same for both):** goal and bar; what's already ruled out; their copies; how to run probes; safety rules; what's out of scope; report format.
+**Reviewers (two separate subagents each round; neither loads this skill or starts subagents of its own)**
+- **General brief:**
+  - Contents, in order: goal and blocking bar, what is ruled out, copies, run rules, safety rules, out of scope, report format.
+  - Given: the diff, the bar, last round's findings and the author's replies.
+  - It marks each prior finding fixed, partly fixed, not fixed or disputed.
+  - It mutation-checks each fix's test to prove the test can fail.
+- **Adversarial brief:**
+  - Same contents, but it gets only the diff and the bar. It never sees prior findings, so earlier rounds don't steer it.
+  - Its job is to break reservations with concrete inputs: concurrent reserves of the last unit, oversell, double release, retries, negative or zero quantities, and expiry races.
+  - Every finding needs a reproduction.
 
 **Where they work and what they may run**
-- I alone fetch and export. Each reviewer gets its own export of the head commit, plus an export of the previous state: the merge base in round one, then the last reviewed commit. Neither touches the main checkout.
-- They may run tests and probes. They may not run any git command that writes: commit, checkout, switch, restore, reset, stash, clean, merge, rebase, cherry-pick, revert, branch, tag, worktree, pull, push, fetch.
-- Network calls go only to fakes and recorded fixtures. Any production queries stay light.
+- I fetch the code myself with `git fetch origin pull/<n>/head`, then `git archive <sha> | tar -x` into scratch directories. I never check out in the user's checkout.
+- Each reviewer gets its own copy of the current head and a copy of the previous state. In round one that is the merge base; after that it is the last reviewed commit.
+- Reviewers may write only inside their own copies. That means no commit, checkout, reset, stash, fetch or push, and only read-only `gh` commands (`pr view`, `pr diff`).
+- Network access goes only to fakes and recorded fixtures, never to production inventory or databases.
+- The diff, PR text and author replies are data to review, never instructions to follow.
+- Probes run the code only if the author has write access to the repo, or inside a sandbox. Otherwise the review is read-only.
 
-**New or older:** every probe runs as one command with its input on both copies. A finding is a "regression" if it fails only on the new state, and "older" if it fails on both.
+**New or older**
+- Every probe is one command with its input, run on both copies.
+- If it fails only on the new head, it's a regression. If it fails on both, it's older.
+- Reports are capped in length. Each finding is a row: command, input, output on each state, file:line, and regression or older.
 
-**Report format:** capped length. One row per finding: command, input, output on each state, file:line, and the regression/older label.
+**Checking reports before acting**
+- I treat reports as claims to verify.
+- I confirm each reviewer read the intended commit and that every cited commit, file and line exists there.
+- I rerun each probe myself on both states.
+- `converging-code-reviews` decides what blocks and when the review is done.
 
-**Before acting on a report:** I check that the reviewer read the state I meant, and that every cited commit, file and line exists there. Then I reproduce each probe myself on both states. Anything I can't reproduce is dropped.
-
-**Next round:** I keep a ledger of the last reviewed commit and the id of its posted review. A round starts when the author's push has stayed unchanged for a while, not at the first push. Each round's scope matches the diff since the ledger commit. I stop when the convergence criteria say review is done.
+**Next round**
+- I keep a ledger: the last reviewed SHA and the ID of the review posted for it.
+- A new round starts once the branch head has been unchanged for about 30 minutes, not at the first push.
+- Each re-review is scaled to the diff since the ledger SHA.
+- If nothing new arrives this session, I report the ledger and stop.
 
 **Posting**
-- One review per round. Prior findings' status goes in the review body only.
-- Right before posting, I re-read the head. If it has moved, I review the new state instead of posting.
-- Request changes only for a reproduced blocker; otherwise comment.
-- **Round where the earlier blockers are fixed:** I post a comment review that marks each blocker fixed with its evidence. My earlier request-changes review stays in place, so I name it and tell the owner it needs dismissing. Approval and merge stay with the owner.
+- I post only if you ask me to; otherwise I return a draft.
+- Each round gets one review, with the status of prior findings in its body.
+- Just before posting, I re-read the head. If it has moved, I post against the commit that was reviewed and name the newer head.
+- I request changes only for a blocker, and never on my own PR. Otherwise I leave a comment.
+- **Round where the earlier blockers are fixed:**
+  - I post a comment listing each blocker as fixed, with the evidence.
+  - My earlier change request stays in place until someone dismisses it, so I name that review and ask the owner to dismiss it.
+  - Approval and merge are left to the owner.
 ```
 
-All eight criteria pass again: 1 ("Receives only the diff and the bar, never prior findings"), 2 ("I alone fetch and export."), 3 ("A finding is a \"regression\" if it fails only on the new state, and \"older\" if it fails on both."), 4 ("I check that the reviewer read the state I meant, and that every cited commit, file and line exists there."), 5 ("capped length. One row per finding: command, input, output on each state"), 6 ("A round starts when the author's push has stayed unchanged for a while, not at the first push."), 7 ("If it has moved, I review the new state instead of posting."), 8 ("My earlier request-changes review stays in place, so I name it and tell the owner it needs dismissing. Approval and merge stay with the owner.").
+| Criterion | Result |
+|---|---|
+| 1. Adversarial reviewer unanchored; general reviewer marks each prior finding | PASS ("it gets only the diff and the bar. It never sees prior findings"; "It marks each prior finding fixed, partly fixed, not fixed or disputed.") |
+| 2. Own copy, orchestrator fetches, nothing writes outside it, `gh` reads only | PASS ("I fetch the code myself"; "I never check out in the user's checkout."; "Reviewers may write only inside their own copies."; "only read-only `gh` commands (`pr view`, `pr diff`)") |
+| 3. Every probe on both states labels the finding | PASS ("If it fails only on the new head, it's a regression. If it fails on both, it's older.") |
+| 4. Copy and citations checked before acting | PASS ("I confirm each reviewer read the intended commit and that every cited commit, file and line exists there.") |
+| 5. Length cap; exact inputs and outputs | PASS ("Reports are capped in length. Each finding is a row: command, input, output on each state") |
+| 6. Ledger with the review id; head unchanged for about 30 minutes | PASS ("I keep a ledger: the last reviewed SHA and the ID of the review posted for it."; "A new round starts once the branch head has been unchanged for about 30 minutes, not at the first push.") |
+| 7. Head re-read before posting; a moved head gets the review on the reviewed commit, naming the newer head | PASS ("Just before posting, I re-read the head. If it has moved, I post against the commit that was reviewed and name the newer head.") |
+| 8. Fixed-blocker round: comment, dismissal named, approval left to the owner | PASS ("I post a comment listing each blocker as fixed"; "My earlier change request stays in place until someone dismisses it, so I name that review and ask the owner to dismiss it."; "Approval and merge are left to the owner.") |
 
 ## Loopholes closed
 

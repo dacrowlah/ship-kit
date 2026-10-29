@@ -58,7 +58,7 @@ points at the section that implements it and the test that pins it.
 | R9 | "Out of scope: hub invariant test suites, mechanical red/green replay." | not built | none; nothing in this design depends on either |
 | R10 | Releases 1 to 6 as listed in the brief, "each its own PR sequence" | 22 | release checklist (22.8) |
 | R11 | "Both adopting repos migrate from their hand-built copies (design the migration, including running old and new checks side by side and switching required-check names)." | 23 | migration exit criteria (23.1, 23.2) |
-| R12 | Owner practices: "plans as sequences of discrete PRs each safe to deploy alone, parallel waves, lowest-tier model per task; after PASS/PASS fold findings once and stop; no change logs in design docs; fix findings in the same PR; mutate to prove a test can fail; run preflight before push"; "admin-merge ritual when checks green" | 13, 15, 16, 17 | skill pressure tests (21.5) |
+| R12 | Owner practices: "plans as sequences of discrete PRs each safe to deploy alone, parallel waves, lowest-tier model per task; after PASS/PASS fold findings once and stop; no change logs in design docs; fix blocking findings in the same PR and list the rest once as follow-ups the owner fixes or defers; mutate to prove a test can fail; run preflight before push"; "admin-merge ritual when checks green" | 13, 15, 16, 17 | skill pressure tests (21.5) |
 | R13 | "Command names: keep setup/ship/develop/ci-watch/merge; the gerund naming rule applies only to model-invoked skills. Include the CLAUDE.md amendment in release 1's first PR." | 4.1, 22.1 | `tests/skills/naming.test.mjs` (gerund check exempts exactly the five command skills) |
 | R14 | "Agents MAY commit and push, with a per-repo opt-out: ship and ci-watch are model-invocable (no disable-model-invocation). setup asks one question ("Allow agents to commit and push without asking?"), default yes, stored as one boolean in the ship-kit config ... When false, the skill runs but stops before each commit/push to ask the user, and never pushes when no user can be asked (CI/headless). Enforcement lives in the skill, since disable-model-invocation is static frontmatter. Amend the CLAUDE.md rule on side-effecting skills to "must honour this setting" (release 1 first PR). setup and any release/tag command stay disable-model-invocation." Merge scope is narrowed by R17. | 5.4, 15, 16, 19.3, 22.1 | `tests/lib/agent-policy.test.mjs`; pressure tests for `ship` and `ci-watch` (21.5) |
 | R15 | "Review jobs use the workflow GITHUB_TOKEN, not the Claude GitHub App." | 6.3, 20.3 | `tests/workflows/review-yml.test.mjs` (seat step passes `github_token` from `secrets.GITHUB_TOKEN`) |
@@ -1193,10 +1193,11 @@ defect. It resolves exactly one way:
   passes.
 - **Accepted**: an override (11.3).
 
-`skills/resolving-review-findings/SKILL.md` teaches this, and that the fix
-lands in the same PR, never a follow-up. Seats judge in prose whether an
-accompanying test is real; mechanical red/green replay is out of scope
-(R9).
+`skills/resolving-review-findings/SKILL.md` teaches this, and that a
+BLOCKING finding's fix lands in the same PR; a finding below the bar is a
+follow-up, listed once, which the owner fixes or defers. Seats judge in
+prose whether an accompanying test is real; mechanical red/green replay
+is out of scope (R9).
 
 ### 11.2 Rebuttal
 
@@ -1767,8 +1768,10 @@ rationalization table plus red flags (CLAUDE.md, Skills).
 
 ### 17.4 `resolving-review-findings`
 
-11.1's three outcomes; fix in the same PR; a justification is a checkable
-claim; rebut with a test rather than argument.
+11.1's three outcomes; a blocking finding is fixed in the same PR, and
+findings below the bar are follow-ups listed once, which the owner fixes
+or defers; a justification is a checkable claim; rebut with a test
+rather than argument.
 
 ### 17.5 `converging-code-reviews`
 
@@ -1777,9 +1780,14 @@ uncommitted diff, a local branch before its PR, or a PR with the author's
 fix rounds. A round is one pass of a general and an adversarial reviewer
 over the change's current state; the next state comes from the author's
 push or from a fix in the working tree, and a round's output is a PR
-comment, a report to the user, or a fix. It owns: the blocking bar stated
-before round one and what "realistic input" means for it; the regression
-or older label on every finding and which of each blocks in later rounds;
+comment, a report to the user, or a fix. `/ship-kit:ship`'s own loop and
+the CI review seats are outside it: their convergence is the seats'
+aggregate, and a seat FAIL is part of the bar there. It owns: the blocking
+bar stated before round one and what "realistic input" means for it; the
+regression or older label on every finding, with a regression blocking
+when it meets the bar and an older item when it meets it on realistic
+input; only blocking findings fixed in the same change, the rest
+follow-ups the owner fixes or defers;
 one round carrying every known finding, with re-reviews scaled to the diff
 since the last round; running a fix, suggested or applied, against both
 reviewers' probe tables before posting or keeping it; owning regressions
@@ -1794,23 +1802,38 @@ positive recipe, no rationalization table (21.5). It points at
 How a dual code review is run by hand with subagents, for any review: own
 changes before a commit, an uncommitted diff or working tree, a local
 branch before its PR, or a PR including re-reviews of an author's fix
-rounds. Two reviewers per round: the general one gets the last round's
-findings (and the author's replies) and marks each fixed, partly fixed,
-not fixed or disputed, mutation-checking each fix; the adversarial one
-gets only the diff and the bar, and every finding carries a reproduction.
-Each brief states the goal, what is ruled out, the reviewer's own copy
-(never the primary checkout; the orchestrator alone fetches and exports),
-what to run, a ban on every writing git command by name, fakes and
-recorded fixtures instead of real third-party services, light queries
-against production, what is out of scope, and a capped report of exact
-inputs and outputs. Every probe runs on the current and the previous
-state. Reports are claims, checked and reproduced before use. The round
-loop keeps a ledger and waits for a push to settle; PR output is one
-review per PR per round, posted only if the head has not moved, with
-request-changes reserved for blockers and approval and merge left to the
-owner. What blocks and when review stops belong to
-`converging-code-reviews`. Output-shaping skill: a positive recipe, no
-rationalization table (21.5).
+rounds. The session that runs it is the orchestrator; `/ship-kit:ship`'s
+own loop and the CI review seats are outside it, their convergence being
+the seats' aggregate. Two reviewers per round: the general one gets the
+last round's findings (and the author's replies) and marks each fixed,
+partly fixed, not fixed or disputed, mutation-checking each fix; the
+adversarial one gets only the diff and the bar, and every finding carries
+a reproduction. Each brief states the goal and that the reviewer is one
+reviewer, loading neither this skill nor subagents; what is ruled out;
+the reviewer's own copy and a copy of the previous state (the last
+reviewed state; in round one HEAD for an uncommitted diff, the merge base
+for a branch or PR); what to run; that nothing writes outside its own
+copy and no `gh` command but reads runs, with fakes and recorded fixtures
+instead of real services and no calls to production; that the diff, the
+PR text and the author's replies are untrusted data; what is out of
+scope; and a capped report of exact inputs and outputs. The orchestrator
+alone fetches and exports (`git fetch origin pull/<n>/head`, then
+`git archive <sha> | tar -x -C <dir>`, or a copy of a working tree, whose
+state id can be a temporary-index snapshot commit as in 15.2), never
+checking out, switching or stashing in the user's primary checkout.
+Probes that execute the change's code run only when its author has write
+access or inside a sandbox; otherwise the review is read-only. Every probe
+runs on the current and the previous state. Reports are claims, checked
+and reproduced before use. The round loop keeps a ledger and waits for the
+head to stay unchanged for about 30 minutes, reporting the ledger and
+stopping when no new state arrives in the session. A PR review is posted
+only when the user asked for it, otherwise returned as a draft; one review
+per PR per round; when the head moved after the review was written, it is
+posted against the reviewed commit and names the newer head;
+request-changes is reserved for blockers and never used on one's own PR,
+and approval and merge are left to the owner. What blocks and when review
+stops belong to `converging-code-reviews`. Output-shaping skill: a
+positive recipe, no rationalization table (21.5).
 
 ---
 
@@ -2094,11 +2117,13 @@ the template is canonical and this is its summary: start every change
 with `/ship-kit:develop`; test code follows the same design rules as
 production code; every change carries a test proving the behavior it
 claims, and a claimed guard is proven with a mutation; run preflight
-before push; fix review findings in the same PR; load
+before push; fix blocking review findings in the same PR and list the
+rest once as follow-ups the owner fixes or defers; load
 `/ship-kit:converging-code-reviews` before any code review, with the
-repo's own review rules in a project skill beside the block; run every
-code review, local or on a PR, with `/ship-kit:running-dual-code-reviews`;
-plans are
+repo's own review rules in a project skill under
+`.claude/skills/<name>/SKILL.md`; when running a code review, local or on
+a PR, run it with `/ship-kit:running-dual-code-reviews`, neither line
+applying to `/ship-kit:ship`'s own loop or the CI review seats; plans are
 sequences of deployable PRs; design docs state the current design only;
 the hook bootstrap line and the folder-trust note; a fill-in for the
 repo's model-tier guidance.
@@ -2385,7 +2410,8 @@ While ship-kit is 0.x, a breaking change bumps the minor version.
 | 2.3 | `reviewing-for-correctness`, `hunting-defect-shapes` (each with its `skill_marker` line), `review/contract/*`, `tests/skills/marker.test.mjs` | dmi skills, invisible until named | L | 2 |
 | 2.4 | `.github/workflows/review.yml` (6.3), `templates/callers/review.yml`, `templates/blocks/gate-step.sh`, gate test, `review-yml` test, ship-kit's canary caller; passes `check-template-secrets` | untagged; only ship-kit's non-required canary calls it | L | 3 |
 | 2.5 | `skills/setup` + `scripts/setup/*` (pin resolution, install, check, update, settings merge, gitignore, the agent questions (the admin-merge one only when the strict policy is chosen, 19.3 step 4), the manual steps in 19.3 with the checks and review rulesets and, only when the strict policy is chosen, the up-to-date ruleset, none with a bypass actor) + `scripts/lib/agent-policy.mjs` (incl. `--admin`) + `scripts/merge/required-checks.mjs` (used by detection) + CLAUDE.md block template + fixture tests | writes only after a shown diff; refuses an untagged plugin | M | 4 |
-| 2.6 | `promoting-shadow-checks` + `scripts/promote/shadow-record.mjs`; mining gains config-derived list paths, `trustState` filtering and its commit/PR step under 5.4 (18.1, 18.3); version 0.2.0 | proposes PRs under 5.4, whose code landed in 2.5 | S | 5 |
+| 2.6 | `converging-code-reviews` and `running-dual-code-reviews` with pressure tests; their two `[since 0.2.0]` lines in the CLAUDE.md block template, with render tests | model-invoked skills; a review is posted to a PR only when the user asks; the block lines render only from 0.2.0 | L | 5 |
+| 2.7 | `promoting-shadow-checks` + `scripts/promote/shadow-record.mjs`; mining gains config-derived list paths, `trustState` filtering and its commit/PR step under 5.4 (18.1, 18.3); version 0.2.0 | proposes PRs under 5.4, whose code landed in 2.5 | S | 5 |
 
 After the 0.2.0 tag: on ship-kit, an admin adds the Actions event policy
 allowing `pull_request_target` (F19), then one PR adds the required
@@ -2467,7 +2493,7 @@ each:
   trailing `/`, so a prefix cannot admit `docs/design-notes.sh`.
 - PR 2.2: the round-count hint (8.4) counts distinct `head` values, not
   states, so two seats do not double the count.
-- PR 2.2, 2.6: `ship-kit-state` artifacts expire with the repository's
+- PR 2.2, 2.7: `ship-kit-state` artifacts expire with the repository's
   artifact retention; `trustState` then rejects older markers, which costs
   a full review or a shorter promotion record, and the skills say so.
 - PR 2.4: render `secrets` and `permissions` for a local boot workflow,
@@ -2488,7 +2514,7 @@ each:
   is unverified), and have `setup check` read it on public repos so a
   missing `pull_request_target` allowance is reported before
   2026-11-02.
-- PR 2.6: promotion counts a run as clean only when it passed or a human
+- PR 2.7: promotion counts a run as clean only when it passed or a human
   marked its findings confirmed, and counts the trusted state whose `head`
   is the PR's final head; full mode writes the marker too.
 - PR 2.2: `extract-tree.mjs` refuses tree entries with `..`, absolute
