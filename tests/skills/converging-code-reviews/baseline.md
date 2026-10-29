@@ -1,8 +1,8 @@
-# Baseline (RED): converging-code-review-rounds
+# Baseline (RED): converging-code-reviews
 
 Model: claude-opus-5-5
 
-CLI version: `2.1.312 (Claude Code)`. Every attempt ran under the pinned model (`tests/skills/pinned-model.txt`) in a fresh `mktemp -d` run directory outside the repository, with no files copied (`## Run directory` is `None.`) and no plugin loaded. `node tests/helpers/pressure.mjs baseline` accepted each stream (exit 0): one init message reporting the pinned model, no ship-kit plugin, skill or slash command, and a final `success` result. Each output below is the `baseline` text, verbatim, with non-ASCII characters transcribed (en dash to `-`).
+CLI version: `2.1.312 (Claude Code)`. Every attempt ran under the pinned model (`tests/skills/pinned-model.txt`) in a fresh `mktemp -d` run directory outside the repository, with no files copied (`## Run directory` is `None.`) and no plugin loaded. `node tests/helpers/pressure.mjs baseline` accepted each stream (exit 0): one init message reporting the pinned model, no ship-kit plugin, skill or slash command, and a final `success` result. Each output below is the `baseline` text, verbatim, with non-ASCII characters transcribed (en dash to `-`, ellipsis to `...`).
 
 ```bash
 MODEL=$(cat tests/skills/pinned-model.txt)
@@ -16,8 +16,9 @@ echo "baseline exit: $?"
 ## Summary
 
 - The convergence rules were first tested as a discipline: a round-5 choice under deadline, fatigue and sunk-cost pressure, where the right option is to block only on the regression the reviewing side's own suggestion caused, revert rather than widen, post the rest once as follow-ups and raise the stalled trend with the owner. The baseline chose that option unprompted (attempt 1). As with `reviewing-design-documents`, the rule is not discriminable as a discipline at this model, and no criterion rests on that attempt.
-- The scenario was therefore reclassified as output-shaping: the review plan the reviewing side states before round one. Attempts 2 and 3 run the `## Prompt` of `scenario.md`.
-- Both shaping attempts already scale re-reviews to the diff, add no new nits on unchanged code, and escalate to the owner when blockers stop falling; both tag late findings on unchanged code much as the skill labels older ones. No criterion claims those behaviours. They fail the five criteria in `scenario.md`.
+- The scenario was therefore reclassified as output-shaping: the review plan the reviewing side states before round one.
+- The skill first covered pull-request review rounds only (attempts 2 and 3, under `## Superseded pull-request attempts`). The owner then widened it to any code review: own changes before a commit, an uncommitted diff, a local branch before its pull request, and pull requests with fix rounds. The prompt now names all of those and says the next state may come from the reviewer's own fix in the working tree. Criterion 3 now covers a fix applied to the change under review as well as one suggested to an author, compared against the previous state rather than the old head, and criteria 4 and 5 say "reported" rather than "raised" or "posted", since a local review reports to the user. Attempts 4 and 5 run the current `## Prompt` of `scenario.md`, and the discriminating criteria rest on them only.
+- All four shaping attempts already scale re-reviews to the diff, add no new nits on unchanged code after round one, and stop or escalate when blockers stop falling, and they tag late findings much as the skill labels older ones. No criterion claims those behaviours.
 
 ## Discipline attempt
 
@@ -68,6 +69,102 @@ Model: claude-opus-5-5
 It chose the option the skill teaches, for the skill's reasons ("Widening the regex again (A and D) repeats the pattern that got us here.", "Telling the owner the blockers aren't shrinking"). Nothing for a discipline skill to correct.
 
 ## Output-shaping attempts
+
+Prompt:
+
+```text
+You are about to review a code change. It may be your own uncommitted changes before you commit them, a local branch before its pull request is opened, or a pull request whose author pushes fix rounds. Each round, a general reviewer and an adversarial reviewer review the change's current state; the next state comes from the author's push or from your own fix in the working tree. Before round one, write the review plan you will state out loud to whoever receives the findings: what blocks and what does not, how findings are labelled in later rounds, how you check a fix you suggest or apply before you post or keep it, how much each re-review covers, what you do if the rounds are not converging, and what "done" looks like. Output only the plan, under 300 words.
+```
+
+### Attempt 4
+
+`baseline` exited 0.
+
+Attempt 4 output, verbatim:
+
+```text
+Model: claude-opus-5-5
+
+# Review plan
+
+**What blocks:** Only correctness, security, data-loss, or broken-contract problems. A blocker must name a concrete trigger: specific input, state, or call path that produces wrong behaviour. Style, naming, refactors, and speculative "might be an issue" notes never block. They are labelled **nit** or **question**, and the author can ignore them.
+
+**Labels in later rounds:** Each finding gets a stable ID (R1-3, for example) and one status:
+- **new**: introduced or first noticed this round.
+- **open**: still present.
+- **fixed**: verified resolved.
+- **regressed**: a fix broke something else.
+- **withdrawn**: I was wrong, with one line saying why.
+
+I don't rename, merge, or quietly drop a finding between rounds.
+
+**Checking a fix before I post or keep it:** I re-read the surrounding code and callers to confirm the fix addresses the stated trigger and doesn't move the bug elsewhere. I run the relevant tests, or a targeted reproduction if tests don't exist. I also check that the fix doesn't contradict an earlier finding. If I can't verify a fix, I post it as a suggestion and mark it unverified. I don't present it as a fix.
+
+**How much each re-review covers:** The full diff from the previous round, plus any code that diff touches or calls. Earlier findings are re-checked only by their stated trigger. I don't re-review the whole change from scratch unless the diff restructures it. A new nit in code that hasn't changed isn't raised after round one.
+
+**If the rounds aren't converging:** If blockers keep reopening or regressing after round three, or reviewers keep raising contradictory findings, I stop iterating. I write up the disagreement or root cause in one summary and hand the decision to you instead of starting round four.
+
+**What "done" looks like:** Both reviewers report no open or regressed blockers. Every blocker is either fixed and verified or explicitly accepted by you. Tests pass, and I quote the output. Any remaining nits are listed but don't hold up the merge. I'll state plainly which checks ran and which didn't.
+```
+
+1. FAIL. "Style, naming, refactors, and speculative "might be an issue" notes never block." Missing test rows, documentation and binding standards are not classed.
+2. FAIL. "A blocker must name a concrete trigger: specific input, state, or call path that produces wrong behaviour." Realistic input is not tied to recorded or production-shaped data, and contrived inputs are not mentioned.
+3. FAIL. "I re-read the surrounding code and callers to confirm the fix addresses the stated trigger and doesn't move the bug elsewhere. I run the relevant tests, or a targeted reproduction if tests don't exist." No scratch copy, probe tables or list of moved rows.
+4. FAIL. Not stated.
+5. FAIL. "Any remaining nits are listed but don't hold up the merge." It does not say nothing blocks, and "Every blocker is either fixed and verified or explicitly accepted by you" is the only hand-off; approval and merge are not left to their owner.
+
+### Attempt 5
+
+`baseline` exited 0.
+
+Attempt 5 output, verbatim:
+
+```text
+Model: claude-opus-5-5
+
+# Review plan
+
+**What blocks:** correctness bugs, security holes, data loss, regressions, broken builds or tests, and breaking API or contract changes. A blocking finding must point to `file:line` and give a concrete scenario that triggers it. Concerns without a plausible trigger don't block.
+
+**What doesn't block:** style, naming, refactors, minor performance tweaks and "consider..." ideas. These are labelled **nit** or **suggestion** and never hold up the merge. After round 1, I only raise new nits if they hide a real defect.
+
+**Labels in later rounds:** each finding keeps a stable ID (e.g. `R1-3`) and gets one status per round:
+- **open**
+- **fixed (verified)**
+- **partially fixed**
+- **regressed**
+- **withdrawn**, with the reason
+- **new**, saying whether the fix introduced it or an earlier round missed it
+
+**Checking a fix before I post or keep it:**
+1. Reproduce the original failure with a test or a step-by-step trace.
+2. Apply the fix and confirm that failure is gone.
+3. Run the relevant existing tests.
+4. Check the callers and shared state the fix touches.
+
+If I can't verify a fix, I post it as a suggestion marked **unverified** and don't apply it. If a fix fails these checks, I drop it rather than keep it.
+
+**How much each re-review covers:** the full change since the last round, plus whatever that change touches. I also re-check every open or recently fixed finding. I re-review the whole change only if the new changes are large or alter the design. The adversarial reviewer focuses on regressions that fixes introduce.
+
+**If the rounds aren't converging:** that means three rounds without the blocking count falling, or fixes that keep reopening each other. I stop patching, summarize the cycle and its likely root cause, and hand it to the author with a proposed design-level fix. I won't keep going round after round on symptoms.
+
+**Done means:**
+- no blocking findings left open
+- every fixed finding verified
+- tests passing, or any failures reported with their output
+- remaining nits listed for the author to decide on
+- a closing summary of what was checked and what wasn't
+```
+
+1. FAIL. "correctness bugs, security holes, data loss, regressions, broken builds or tests, and breaking API or contract changes" block; missing test rows, documentation and binding standards are not classed.
+2. FAIL. "Concerns without a plausible trigger don't block." Realistic input is not tied to recorded or production-shaped data.
+3. FAIL. "Apply the fix and confirm that failure is gone." and "Run the relevant existing tests." No scratch copy, probe tables or list of moved rows.
+4. FAIL. Not stated; "After round 1, I only raise new nits if they hide a real defect."
+5. FAIL. "remaining nits listed for the author to decide on" and "a closing summary of what was checked and what wasn't"; it does not say nothing blocks or leave approval and merge to their owner.
+
+## Superseded pull-request attempts
+
+These ran the pull-request-only prompt below, before the scope change. They stay as evidence; the five criteria they are graded against are the pull-request wording of the current ones.
 
 Prompt:
 
@@ -161,4 +258,4 @@ If blocking findings haven't gone down after 3 rounds, or a fix brings back an e
 
 ## Outcome
 
-Criteria that failed in at least one shaping attempt: 1, 2, 3, 4, 5. Each failed in both. They are the `Discriminating criteria` of `result.md`.
+Criteria that failed in at least one attempt on the current prompt (attempts 4 and 5): 1, 2, 3, 4, 5. Each failed in both. They are the `Discriminating criteria` of `result.md`. The superseded attempts 2 and 3 failed the same five.
