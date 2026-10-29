@@ -33,7 +33,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMain } from "../lib/entry-point.mjs";
 
 export const MAX_ENTRIES = 100000;
 export const MAX_BYTES = 512 * 1024 * 1024;
@@ -256,6 +256,6 @@ export function main(argv, deps = { git: gitRunner(process.cwd()) }, io = { out:
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(process.argv[1], import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));
 }

@@ -11,6 +11,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { isMain } from "./lib/entry-point.mjs";
 
 const TEMPLATES_ROOT = "templates";
 const SCAN_ROOTS = [TEMPLATES_ROOT, "workflows", ".github/workflows"];
@@ -203,6 +204,6 @@ export function main(cwd = process.cwd(), out = console) {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(process.argv[1], import.meta.url)) {
   process.exit(main());
 }

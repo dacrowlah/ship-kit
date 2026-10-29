@@ -4,13 +4,30 @@
 // default) and then applies the few rules a schema cannot state. Local
 // readers never trust the working tree: `readDefaultBranchConfig` fetches the
 // remote's default branch into the private ref `refs/ship-kit/default` and
-// reads the file from that commit (design 5.3, 5.4). Every failure is a
-// `{ok: false, reason}` answer, never a throw, so a caller falls back to its
-// fail-closed default.
+// reads the file from that commit (design 5.3, 5.4). The remote is `origin`,
+// and only as a configured remote with a network URL: git reads an
+// unconfigured name as a path and resolves a local-path URL against the
+// working tree, so either would let a directory committed on a branch stand
+// in for the remote. The working directory must also be inside an ordinary
+// checkout, since a bare repository committed on a branch would otherwise be
+// taken as the repository, bringing its own `origin`.
+//
+// `readOriginRepository({ git, gh })` answers which GitHub repository that
+// same `origin` is, `{ok: true, owner, name, slug}`, for a caller that reads
+// the config from `origin` and calls the GitHub API: it takes owner/name from
+// origin's URL (https://host/owner/name, ssh://host/owner/name or
+// host:owner/name) and refuses unless `gh repo view` names the same
+// repository (compared without regard to case, as GitHub does), so a second
+// remote that gh resolves to instead can never pair one repository's config
+// with another's pull requests. The slug it answers is gh's spelling.
+//
+// Every failure is a `{ok: false, reason}` answer, never a throw, so a caller
+// falls back to its fail-closed default.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { devNull } from "node:os";
+import { makeGh, repoSlug } from "./gh.mjs";
 import { checkSchema, validate } from "./schema.mjs";
 import { MIGRATIONS, checkChain } from "../setup/migrations/index.mjs";
 
@@ -26,6 +43,16 @@ const FILE = new RegExp(SCHEMA.properties.review.properties.huntLists.properties
 const MODEL = new RegExp(SCHEMA.properties.review.properties.model.pattern, "u");
 const SHA = /^[0-9a-f]{40}$/;
 const GIT_TIMEOUT_MS = 120_000;
+// The schemes whose transports reach another machine. `file` and every
+// other scheme are refused, as is a `<helper>::<address>` remote helper.
+const NETWORK_SCHEMES = new Set(["https", "http", "ssh", "git", "git+ssh", "ssh+git"]);
+// The URL forms readOriginRepository reads owner and name from: https and
+// ssh URLs, and the scp-like ssh form. `repoSlug` then validates both parts.
+const GITHUB_URLS = [
+  /^https:\/\/(?:[^@/]+@)?[^@/]+\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
+  /^ssh:\/\/(?:[^@/]+@)?[^@/]+\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
+  /^(?:[^@/:]+@)?[^@/:]+:([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
+];
 const REGULAR_MODES = new Set(["100644", "100755"]);
 // ignoreBOM keeps a leading BOM in the text, so loadConfig alone decides
 // how many it accepts (one).
@@ -181,15 +208,18 @@ export function seatModel(config, seat) {
 }
 
 /**
- * A git runner for `cwd`: bounded, never prompting, ignoring replace refs and
+ * A git runner for `cwd`: bounded, never prompting, ignoring replace refs,
  * running no hooks (a checked-out branch's hooks must not move the ref this
- * module reads). Returns stdout as a Buffer and throws on any failure.
+ * module reads) and never adopting a bare repository it was not pointed at
+ * (a bare repository committed on a branch would bring its own config, and
+ * with it its own `origin`). Returns stdout as a Buffer and throws on any
+ * failure.
  * @param {string} [cwd]
  * @returns {(args: string[]) => Buffer}
  */
 export function makeGit(cwd = process.cwd()) {
   return (args) => {
-    const result = spawnSync("git", ["-c", `core.hooksPath=${devNull}`, ...args], {
+    const result = spawnSync("git", ["-c", `core.hooksPath=${devNull}`, "-c", "safe.bareRepository=explicit", ...args], {
       cwd,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: 4 * MAX_CONFIG_BYTES,
@@ -249,6 +279,101 @@ export function readConfigAt(ref, path, { git, migrations = MIGRATIONS }) {
   }
 }
 
+/**
+ * Whether `url` is one the trusted config may be fetched from: a URL whose
+ * scheme is in NETWORK_SCHEMES, or an scp-like `[user@]host:path` (a colon
+ * after a host of two or more characters, before any slash or backslash).
+ * Everything else is refused: a local path, which git resolves against the
+ * working tree's top level; a one-letter host, which is a drive letter on
+ * Windows; another scheme, `file` included; a remote helper; a value that
+ * starts with a dash; one holding a control character. `allowLocalRemote:
+ * true` (tests only) also admits an absolute local path; a relative one is
+ * never admitted.
+ * @param {unknown} url
+ * @param {{allowLocalRemote?: boolean}} [options]
+ * @returns {{ok: true} | {ok: false, reason: string}}
+ */
+export function checkRemoteUrl(url, { allowLocalRemote = false } = {}) {
+  const refuse = (why) => ({ ok: false, reason: `origin's URL ${why}` });
+  if (typeof url !== "string" || url === "") return refuse("is missing");
+  if (/[\x00-\x1f\x7f]/.test(url)) return refuse("holds a control character");
+  if (url.startsWith("-")) return refuse("starts with a dash");
+  if (/^[A-Za-z0-9][A-Za-z0-9+.-]*::/.test(url)) return refuse("names a remote helper");
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url);
+  if (scheme !== null) {
+    return NETWORK_SCHEMES.has(scheme[1]) ? { ok: true } : refuse(`uses the ${scheme[1]} scheme, not a network one`);
+  }
+  const colon = url.indexOf(":");
+  const separator = url.search(/[/\\]/);
+  if (colon > 1 && (separator === -1 || separator > colon)) return { ok: true };
+  if (allowLocalRemote === true && url.startsWith("/")) return { ok: true };
+  return refuse("is a local path");
+}
+
+/** `output` without its one trailing newline. */
+function line(output) {
+  const value = text(output);
+  return value.endsWith("\n") ? value.slice(0, -1) : value;
+}
+
+/**
+ * Refuses a working directory that is not inside an ordinary checkout: a bare
+ * repository, or a git directory other than the one the checkout's top level
+ * uses (a directory planted to look like a git directory, whose config names
+ * a work tree). `makeGit` already stops git 2.38 and later from adopting a
+ * bare repository it finds; these checks hold on any git.
+ * @param {(args: string[]) => Buffer | string} git
+ * @returns {{ok: true} | {ok: false, reason: string}}
+ */
+function checkRepository(git) {
+  try {
+    if (line(git(["rev-parse", "--is-bare-repository"])) !== "false") {
+      return { ok: false, reason: "the working directory is inside a bare repository, not a checkout" };
+    }
+    const top = line(git(["rev-parse", "--show-toplevel"]));
+    const here = line(git(["rev-parse", "--absolute-git-dir"]));
+    if (top === "" || line(git(["-C", top, "rev-parse", "--absolute-git-dir"])) !== here) {
+      return { ok: false, reason: "the working directory's git directory is not the one its checkout's top level uses" };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: `could not identify the working directory's repository: ${describe(err)}` };
+  }
+}
+
+/**
+ * The URL to fetch `origin` from. The working directory must pass
+ * checkRepository; `remote.origin.url` must be set and non-empty (a
+ * `remote.origin` section without one makes `git remote get-url` print the
+ * bare word `origin`, which git would read as a path); the URL git uses for
+ * it (after `url.<base>.insteadOf`, as `git remote get-url` gives it) must
+ * pass checkRemoteUrl; and rewriting that URL again must leave it unchanged,
+ * so the URL checked here is the one git contacts when it is passed on the
+ * command line. The URL, not the name, goes to git: settings kept under
+ * `remote.origin.*` (a proxy, an upload-pack path) do not apply to this read.
+ * @param {(args: string[]) => Buffer | string} git
+ * @param {{allowLocalRemote?: boolean}} options
+ * @returns {{ok: true, url: string} | {ok: false, reason: string}}
+ */
+function originUrl(git, options) {
+  const repository = checkRepository(git);
+  if (!repository.ok) return repository;
+  let configured;
+  try {
+    configured = line(git(["config", "--get", "remote.origin.url"]));
+  } catch {
+    configured = "";
+  }
+  if (configured === "") return { ok: false, reason: "no remote named origin is configured with a url" };
+  const url = line(git(["remote", "get-url", "--", "origin"]));
+  const checked = checkRemoteUrl(url, options);
+  if (!checked.ok) return checked;
+  if (line(git(["ls-remote", "--get-url", "--", url])) !== url) {
+    return { ok: false, reason: "origin's URL is rewritten again by a url.<base>.insteadOf setting" };
+  }
+  return { ok: true, url };
+}
+
 /** `git check-ref-format --branch` output for `name`, or "" when git rejects it. */
 function validBranch(git, name) {
   try {
@@ -261,24 +386,80 @@ function validBranch(git, name) {
 /**
  * The local equivalent of CI's trusted commit (design 5.3): finds the
  * remote's default branch, fetches it into `refs/ship-kit/default` and reads
- * the config there, never from the working tree or a local branch.
- * @param {{git?: (args: string[]) => Buffer | string, path?: string, migrations?: readonly object[]}} [options]
+ * the config there, never from the working tree or a local branch. The
+ * remote is `origin`'s URL as `originUrl` checks it, passed to git after
+ * `--`; without such a remote the answer is not ok. `allowLocalRemote: true`
+ * exists for tests, whose remotes are local repositories.
+ * @param {{git?: (args: string[]) => Buffer | string, path?: string, migrations?: readonly object[], allowLocalRemote?: boolean}} [options]
  * @returns {{ok: true, config: any, migratedFrom: number | null, branch: string, sha: string} | {ok: false, reason: string, branch?: string}}
  */
-export function readDefaultBranchConfig({ git = makeGit(), path = ".ship-kit/config.json", migrations = MIGRATIONS } = {}) {
+export function readDefaultBranchConfig({
+  git = makeGit(),
+  path = ".ship-kit/config.json",
+  migrations = MIGRATIONS,
+  allowLocalRemote = false,
+} = {}) {
   let branch;
   try {
-    const lines = text(git(["ls-remote", "--symref", "origin", "HEAD"])).split("\n").filter((l) => l.startsWith("ref: "));
+    const origin = originUrl(git, { allowLocalRemote });
+    if (!origin.ok) return origin;
+    const lines = text(git(["ls-remote", "--symref", "--", origin.url, "HEAD"])).split("\n").filter((l) => l.startsWith("ref: "));
     const match = lines.length === 1 ? /^ref: refs\/heads\/(.+)\tHEAD$/.exec(lines[0]) : null;
     if (match === null) return { ok: false, reason: "origin does not name its default branch (ls-remote --symref origin HEAD)" };
     branch = match[1];
     if (branch.startsWith("-") || validBranch(git, branch) !== branch) {
       return { ok: false, reason: `origin's default branch name ${JSON.stringify(branch)} is not a valid branch name`, branch };
     }
-    git(["fetch", "--no-tags", "--quiet", "origin", `+refs/heads/${branch}:${DEFAULT_REF}`]);
+    git(["fetch", "--no-tags", "--quiet", "--", origin.url, `+refs/heads/${branch}:${DEFAULT_REF}`]);
   } catch (err) {
     return { ok: false, reason: `could not fetch origin's default branch: ${describe(err)}`, ...(branch === undefined ? {} : { branch }) };
   }
   const read = readConfigAt(DEFAULT_REF, path, { git, migrations });
   return { ...read, branch };
+}
+
+/** The repository `url` names in one of GITHUB_URLS' forms, or null. */
+function githubSlug(url) {
+  const match = GITHUB_URLS.map((form) => form.exec(url)).find((m) => m !== null);
+  if (match === undefined) return null;
+  try {
+    return repoSlug(`${match[1]}/${match[2]}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The GitHub repository `origin` names, confirmed against `gh repo view`
+ * (see the module header). gh resolves the repository from the process's
+ * working directory, so `git` must run in that same directory, as the
+ * default runner does.
+ * @param {{git?: (args: string[]) => Buffer | string, gh?: {cli: (args: string[]) => string}}} [options]
+ * @returns {{ok: true, owner: string, name: string, slug: string} | {ok: false, reason: string}}
+ */
+export function readOriginRepository({ git = makeGit(), gh = makeGh() } = {}) {
+  let origin;
+  try {
+    origin = originUrl(git, {});
+  } catch (err) {
+    return { ok: false, reason: `could not read origin's URL: ${describe(err)}` };
+  }
+  if (!origin.ok) return origin;
+  const named = githubSlug(origin.url);
+  if (named === null) {
+    return {
+      ok: false,
+      reason: "origin's URL does not name a GitHub repository as https://host/owner/name, ssh://host/owner/name or host:owner/name",
+    };
+  }
+  let viewed;
+  try {
+    viewed = repoSlug(JSON.parse(gh.cli(["repo", "view", "--json", "nameWithOwner"]))?.nameWithOwner);
+  } catch (err) {
+    return { ok: false, reason: `could not read gh repo view: ${describe(err)}` };
+  }
+  if (viewed.slug.toLowerCase() !== named.slug.toLowerCase()) {
+    return { ok: false, reason: `gh repo view names ${viewed.slug} but origin names ${named.slug}; refusing to mix two repositories` };
+  }
+  return { ok: true, owner: viewed.owner, name: viewed.name, slug: viewed.slug };
 }

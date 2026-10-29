@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { matchGlob } from "../lib/glob.mjs";
+import { isMain } from "../lib/entry-point.mjs";
 
 export const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 export const PLUGIN_JSON_PATH = ".claude-plugin/plugin.json";
@@ -223,6 +224,6 @@ export function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(process.argv[1], import.meta.url)) {
   process.exitCode = main(process.argv);
 }

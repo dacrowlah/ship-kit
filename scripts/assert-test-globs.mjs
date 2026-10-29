@@ -26,6 +26,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, globSync } from "node:fs";
 import { basename, join } from "node:path";
+import { isMain } from "./lib/entry-point.mjs";
 
 const SOURCE_GLOB = "scripts/**/*.{mjs,js,cjs}";
 const LIB_ROOT = "scripts/lib/";
@@ -236,6 +237,6 @@ export function main(argv, cwd = process.cwd(), report = console.error) {
   return problems.length > 0 ? 1 : 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(process.argv[1], import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));
 }

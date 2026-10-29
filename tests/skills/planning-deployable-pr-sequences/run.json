@@ -6,6 +6,10 @@
       "to": "scripts/check-template-secrets.mjs"
     },
     {
+      "from": "scripts/lib/entry-point.mjs",
+      "to": "scripts/lib/entry-point.mjs"
+    },
+    {
       "from": ".github/workflows/secret-scan.yml",
       "to": ".github/workflows/secret-scan.yml"
     }

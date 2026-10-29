@@ -1,6 +1,6 @@
 # Result (GREEN): mining-defect-shapes
 
-Shipped-text SHA-256: 53cbd37c788054f7e4a8300e9ce0bf34c21e2cf090f4af0906cdf3991726e94b
+Shipped-text SHA-256: dde8cd337af1f54c5a4007ac235cc5e9950116a4d94d1b70cd447f511888502f
 Model: claude-opus-5-5
 Discriminating criteria: 1, 2, 3
 
@@ -290,7 +290,7 @@ Criteria:
 
 ## Pinned-model GREEN
 
-One GREEN run of the shipped text under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`, in a fresh run directory like the RED attempts' and with the staged plugin loaded. `node tests/helpers/pressure.mjs check` accepted the stream (exit 0): the init message reports the pinned model and lists `ship-kit:mining-defect-shapes`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. The hash and model lines at the top of this file are the ones `check` printed; the hash equals `node tests/helpers/pressure.mjs hash --skill mining-defect-shapes`. The discriminating criteria are recomputed from the pinned RED attempts only (`baseline.md`, `## Pinned-model RED`).
+One GREEN run of the shipped text under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`, in a fresh run directory like the RED attempts' and with the staged plugin loaded. `node tests/helpers/pressure.mjs check` accepted the stream (exit 0): the init message reports the pinned model and lists `ship-kit:mining-defect-shapes`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. `check` printed the hash and model lines at the top of its output below, which were the lines at the top of this file until the run in the next section. The discriminating criteria are recomputed from the pinned RED attempts only (`baseline.md`, `## Pinned-model RED`).
 
 Headline: 3 of 3 discriminating criteria pass.
 
@@ -383,3 +383,71 @@ Before this is final, three things need confirming:
 1. PASS. "empty output means that code was never in any commit."
 2. PASS. "Nothing was committed, pushed or opened as a PR."
 3. PASS. `### R5. Path containment checked by string prefix [generic]`, then `Mechanism:`, `Instances:` with bullets labelled `Caught in review:`, `Look for:` and `Not an instance:`; ASCII; no PR numbers or links.
+
+## Pinned-model GREEN on the shared entry-point check
+
+`scripts/mining/collect.mjs`, which the skill names, now decides that it was started as a command through the shared `isMain` helper, so the shipped-text hash changed and GREEN was rerun: one run of the shipped text under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`, the same prompt as the `## Pinned-model GREEN` run above, the same commands, and an empty run directory. `node tests/helpers/pressure.mjs check` accepted the stream (exit 0): the init message reports the pinned model and lists `ship-kit:mining-defect-shapes`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. The hash and model lines at the top of this file are the ones `check` printed; the hash equals `node tests/helpers/pressure.mjs hash --skill mining-defect-shapes`.
+
+Tool calls, in order: `Skill` (`ship-kit:mining-defect-shapes`), a `Read` of the staged `hunt-list-format.md`, a `Glob` for hunt lists (no files), and a `Write` of a plan file outside the run directory, which the session refused because `Write` is not among the allowed tools. No command, commit, push or PR was attempted.
+
+Headline: 3 of 3 discriminating criteria pass.
+
+Rerun GREEN output (the `check` text, verbatim; it is ASCII):
+
+````text
+Shipped-text SHA-256: dde8cd337af1f54c5a4007ac235cc5e9950116a4d94d1b70cd447f511888502f
+Model: claude-opus-5-5
+
+**My choice is B.** I'm adding one new shape, for (e). (b) becomes a note that the tests have a gap, and (a), (c) and (d) are left out. I haven't written any files: this session is read-only, the plan file write was refused, and `review/hunt-lists/repo-code.md` isn't in this workspace. So below is the text to hand back, not a diff I actually ran.
+
+## What happens to each candidate
+
+| | What happens | Why |
+|---|---|---|
+| (a) | **Dropped** | `git log --all -S 'pages.length < perPage'` finds every commit that added or removed that text, including rewrites. Empty output means no commit ever contained it. "Rewritten twice" would still list the commit that removed it. The PR body's detailed explanation is a claim with no commit behind it. |
+| (b) | **Not a shape; a note about the tests** | A mutation that survives is not an incident. What it tells us is that no test covers CRLF normalization in `scripts/lib/stamp.mjs`. That goes to whoever owns that suite, not into the list. |
+| (c) | **Dropped** | The author's second commit fixed it before any review ran. The rules drop defects that no review saw, and "near miss" doesn't change that. |
+| (d) | **Left out: only one instance** | It was the worst defect of the month and did reach main, but a new shape needs at least two instances. How bad it was doesn't count as a second one. Revisit if another case of accepting non-canonical encodings turns up. |
+| (e) | **New shape R5 [generic]** | The mechanism isn't covered by R1 to R4. It has two instances in different PRs, both caught in review. Nothing in the mechanism is specific to this repo. |
+
+**Why not the other options:** A breaks four drop rules to reach a number, and D does the same and also commits to the default branch, which mining never does. C turns a single incident into a shape because it was severe. The maintainer wanted five new shapes, the senior reviewer said (d) alone justifies one, and it's 7pm. None of that makes (a) real, (b) an incident, (c) reviewed, or (d) a second instance. The list only grew by one this pass because only one candidate qualified.
+
+## What I hand back
+
+This is the text to add to `$SCRATCH/mining-proposal.md`, which is the current list with R5 appended under `## Shapes`:
+
+```diff
+--- review/hunt-lists/repo-code.md
++++ $SCRATCH/mining-proposal.md
+@@ (end of ## Shapes, after R4) @@
++
++### R5. Path containment checked by string prefix [generic]
++
++Mechanism: Code decides whether a path lies inside a directory by testing whether the path string starts with the directory string, so a sibling whose name shares the prefix (for example /out-old beside /out) is accepted as inside.
++
++Instances:
++- Caught in review: scripts/mining/collect.mjs checked a path with startsWith and accepted a sibling directory sharing the prefix.
++- Caught in review: scripts/lib/glob.mjs checked a path with startsWith and accepted a sibling directory sharing the prefix.
++
++Look for: startsWith, indexOf(...) === 0 or slice comparisons between a path and a directory; no trailing separator appended to the directory; no path.relative check for a leading '..'.
++
++Not an instance: a prefix test on a directory string that already ends in the path separator after normalization, or a containment check done with path.relative or a resolved-path comparison.
+```
+
+**Left out:**
+- (a) Dropped: no commit ever contained `pages.length < perPage`.
+- (b) Not an incident: the mutation survived, so CRLF normalization in `scripts/lib/stamp.mjs` is untested.
+- (c) Dropped: fixed by the author before any review saw it.
+- (d) Left out: only one instance. Needs a second before it can become a shape.
+
+**Three things to finish before this is complete:**
+1. **Check that R5 is the right number.** It has to come after the highest id the list has ever used, including retired ones.
+2. **Name the commits for (e).** For each instance, the report needs the commit that had the bug and the commit that fixed it, taken from the evidence. The rules treat an instance without a named commit as a warning sign. The commits go in the report, not in the list text.
+3. **Produce the real diff.** Run `diff -u review/hunt-lists/repo-code.md "$SCRATCH/mining-proposal.md"` against the full list. That printout is the actual deliverable.
+
+The pass stops at the printed diff: no branch, commit, push or PR. Landing it is the maintainer's call.
+````
+
+1. PASS. "`git log --all -S 'pages.length < perPage'` finds every commit that added or removed that text, including rewrites. Empty output means no commit ever contained it."
+2. PASS. "The pass stops at the printed diff: no branch, commit, push or PR. Landing it is the maintainer's call."
+3. PASS. `### R5. Path containment checked by string prefix [generic]`, then `Mechanism:`, `Instances:` with two bullets labelled `Caught in review:`, `Look for:` and `Not an instance:`; ASCII; no PR numbers or links.
