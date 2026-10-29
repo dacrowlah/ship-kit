@@ -58,7 +58,7 @@ points at the section that implements it and the test that pins it.
 | R9 | "Out of scope: hub invariant test suites, mechanical red/green replay." | not built | none; nothing in this design depends on either |
 | R10 | Releases 1 to 6 as listed in the brief, "each its own PR sequence" | 22 | release checklist (22.8) |
 | R11 | "Both adopting repos migrate from their hand-built copies (design the migration, including running old and new checks side by side and switching required-check names)." | 23 | migration exit criteria (23.1, 23.2) |
-| R12 | Owner practices: "plans as sequences of discrete PRs each safe to deploy alone, parallel waves, lowest-tier model per task; after PASS/PASS fold findings once and stop; no change logs in design docs; fix blocking findings in the same PR and list the rest once as follow-ups the owner fixes or defers; mutate to prove a test can fail; run preflight before push"; "admin-merge ritual when checks green" | 13, 15, 16, 17 | skill pressure tests (21.5) |
+| R12 | Owner practices: "plans as sequences of discrete PRs each safe to deploy alone, parallel waves, lowest-tier model per task; after PASS/PASS fold findings once and stop; no change logs in design docs; fix findings in the same PR; mutate to prove a test can fail; run preflight before push"; "admin-merge ritual when checks green". Fixing findings in the same PR is narrowed to blocking findings, the rest listed once as follow-ups the owner fixes or defers (11.1). | 13, 15, 16, 17 | skill pressure tests (21.5) |
 | R13 | "Command names: keep setup/ship/develop/ci-watch/merge; the gerund naming rule applies only to model-invoked skills. Include the CLAUDE.md amendment in release 1's first PR." | 4.1, 22.1 | `tests/skills/naming.test.mjs` (gerund check exempts exactly the five command skills) |
 | R14 | "Agents MAY commit and push, with a per-repo opt-out: ship and ci-watch are model-invocable (no disable-model-invocation). setup asks one question ("Allow agents to commit and push without asking?"), default yes, stored as one boolean in the ship-kit config ... When false, the skill runs but stops before each commit/push to ask the user, and never pushes when no user can be asked (CI/headless). Enforcement lives in the skill, since disable-model-invocation is static frontmatter. Amend the CLAUDE.md rule on side-effecting skills to "must honour this setting" (release 1 first PR). setup and any release/tag command stay disable-model-invocation." Merge scope is narrowed by R17. | 5.4, 15, 16, 19.3, 22.1 | `tests/lib/agent-policy.test.mjs`; pressure tests for `ship` and `ci-watch` (21.5) |
 | R15 | "Review jobs use the workflow GITHUB_TOKEN, not the Claude GitHub App." | 6.3, 20.3 | `tests/workflows/review-yml.test.mjs` (seat step passes `github_token` from `secrets.GITHUB_TOKEN`) |
@@ -1804,7 +1804,7 @@ changes before a commit, an uncommitted diff or working tree, a local
 branch before its PR, or a PR including re-reviews of an author's fix
 rounds. The session that runs it is the orchestrator; `/ship-kit:ship`'s
 own loop and the CI review seats are outside it, their convergence being
-the seats' aggregate. Two reviewers per round: the general one gets the
+the seats' aggregate, and a seat FAIL is part of the bar there. Two reviewers per round: the general one gets the
 last round's findings (and the author's replies) and marks each fixed,
 partly fixed, not fixed or disputed, mutation-checking each fix; the
 adversarial one gets only the diff and the bar, and every finding carries
@@ -1824,9 +1824,11 @@ checking out, switching or stashing in the user's primary checkout.
 Probes that execute the change's code run only when its author has write
 access or inside a sandbox; otherwise the review is read-only. Every probe
 runs on the current and the previous state. Reports are claims, checked
-and reproduced before use. The round loop keeps a ledger and waits for the
-head to stay unchanged for about 30 minutes, reporting the ledger and
-stopping when no new state arrives in the session. A PR review is posted
+and reproduced before use. The round loop keeps a ledger; on one's own
+change the next round runs at once on the fix, while an author's push to
+a PR is awaited until the head stays unchanged for about 30 minutes, the
+ledger being reported and the loop stopped when no push arrives in the
+session. A PR review is posted
 only when the user asked for it, otherwise returned as a draft; one review
 per PR per round; when the head moved after the review was written, it is
 posted against the reviewed commit and names the newer head;

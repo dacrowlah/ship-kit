@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node 22 locally and in `ci.yml`, Node 24 in `review.yml` (standard library only, ESM `.mjs`), bash, GitHub CLI `gh`, GitHub Actions, `anthropics/claude-code-action` v1.0.236, Claude Code CLI 2.1.284, actionlint 1.7.12, gitleaks 8.30.1, `yq` (tests only, preinstalled on `ubuntu-latest`).
 
-**Spec:** `docs/design/ship-kit-design.md`, in full; release 2 is 22.2, with 22.8 (checklist), 22.9 (notes keyed to PRs 2.1 to 2.6), 23 (migration), 20.1 (trust boundary), 16.3 and 16.4 (required checks, rulesets) and section 2 (platform facts). Binding rules: `CLAUDE.md`. Format and method precedent: `docs/plans/release-1.md`. Executors read the spec and CLAUDE.md in full before their task.
+**Spec:** `docs/design/ship-kit-design.md`, in full; release 2 is 22.2, with 22.8 (checklist), 22.9 (notes keyed to PRs 2.1 to 2.7), 23 (migration), 20.1 (trust boundary), 16.3 and 16.4 (required checks, rulesets) and section 2 (platform facts). Binding rules: `CLAUDE.md`. Format and method precedent: `docs/plans/release-1.md`. Executors read the spec and CLAUDE.md in full before their task.
 
 ## Global Constraints
 
@@ -996,7 +996,7 @@ Implementation note: the ReDoS timing test should also cover the MODEL and SECRE
 
 ### Task 16: `trust-state.mjs`
 
-Spec: design 8.2 (`trustState`), 12.3 (the same rule later for coverage), 20.1 (forged state markers); 22.9 (PR 2.2, 2.6: expired artifacts); rulings 10, 14. Model: opus. Depends on: 3, 7.
+Spec: design 8.2 (`trustState`), 12.3 (the same rule later for coverage), 20.1 (forged state markers); 22.9 (PR 2.2, 2.7: expired artifacts); rulings 10, 14. Model: opus. Depends on: 3, 7.
 
 **Files:** Create `scripts/review/trust-state.mjs`, `scripts/review/trust-state.test.mjs`.
 
@@ -1459,7 +1459,7 @@ Implementation note: the caller renders `branches: [<<default_branch>>]` as a fi
 
 ### Task 26: `shadow-record.mjs`
 
-Spec: design 10.3; 22.9 (PR 2.6: clean runs, final head, full-mode marker; PR 2.2/2.6: expired artifacts); rulings 7, 14. Model: sonnet. Depends on: 3, 15, 16.
+Spec: design 10.3; 22.9 (PR 2.7: clean runs, final head, full-mode marker; PR 2.2/2.7: expired artifacts); rulings 7, 14. Model: sonnet. Depends on: 3, 15, 16.
 
 **Files:** Create `scripts/promote/shadow-record.mjs` (100755), `scripts/promote/shadow-record.test.mjs`.
 
@@ -1632,7 +1632,7 @@ Implementation note: the action's `restoreConfigFromBase` overwrites the workspa
 
 ### Task 30: Trusted mining and the mining PR under the agent settings
 
-Spec: design 18.1 (from release 2: `--list` default from config at `origin/<default>`, markers kept only when `trustState` accepts them), 18.3 (the change is a PR committed and pushed under 5.4), 5.4, 21.5; 22.9 (PR 2.2/2.6: expired artifacts). Model: opus. Depends on: 2, 3, 15, 16, 22, 51.
+Spec: design 18.1 (from release 2: `--list` default from config at `origin/<default>`, markers kept only when `trustState` accepts them), 18.3 (the change is a PR committed and pushed under 5.4), 5.4, 21.5; 22.9 (PR 2.2/2.7: expired artifacts). Model: opus. Depends on: 2, 3, 15, 16, 22, 51.
 
 **Files:**
 - Modify: `scripts/mining/collect.mjs`, `scripts/mining/collect.test.mjs`
@@ -1642,7 +1642,7 @@ Spec: design 18.1 (from release 2: `--list` default from config at `origin/<defa
 
 Skill changes: step 3 drops `--list` (config default) and says markers are trusted; step 8 becomes: write the proposal to the list path on a new branch `mining/<target>-<date>`; run `node ${CLAUDE_PLUGIN_ROOT}/scripts/lib/agent-policy.mjs`; `proceed`: `git add <list path>`, commit, push the branch, `gh pr create`; `ask`: show the diff and the exact commit and push, and continue only on an explicit yes; `ask` with `CI` or `GITHUB_ACTIONS` set, or no answer: report and stop without committing. Never merges. The rationalization row "This goes up as a branch or PR for the maintainer to review" is removed (it now describes the deliverable); rows for the ask path come only from observed runs.
 
-**Why safe alone:** the collector still writes only to `--out`; the skill commits only through the 5.4 contract, whose reader landed in Task 22 (design 22.2, PR 2.6).
+**Why safe alone:** the collector still writes only to `--out`; the skill commits only through the 5.4 contract, whose reader landed in Task 22 (design 22.2, PR 2.7).
 
 - [ ] **Step 1: Write the failing tests** (`collect.test.mjs` additions): no `--list` reads the config's path at the default ref, not the working tree; unreadable config and no `--list` exits 2; an untrusted marker is dropped and counted; a trusted one kept with `trust: "trusted"`; a review-body marker never trusted; design target keeps only PRs with a trusted design-doc marker; pagination through `gh.list` (101 comments).
 - [ ] **Step 2: Run** `node --test scripts/mining/collect.test.mjs`: fails.
@@ -1663,7 +1663,7 @@ Implementation note: the run-directory files ("a fixture clone description", "th
 
 ### Task 31: `promoting-shadow-checks`
 
-Spec: design 10.3, 5.4, 6.6, 21.5; 22.9 (PR 2.2/2.6: expired artifacts). Model: opus. Depends on: 2, 22, 26, 51.
+Spec: design 10.3, 5.4, 6.6, 21.5; 22.9 (PR 2.2/2.7: expired artifacts). Model: opus. Depends on: 2, 22, 26, 51.
 
 **Files:** Create `skills/promoting-shadow-checks/SKILL.md`, `tests/skills/promoting-shadow-checks/{scenario,baseline,result}.md`.
 
@@ -2289,9 +2289,9 @@ move the pin as above, or to fix the skill.
 ## Self-review against the spec
 
 - Second-account, fork-PR and cross-owner steps: only in Task 50 (private-repo fork path, F17 cross-owner observation); Task 40 uses the owner's account only, and Task 46 only records whether its repository is cross-owner. F29's live test, approved-PR case included, is Task 13's release-6 note (ruling 44), and no release-2 task depends on it.
-- 22.2 PR 2.1: Tasks 4, 15. PR 2.2: Tasks 7, 8, 16, 17, 18, 23, 24. PR 2.3: Tasks 10, 19. PR 2.4: Tasks 5, 6, 20, 29, 32, 33. PR 2.5: Tasks 11, 21, 22, 25, 27, 28, 34, 35, 36 (loose recommended protection and the strict opt-in, ruling 45: Tasks 15, 35, 36, 37). PR 2.6: Tasks 26, 30, 31, 38. After the tag: Tasks 42 to 44; migration: Tasks 45 to 49; second-account live checks: Task 50 (ruling 41).
+- 22.2 PR 2.1: Tasks 4, 15. PR 2.2: Tasks 7, 8, 16, 17, 18, 23, 24. PR 2.3: Tasks 10, 19. PR 2.4: Tasks 5, 6, 20, 29, 32, 33. PR 2.5: Tasks 11, 21, 22, 25, 27, 28, 34, 35, 36 (loose recommended protection and the strict opt-in, ruling 45: Tasks 15, 35, 36, 37). PR 2.7: Tasks 26, 30, 31, 38. After the tag: Tasks 42 to 44; migration: Tasks 45 to 49; second-account live checks: Task 50 (ruling 41).
 - 22.8: canary on the release PR (Tasks 33, 38); private-repo check at an owner-approved rc (Tasks 39, 40; fork part in Task 50); gitleaks and the CLAUDE.md checklist (Task 41); 22.8's text moved to match ruling 41 (Task 12) and to take F29 out of release 2 (Task 15, ruling 44).
-- 22.9 release-2 notes: PR 2.1 dir slash (15); PR 2.2 distinct heads (24); artifact expiry (16, 26, 30, 31, 37); PR 2.4 boot secrets and permissions (20, 25) and self-hosted warning (27); planted `.claude` files (32, plus ruling 12 in 8); PR 2.5 CLAUDE.md lines by feature (25), Dependabot (37), F12 live (12); R5/R6 (37); Actions policy fact (27); PR 2.6 clean-run rule and final head (26), full-mode marker (24); extract-tree refusals and renames (8); node-built header (29); execution-file receipt and raw body (24, withheld when credential-shaped, ruling 43); diff-hunk check and fenced prose (24, 9); deny-ancestor test on two layouts (29); rulesets without permission (35); `agents.identity` (ruling 8); approval body rule (17); convert-to-draft text (17).
+- 22.9 release-2 notes: PR 2.1 dir slash (15); PR 2.2 distinct heads (24); artifact expiry (16, 26, 30, 31, 37); PR 2.4 boot secrets and permissions (20, 25) and self-hosted warning (27); planted `.claude` files (32, plus ruling 12 in 8); PR 2.5 CLAUDE.md lines by feature (25), Dependabot (37), F12 live (12); R5/R6 (37); Actions policy fact (27); PR 2.7 clean-run rule and final head (26), full-mode marker (24); extract-tree refusals and renames (8); node-built header (29); execution-file receipt and raw body (24, withheld when credential-shaped, ruling 43); diff-hunk check and fenced prose (24, 9); deny-ancestor test on two layouts (29); rulesets without permission (35); `agents.identity` (ruling 8); approval body rule (17); convert-to-draft text (17).
 - UNVERIFIED facts release 2 depends on: F12 (12), F13, F15, F23, F25, F28 (33), F21 (40; fork route 50), F27 (33, 40; read-only collaborator 50), F30 (27); F14, F17 and F29 stay UNVERIFIED (F17 observed in 50 if the second repo is cross-owner; F29 settled by Task 13's release-6 note before PR 6.2).
 - ship-kit's own `main` ruleset (id 24137364) has no bypass actor; Task 44 appends contexts and keeps `bypass_actors` empty.
 - Model tracking (ruling 46): records name their model and the gate requires the pin (51, backfilling all seven existing records in the same PR); the pin lives only in `tests/skills/pinned-model.txt`; seats run `review.model` or a seat's model (52, 53), passed as `claude_args --model` because claude-code-action v1.0.236 has no `model` input; later skill tasks (30, 31, 36) depend on 51 so their records carry the pinned model, and a skill merging after 54 adds its run spec; the weekly drift check (54, 55) runs against the current default model with a documented cap and merges only on the owner's yes. The design edit (52) sits on the design chain between 15 and 24.
