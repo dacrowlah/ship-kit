@@ -6,6 +6,7 @@
 - [since 0.3.0] Run preflight before every push (`node .ship-kit/preflight.mjs`); the pre-push hook refuses a push without a receipt for the commit.
 - [since 0.3.0] After cloning, run `git config core.hooksPath .githooks` once so the pre-push hook is active.
 - Fix review findings in the same pull request that raised them.
+- [since 0.2.0] Run every code review, local or on a pull request, with `/ship-kit:running-dual-code-reviews`.
 - Plans are sequences of deployable pull requests, each safe to release on its own.
 - Design documents state the current design only; history lives in git.
 - Contributors must trust this folder in Claude Code before the repository's plugin settings (`.claude/settings.json`) take effect; until they do, the ship-kit skills silently do not load.

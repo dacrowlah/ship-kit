@@ -166,6 +166,7 @@ merge is a separate opt-in (`agents.adminMerge`, 16.4).
 | `skills/reviewing-for-correctness/SKILL.md` | seat prompt | yes | 2 |
 | `skills/hunting-defect-shapes/SKILL.md` | seat prompt | yes | 2 |
 | `skills/promoting-shadow-checks/SKILL.md` | model | no | 2 |
+| `skills/running-dual-code-reviews/SKILL.md` | model | no | 2 |
 | `skills/measuring-coverage-baseline/SKILL.md` | model | no | 4 |
 | `skills/resolving-review-findings/SKILL.md` | model | no | 5 |
 | `skills/reviewing-security/SKILL.md` | seat prompt | yes | 5 |
@@ -1768,6 +1769,29 @@ rationalization table plus red flags (CLAUDE.md, Skills).
 11.1's three outcomes; fix in the same PR; a justification is a checkable
 claim; rebut with a test rather than argument.
 
+### 17.5 `running-dual-code-reviews`
+
+How a dual code review is run by hand with subagents, for any review: own
+changes before a commit, an uncommitted diff or working tree, a local
+branch before its PR, or a PR including re-reviews of an author's fix
+rounds. Two reviewers per round: the general one gets the last round's
+findings (and the author's replies) and marks each fixed, partly fixed,
+not fixed or disputed, mutation-checking each fix; the adversarial one
+gets only the diff and the bar, and every finding carries a reproduction.
+Each brief states the goal, what is ruled out, the reviewer's own copy
+(never the primary checkout; the orchestrator alone fetches and exports),
+what to run, a ban on every writing git command by name, fakes and
+recorded fixtures instead of real third-party services, light queries
+against production, what is out of scope, and a capped report of exact
+inputs and outputs. Every probe runs on the current and the previous
+state. Reports are claims, checked and reproduced before use. The round
+loop keeps a ledger and waits for a push to settle; PR output is one
+review per PR per round, posted only if the head has not moved, with
+request-changes reserved for blockers and approval and merge left to the
+owner. What blocks and when review stops belong to
+`converging-code-reviews`. Output-shaping skill: a positive recipe, no
+rationalization table (21.5).
+
 ---
 
 ## 18. Mining defect shapes
@@ -2049,7 +2073,9 @@ job.
 start every change with `/ship-kit:develop`; test code follows the same
 design rules as production code; every change carries a test proving the
 behavior it claims, and a claimed guard is proven with a mutation; run
-preflight before push; fix review findings in the same PR; plans are
+preflight before push; fix review findings in the same PR; run every
+code review, local or on a PR, with `/ship-kit:running-dual-code-reviews`;
+plans are
 sequences of deployable PRs; design docs state the current design only;
 the hook bootstrap line and the folder-trust note; a fill-in for the
 repo's model-tier guidance.
