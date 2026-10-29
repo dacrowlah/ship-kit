@@ -163,7 +163,7 @@ merge is a separate opt-in (`agents.adminMerge`, 16.4).
 | `skills/proving-tests-can-fail/SKILL.md` | model | no | 1 |
 | `skills/watching-pr-checks/SKILL.md` | model | no | 1 |
 | `skills/mining-defect-shapes/SKILL.md` + `hunt-list-format.md` | model | no | 1 |
-| `skills/converging-code-review-rounds/SKILL.md` | model | no | 2 |
+| `skills/converging-code-reviews/SKILL.md` | model | no | 2 |
 | `skills/reviewing-for-correctness/SKILL.md` | seat prompt | yes | 2 |
 | `skills/hunting-defect-shapes/SKILL.md` | seat prompt | yes | 2 |
 | `skills/promoting-shadow-checks/SKILL.md` | model | no | 2 |
@@ -1769,21 +1769,24 @@ rationalization table plus red flags (CLAUDE.md, Skills).
 11.1's three outcomes; fix in the same PR; a justification is a checkable
 claim; rebut with a test rather than argument.
 
-### 17.5 `converging-code-review-rounds`
+### 17.5 `converging-code-reviews`
 
-Brings a code pull request's review rounds to convergence, for the
-reviewing side that re-reviews an author's fix rounds with a general and
-an adversarial reviewer. It owns: the blocking bar stated before round one
-and what "realistic input" means for it; the regression or older label on
-every finding and which of each blocks in later rounds; one round carrying
-every known finding, with re-reviews scaled to the fix's diff; running a
-suggested fix against both reviewers' probe tables before posting it;
-owning regressions the reviewing side's own suggestions caused; raising a
-blocking count that is not shrinking with the owner; and "done" as nothing
-meeting the bar, with approval and merge left to whoever owns them.
-Output-shaping skill: a positive recipe, no rationalization table (21.5).
-It points at `reviewing-design-documents`' pattern method for stalled
-rounds.
+Brings any code review to convergence: own changes before a commit, an
+uncommitted diff, a local branch before its PR, or a PR with the author's
+fix rounds. A round is one pass of a general and an adversarial reviewer
+over the change's current state; the next state comes from the author's
+push or from a fix in the working tree, and a round's output is a PR
+comment, a report to the user, or a fix. It owns: the blocking bar stated
+before round one and what "realistic input" means for it; the regression
+or older label on every finding and which of each blocks in later rounds;
+one round carrying every known finding, with re-reviews scaled to the diff
+since the last round; running a fix, suggested or applied, against both
+reviewers' probe tables before posting or keeping it; owning regressions
+the reviewing side's own suggestions caused; raising a blocking count that
+is not shrinking with the owner; and "done" as nothing meeting the bar,
+with approval and merge left to whoever owns them. Output-shaping skill: a
+positive recipe, no rationalization table (21.5). It points at
+`reviewing-design-documents`' pattern method for stalled rounds.
 
 ---
 
@@ -2062,11 +2065,14 @@ job.
 
 ### 19.6 CLAUDE.md workflow block
 
-`templates/blocks/claude-md-workflow.md`, inserted as a managed block:
-start every change with `/ship-kit:develop`; test code follows the same
-design rules as production code; every change carries a test proving the
-behavior it claims, and a claimed guard is proven with a mutation; run
-preflight before push; fix review findings in the same PR; plans are
+`templates/blocks/claude-md-workflow.md`, inserted as a managed block;
+the template is canonical and this is its summary: start every change
+with `/ship-kit:develop`; test code follows the same design rules as
+production code; every change carries a test proving the behavior it
+claims, and a claimed guard is proven with a mutation; run preflight
+before push; fix review findings in the same PR; load
+`/ship-kit:converging-code-reviews` before any code review, with the
+repo's own review rules in a project skill beside the block; plans are
 sequences of deployable PRs; design docs state the current design only;
 the hook bootstrap line and the folder-trust note; a fill-in for the
 repo's model-tier guidance.

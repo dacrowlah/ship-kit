@@ -778,8 +778,23 @@ test("the real template at 0.2.0 omits the three 0.3.0 lines and keeps the rest,
   assert.equal(block.includes("/ship-kit:develop"), false);
   assert.equal(block.includes("preflight"), false);
   assert.equal(block.includes("core.hooksPath"), false);
-  const kept = template.split("\n").filter((line) => line !== "" && !line.includes("[since 0.3.0] "));
+  const kept = template
+    .split("\n")
+    .filter((line) => line !== "" && !line.includes("[since 0.3.0] "))
+    .map((line) => line.replace("- [since 0.2.0] ", "- "));
   assert.deepEqual(block.split("\n").filter((line) => line !== ""), kept);
+});
+
+test("the real template's code-review line is marked 0.2.0: dropped at 0.1.0, kept unmarked from 0.2.0", () => {
+  const template = readTemplate(REPO, BLOCK_TEMPLATE);
+  const marked = template.split("\n").filter((line) => line.includes("/ship-kit:converging-code-reviews"));
+  assert.equal(marked.length, 1);
+  assert.ok(marked[0].startsWith("- [since 0.2.0] Before any code review (your own changes, an uncommitted diff, a branch, or a pull request"));
+  const line = marked[0].replace("- [since 0.2.0] ", "- ");
+  assert.equal(claudeMdBlock(template, "0.1.0").includes("converging-code-reviews"), false);
+  for (const version of ["0.2.0-rc.1", "0.2.0", "0.3.0", "1.0.0"]) {
+    assert.ok(claudeMdBlock(template, version).split("\n").includes(line), version);
+  }
 });
 
 test("the folder-trust note is unmarked, so every version renders it", () => {
