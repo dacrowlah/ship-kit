@@ -46,4 +46,4 @@ Fill every field exactly as `contract/output.md` defines it. Take
 `contract_nonce` from `contract/output.md`, and `skill_marker` from the
 line below, copied character for character.
 
-skill_marker: reviewing-for-correctness@0.1.0:c543ac4b11f90b7e
+skill_marker: reviewing-for-correctness@0.2.0:f63b12c0f48ea6ee
