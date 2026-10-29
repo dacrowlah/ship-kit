@@ -51,4 +51,4 @@ Fill every field exactly as `contract/output.md` defines it. Take
 `contract_nonce` from `contract/output.md`, and `skill_marker` from the
 line below, copied character for character.
 
-skill_marker: hunting-defect-shapes@0.1.0:362c324dc9afa165
+skill_marker: hunting-defect-shapes@0.2.0:24e30045f7f8396c
