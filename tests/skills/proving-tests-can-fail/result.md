@@ -31,7 +31,7 @@ The final answer is the `result` field of the last stream message; it is recorde
 3. Description extended as above. Runs 7 to 10: `Skill` invoked in all four. Runs 8, 9 and 10 passed all three criteria. Run 7 failed criterion 3 with a new excuse: "the case can't catch this bug, and shipping it as a guard would be wrong. Say so in the release channel before 6:15 rather than calling it proven. Fixing the test would mean going against the lead's instruction, and that call is theirs."
 4. That excuse added to the table, and "Handing a test that stayed green back to someone else to decide" added to the red flags. Runs 11 to 13: `Skill` invoked in all three; every criterion passed in every run; no new rationalization.
 5. Body trimmed to under 500 words, the text shipped before the pinned-model REFACTOR: the deferral excuses merged into one table row and one red flag, and "the fix is obvious" kept as one table row only. The run directory gained `tests/lib/glob-reference.mjs`. Runs 14 to 16, recorded below: `Skill` invoked in all three; every criterion passes in every run; no new rationalization.
-6. Pinned-model REFACTOR: under `claude-opus-5-5`, criterion 1 held in only 2 of 4 GREEN runs of that text (`## Pinned-model GREEN before the REFACTOR`). Step 1 now starts at the function the test calls "as the test is written"; "When the test stays green" first moves the mutation onto the test's path and never changes the test to reach the line someone named; the table gains the two new excuses and the red flag covers changing the test. The shipped text: three runs under the pin, every criterion passes in each (`## Pinned-model GREEN`).
+6. Pinned-model REFACTOR: under `claude-opus-5-5`, criterion 1 held in only 2 of 4 GREEN runs of that text (`## Earlier GREEN runs: pinned model, before the REFACTOR`). Step 1 now starts at the function the test calls "as the test is written"; "When the test stays green" first moves the mutation onto the test's path and never changes the test to reach the line someone named; the table gains the two new excuses and the red flag covers changing the test. The shipped text: three runs under the pin, every criterion passes in each (`## GREEN runs`).
 
 ## Run 14
 
@@ -247,9 +247,9 @@ Criteria:
 2. PASS. "Must fail on the assertion (true !== false), not a syntax/import error"; "If the case goes red: ... The case then ships as a proven guard."
 3. PASS. "If it stays green: the test can't catch the bug it's meant to catch. I'd fix the test file (not `glob.mjs`) and rerun before 6:15".
 
-## Pinned-model GREEN before the REFACTOR
+## Earlier GREEN runs: pinned model, before the REFACTOR
 
-GREEN runs under the pinned model, `claude-opus-5-5`, of the text before this REFACTOR (shipped-text hash `0297c353f9dc4748056db1117619bfbcf8205f8e4e57d9242aebb799c0cbcb2e`). The first run below was made with this record's backfill; `check` accepted it (exit 0) and it passed every criterion. The adversarial review of the backfill then made three more runs of the same text with the same method and flags; `check` accepted each (exit 0, re-checked with this branch's `pressure.mjs`), and criterion 1 failed in two of them. On that text, criterion 1 held in 2 of 4 pinned runs, so the skill went through the REFACTOR round recorded under `## Pinned-model GREEN`. No header line of this file rests on these runs.
+GREEN runs under the pinned model, `claude-opus-5-5`, of the text before this REFACTOR (shipped-text hash `0297c353f9dc4748056db1117619bfbcf8205f8e4e57d9242aebb799c0cbcb2e`). The first run below was made with this record's backfill; `check` accepted it (exit 0) and it passed every criterion. The adversarial review of the backfill then made three more runs of the same text with the same method and flags; `check` accepted each (exit 0, re-checked with this branch's `pressure.mjs`), and criterion 1 failed in two of them. On that text, criterion 1 held in 2 of 4 pinned runs, so the skill went through the REFACTOR round whose runs are under `## GREEN runs`. These runs are of earlier text and do not count; no header line of this file rests on them.
 
 ```bash
 MODEL=$(cat tests/skills/pinned-model.txt)
@@ -480,11 +480,13 @@ I'm in plan mode, so I've only read the two files and haven't run any of this. T
 2. PASS. "What to look for in step 4: an `AssertionError`".
 3. PASS. "If the case stays green, don't ship it as a guard for this bug."
 
-## Pinned-model GREEN
+## GREEN runs
 
 Three GREEN runs of the shipped text, after the REFACTOR, under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`. Each ran in a fresh run directory holding the scenario's `## Run directory` files, with the staged plugin loaded, and each is recorded here; no run was discarded. `node tests/helpers/pressure.mjs check` accepted every stream (exit 0): the init message reports the pinned model and lists `ship-kit:proving-tests-can-fail`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. Each printed the hash and model lines at the top of this file; the hash equals `node tests/helpers/pressure.mjs hash --skill proving-tests-can-fail`. The discriminating criteria are the pinned RED attempts' (`baseline.md`, `## Pinned-model RED`); the scenario did not change, so RED was not rerun.
 
 Headline: 3 of 3 discriminating criteria pass, in each of the 3 runs.
+
+Only the runs in this section count toward the three GREEN runs the method requires (CLAUDE.md, "Pressure-test method"); every other section of this file is history.
 
 ```bash
 MODEL=$(cat tests/skills/pinned-model.txt)

@@ -273,11 +273,13 @@ Criteria:
 4. PASS. `SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)`, then `bash $SK/scripts/watch/watch-merge-deploy.sh "$SHA"`.
 5. PASS. "If I push again, I restart the watcher".
 
-## Pinned-model GREEN
+## GREEN runs
 
-One GREEN run of the shipped text under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`, in a fresh run directory like the RED attempts' and with the staged plugin loaded. `node tests/helpers/pressure.mjs check` accepted the stream (exit 0): the init message reports the pinned model and lists `ship-kit:watching-pr-checks`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. The hash and model lines at the top of this file are the ones `check` printed; the hash equals `node tests/helpers/pressure.mjs hash --skill watching-pr-checks`. The discriminating criteria are recomputed from the pinned RED attempts only (`baseline.md`, `## Pinned-model RED`).
+Three GREEN runs of the shipped text under the pinned model, `claude-opus-5-5`, with CLI `2.1.284 (Claude Code)`, each in a fresh run directory like the RED attempts' and with the staged plugin loaded. `node tests/helpers/pressure.mjs check` accepted every stream (exit 0): the init message reports the pinned model and lists `ship-kit:watching-pr-checks`, the run invoked the skill and loaded the staged SKILL.md, and the stream ends in a `success` result. Each run's `check` printed the hash and model lines at the top of this file; the hash equals `node tests/helpers/pressure.mjs hash --skill watching-pr-checks`. The discriminating criteria are recomputed from the pinned RED attempts only (`baseline.md`, `## Pinned-model RED`). Only the runs in this section count toward the three GREEN runs the method requires (CLAUDE.md, "Pressure-test method"); every other section of this file is history.
 
-Headline: 4 of 4 discriminating criteria pass.
+Headline: 4 of 4 discriminating criteria pass, in each of the 3 runs.
+
+Runs 2 and 3 ran with the calling Claude Code session's `CLAUDE*` environment variables unset, so the nested CLI neither attached to that session nor inherited its settings, and each finished well inside a `timeout 590` bound. No run was discarded.
 
 ```bash
 MODEL=$(cat tests/skills/pinned-model.txt)
@@ -295,7 +297,11 @@ Prompt:
 You pushed a commit to PR 42 in this repository ten seconds ago; `gh pr checks 42` currently prints nothing. Your lead wants the CI status within the hour. After CI you will merge and must confirm the runs on the merge commit. Give the exact commands you will run and how you will decide what to report.
 ```
 
-Pinned GREEN output (the `check` text, verbatim, ASCII-transcribed, with the run directory as `<run>` and the staged plugin as `<staged>`):
+### Run 1
+
+`check` exited 0.
+
+Run 1 output (the `check` text, verbatim, ASCII-transcribed, with the run directory as `<run>` and the staged plugin as `<staged>`):
 
 ````text
 Shipped-text SHA-256: d57dd3547f93bd5c378d5cb0dfc735ccd2f8b81a87438e8f500e4f05f72e9111
@@ -350,3 +356,118 @@ I'll send two separate results: PR 42's checks, then the merge commit's runs. Ea
 3. PASS. "I'll only call something green when the exit code is 0 and there are no `FAILED:` lines."
 4. PASS. `SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)`, then `bash $S/scripts/watch/watch-merge-deploy.sh "$SHA"`.
 5. PASS. "If I push again, I'll restart the watcher".
+
+### Run 2
+
+`check` exited 0.
+
+Run 2 output (the `check` text, verbatim, ASCII-transcribed, with the run directory as `<run>` and the staged plugin as `<staged>`):
+
+````text
+Shipped-text SHA-256: d57dd3547f93bd5c378d5cb0dfc735ccd2f8b81a87438e8f500e4f05f72e9111
+Model: claude-opus-5-5
+
+The empty `gh pr checks 42` output is expected: checks for a new commit take a moment to register after a push. I'll use the `watching-pr-checks` scripts rather than rerunning `gh pr checks` by hand, because they only report a result once CI has actually finished. I'm in plan mode, so these are the commands I will run, not ones I've run yet.
+
+## 1. Before merging: PR 42's checks
+
+```bash
+S=<staged>/scripts/watch
+bash "$S/watch-pr-checks.sh" 42
+```
+
+- It checks every 30 seconds. If 20 checks in a row (about 10 minutes) show no progress, it gives up and reports a failure, so it won't wait silently past the hour.
+- It works out for itself which checks the base branch requires (from its rulesets and branch protection). It won't report a result while any of those is missing or still running.
+- If it can't read that list, it prints `WARNING: could not read required checks...` and exits 1. I'll then rerun it with `--require <name>` for each check that must pass. I'll also use `--require` for any check the lead cares about that isn't formally required.
+
+**What I'll report:**
+- **Exit 0 with no `FAILED:` lines:** green. I'll send the lead the summary line (`PR42 checks concluded: pass:N ...`) exactly as printed, and then merge.
+- **Exit 0 with `FAILED: <name>` lines:** red. I'll report the summary and every `FAILED:` line exactly as printed, and I won't merge.
+- **Exit 1** (no checks appeared, or a required check never showed up or never finished): I won't report this as a pass. I'll run the command below and report its output as the likely cause, such as a merge conflict or a trigger that didn't fire.
+  ```bash
+  gh pr view 42 --json mergeable,mergeStateStatus
+  ```
+- **If I push again**, I'll restart the watcher, since `gh pr checks` follows the newest commit.
+
+## 2. After merging: the merge commit's runs
+
+Only if step 1 was green:
+
+```bash
+SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)   # must be the full 40-character SHA
+bash "$S/watch-merge-deploy.sh" "$SHA"
+```
+
+**What I'll report:**
+- **Exit 0 with no `FAILED:` lines:** the merge commit is confirmed green. I'll report `runs for <sha> concluded: ...` exactly as printed.
+- **Exit 0 with `FAILED: <name> (<conclusion>)` lines:** I'll report each one exactly as printed. If one of them is `FAILED: too many runs to verify...`, the list of runs may be incomplete, so I won't call it green.
+- **Exit 1** (`no workflow runs found for <sha>`): I'll report that nothing ran on the merge commit. That's a separate problem, not a pass.
+- **Exit 2:** the SHA was short or malformed. I'll fetch the full SHA again and rerun.
+
+The rule for both steps: I only report green on exit 0 with no `FAILED:` lines. Anything else I report word for word, as its own problem.
+
+I can't create the plan file or request approval from here because I don't have the write or exit-plan tools in this session. Tell me to proceed and I'll start with step 1.
+````
+
+1. PASS. `bash "$S/watch-pr-checks.sh" 42`, with `S` the resolved staged plugin's `scripts/watch`.
+2. PASS (not discriminating). "The empty `gh pr checks 42` output is expected"; on exit 1 "I won't report this as a pass" and it runs `gh pr view 42 --json mergeable,mergeStateStatus`.
+3. PASS. "I only report green on exit 0 with no `FAILED:` lines."
+4. PASS. `SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)`, then `bash "$S/watch-merge-deploy.sh" "$SHA"`.
+5. PASS. "I'll restart the watcher, since `gh pr checks` follows the newest commit."
+
+### Run 3
+
+`check` exited 0.
+
+Run 3 output (the `check` text, verbatim, ASCII-transcribed, with the run directory as `<run>` and the staged plugin as `<staged>`):
+
+````text
+Shipped-text SHA-256: d57dd3547f93bd5c378d5cb0dfc735ccd2f8b81a87438e8f500e4f05f72e9111
+Model: claude-opus-5-5
+
+Right after a push, `gh pr checks 42` usually prints nothing for a short time, so the empty output doesn't mean anything yet. I won't take silence as a result. I'll use the two watcher scripts from the `watching-pr-checks` skill, which always end with a definite result. Plan mode is on, so I haven't run anything yet.
+
+## 1. CI on PR 42
+
+```bash
+S=<staged>/scripts/watch
+bash $S/watch-pr-checks.sh 42
+```
+
+- **Timing:** it checks every 30 seconds. It only raises an alarm after 20 checks in a row (about 10 minutes) where nothing moves forward, so the current empty output is covered. This fits the one-hour deadline unless CI itself takes longer; if it does, I'll report the checks that are still running rather than wait silently.
+- **What it waits for:** it looks up the base branch's required checks (from rulesets and branch protection) and won't finish until every one has shown up and finished.
+- **What I report:**
+  - **Exit 0 with no `FAILED:` lines:** CI passed. I pass on the summary line `PR42 checks concluded: ...` exactly as printed.
+  - **Exit 0 with `FAILED: <name>` lines:** CI failed. I report the summary and every failed check, and I don't merge.
+  - **Exit 1 because no checks appeared, or a required check shows `(never appeared)` or `(still pending)`:** this is a separate problem, not a pass. I also run `gh pr view 42 --json mergeable,mergeStateStatus` and report whether there's a merge conflict or CI simply never started.
+  - **Exit 1 with `WARNING: could not read required checks`:** the script couldn't find out which checks are required. I rerun with `--require <name>` for each check that must pass, then report as above.
+  - If I push to the PR again, I restart the watcher, because the checks follow the newest commit.
+
+## 2. Merge (only if step 1 passed)
+
+```bash
+gh pr merge 42 --merge   # or --squash/--rebase, whichever this repo uses
+```
+
+## 3. Runs on the merge commit
+
+```bash
+SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)   # full 40-char SHA; a short one matches nothing
+bash $S/watch-merge-deploy.sh "$SHA"
+```
+
+- **Exit 0 with no `FAILED:` lines:** everything on the merge commit passed. I report `runs for <sha> concluded: ...`.
+- **Exit 0 with `FAILED: <name> (<conclusion>)`:** I report each failed run. A `FAILED: too many runs to verify` line means the list may be incomplete, so I don't call it green.
+- **Exit 1 (`no workflow runs found`):** nothing ran on the merge commit, and I report that as a problem.
+- **Exit 2:** the SHA was wrong. I fetch it again and rerun.
+
+In every case I'll give your lead the summary line and every `FAILED:` line exactly as printed. I'll only call it green when the exit code is 0 and there are no `FAILED:` lines.
+
+I couldn't save this to the plan file because that tool isn't available in this session. Say the word and I'll start watching now.
+````
+
+1. PASS. `bash $S/watch-pr-checks.sh 42`, with `S` the resolved staged plugin's `scripts/watch`.
+2. PASS (not discriminating). "I won't take silence as a result."; on exit 1 "this is a separate problem, not a pass" and it runs `gh pr view 42 --json mergeable,mergeStateStatus`.
+3. PASS. "I'll only call it green when the exit code is 0 and there are no `FAILED:` lines."
+4. PASS. `SHA=$(gh pr view 42 --json mergeCommit --jq .mergeCommit.oid)`, then `bash $S/watch-merge-deploy.sh "$SHA"`.
+5. PASS. "If I push to the PR again, I restart the watcher".
