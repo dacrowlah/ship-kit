@@ -778,8 +778,37 @@ test("the real template at 0.2.0 omits the three 0.3.0 lines and keeps the rest,
   assert.equal(block.includes("/ship-kit:develop"), false);
   assert.equal(block.includes("preflight"), false);
   assert.equal(block.includes("core.hooksPath"), false);
-  const kept = template.split("\n").filter((line) => line !== "" && !line.includes("[since 0.3.0] "));
+  const kept = template
+    .split("\n")
+    .filter((line) => line !== "" && !line.includes("[since 0.3.0] "))
+    .map((line) => line.replace("- [since 0.2.0] ", "- "));
   assert.deepEqual(block.split("\n").filter((line) => line !== ""), kept);
+});
+
+test("the real template's code-review line is marked 0.2.0: dropped at 0.1.0, kept unmarked from 0.2.0", () => {
+  const template = readTemplate(REPO, BLOCK_TEMPLATE);
+  const marked = template.split("\n").filter((line) => line.includes("/ship-kit:converging-code-reviews"));
+  assert.equal(marked.length, 1);
+  assert.ok(marked[0].startsWith("- [since 0.2.0] Before any code review (your own changes, an uncommitted diff, a branch, or a pull request"));
+  assert.ok(marked[0].endsWith("in a project skill, `.claude/skills/<name>/SKILL.md`."));
+  const line = marked[0].replace("- [since 0.2.0] ", "- ");
+  assert.equal(claudeMdBlock(template, "0.1.0").includes("converging-code-reviews"), false);
+  for (const version of ["0.2.0-rc.1", "0.2.0", "0.3.0", "1.0.0"]) {
+    assert.ok(claudeMdBlock(template, version).split("\n").includes(line), version);
+  }
+});
+
+test("the real template's dual-review line is marked 0.2.0: dropped at 0.1.0, kept unmarked from 0.2.0", () => {
+  const template = readTemplate(REPO, BLOCK_TEMPLATE);
+  const marked = template.split("\n").filter((line) => line.includes("/ship-kit:running-dual-code-reviews"));
+  assert.deepEqual(marked, [
+    "- [since 0.2.0] When you run a code review, local or on a pull request, run it with `/ship-kit:running-dual-code-reviews`. Neither review line applies to `/ship-kit:ship`'s own loop or the CI review seats: their convergence is the seats' aggregate, and a seat FAIL is part of the bar there.",
+  ]);
+  const line = "- When you run a code review, local or on a pull request, run it with `/ship-kit:running-dual-code-reviews`. Neither review line applies to `/ship-kit:ship`'s own loop or the CI review seats: their convergence is the seats' aggregate, and a seat FAIL is part of the bar there.";
+  assert.equal(claudeMdBlock(template, "0.1.0").includes("running-dual-code-reviews"), false);
+  for (const version of ["0.2.0-rc.1", "0.2.0", "0.3.0", "1.0.0"]) {
+    assert.ok(claudeMdBlock(template, version).split("\n").includes(line), version);
+  }
 });
 
 test("the folder-trust note is unmarked, so every version renders it", () => {
@@ -787,6 +816,15 @@ test("the folder-trust note is unmarked, so every version renders it", () => {
   const note = template.split("\n").find((line) => line.includes("trust this folder"));
   assert.ok(note && !note.includes("[since"));
   for (const version of ["0.1.0", "0.2.0", "0.3.0", "1.0.0"]) assert.ok(claudeMdBlock(template, version).includes(note), version);
+});
+
+test("the review-findings line is unmarked and asks only blocking findings to be fixed in the same pull request", () => {
+  const template = readTemplate(REPO, BLOCK_TEMPLATE);
+  const lines = template.split("\n").filter((line) => line.includes("review findings"));
+  assert.deepEqual(lines, [
+    "- Fix blocking review findings in the same pull request that raised them; list the rest once as follow-ups, which the owner fixes or defers.",
+  ]);
+  for (const version of ["0.1.0", "0.2.0", "0.3.0", "1.0.0"]) assert.ok(claudeMdBlock(template, version).split("\n").includes(lines[0]), version);
 });
 
 test("the real template at 0.3.0 keeps all three lines with their markers removed", () => {

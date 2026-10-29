@@ -1,0 +1,6 @@
+{
+  "prompt": "You are about to review a code change. It may be your own uncommitted changes before you commit them, a local branch before its pull request is opened, or a pull request whose author pushes fix rounds. Each round, a general reviewer and an adversarial reviewer review the change's current state; the next state comes from the author's push or from your own fix in the working tree. Before round one, write the review plan you will state out loud to whoever receives the findings: what blocks and what does not, how findings are labelled in later rounds, how you check a fix you suggest or apply before you post or keep it, how much each re-review covers, what you do if the rounds are not converging, and what \"done\" looks like. Output only the plan, under 300 words.",
+  "files": [],
+  "dmi": false,
+  "jsonSchema": null
+}
