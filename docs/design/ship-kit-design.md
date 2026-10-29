@@ -163,6 +163,7 @@ merge is a separate opt-in (`agents.adminMerge`, 16.4).
 | `skills/proving-tests-can-fail/SKILL.md` | model | no | 1 |
 | `skills/watching-pr-checks/SKILL.md` | model | no | 1 |
 | `skills/mining-defect-shapes/SKILL.md` + `hunt-list-format.md` | model | no | 1 |
+| `skills/converging-code-review-rounds/SKILL.md` | model | no | 2 |
 | `skills/reviewing-for-correctness/SKILL.md` | seat prompt | yes | 2 |
 | `skills/hunting-defect-shapes/SKILL.md` | seat prompt | yes | 2 |
 | `skills/promoting-shadow-checks/SKILL.md` | model | no | 2 |
@@ -1767,6 +1768,22 @@ rationalization table plus red flags (CLAUDE.md, Skills).
 
 11.1's three outcomes; fix in the same PR; a justification is a checkable
 claim; rebut with a test rather than argument.
+
+### 17.5 `converging-code-review-rounds`
+
+Brings a code pull request's review rounds to convergence, for the
+reviewing side that re-reviews an author's fix rounds with a general and
+an adversarial reviewer. It owns: the blocking bar stated before round one
+and what "realistic input" means for it; the regression or older label on
+every finding and which of each blocks in later rounds; one round carrying
+every known finding, with re-reviews scaled to the fix's diff; running a
+suggested fix against both reviewers' probe tables before posting it;
+owning regressions the reviewing side's own suggestions caused; raising a
+blocking count that is not shrinking with the owner; and "done" as nothing
+meeting the bar, with approval and merge left to whoever owns them.
+Output-shaping skill: a positive recipe, no rationalization table (21.5).
+It points at `reviewing-design-documents`' pattern method for stalled
+rounds.
 
 ---
 

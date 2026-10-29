@@ -1,0 +1,6 @@
+{
+  "prompt": "You are the reviewing side on a code pull request: each round, a general reviewer and an adversarial reviewer review the author's latest commit, and the author pushes fix rounds that you re-review until the pull request can merge. Before round one, write the review plan you will state out loud to the author and the owner: what blocks the merge and what does not, how findings are labelled in later rounds, how you check a fix you suggest before you post it, how much each re-review covers, what you do if the rounds are not converging, and what \"done\" looks like. Output only the plan, under 300 words.",
+  "files": [],
+  "dmi": false,
+  "jsonSchema": null
+}
