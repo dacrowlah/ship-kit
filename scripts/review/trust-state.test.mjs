@@ -11,9 +11,16 @@ import {
 } from "./trust-state.mjs";
 
 const REPO = "Owner/Repo";
+const REPO_ID = 4242;
 const DEFAULT = "main";
 const HEAD = "a".repeat(40);
 const CREATED = "2026-01-01T00:00:00Z";
+const PR = 7;
+const API = "https://api.github.com";
+
+function issueUrl(number = PR, slug = "owner/repo") {
+  return `${API}/repos/${slug}/issues/${number}`;
+}
 
 function marker(overrides = {}) {
   return encodeStateMarker({
@@ -29,7 +36,20 @@ function comment(id, line, overrides = {}) {
     created_at: CREATED,
     updated_at: CREATED,
     user: { login: STATE_AUTHOR, type: "Bot" },
+    issue_url: issueUrl(),
     ...overrides,
+  };
+}
+
+/** An entry of a workflow run's `pull_requests`, as the single-run GET returns it. */
+function prEntry(number = PR, { baseRef = DEFAULT, baseRepoId = REPO_ID } = {}) {
+  const repo = (id) => ({ id, name: "repo", url: `${API}/repos/owner/repo` });
+  return {
+    id: 900000 + number,
+    number,
+    url: `${API}/repos/owner/repo/pulls/${number}`,
+    head: { ref: "feature", sha: HEAD, repo: repo(REPO_ID) },
+    base: { ref: baseRef, sha: "d".repeat(40), repo: repo(baseRepoId) },
   };
 }
 
@@ -38,7 +58,9 @@ function run(runId, kind = "general", overrides = {}) {
     id: runId,
     event: "pull_request_target",
     path: `.github/workflows/ship-kit-${kind}.yml`,
-    repository: { full_name: "owner/repo" },
+    head_sha: HEAD,
+    pull_requests: [prEntry()],
+    repository: { id: REPO_ID, full_name: "owner/repo" },
     ...overrides,
   };
 }
@@ -92,7 +114,7 @@ function genuine(id, runId, kind = "general", extra = {}) {
   return {
     comment: comment(id, line),
     line,
-    run: run(runId, kind),
+    run: run(runId, kind, { head_sha: extra.head ?? HEAD }),
     artifacts: [artifact("ship-kit-state-1")],
     files: { [`${runId}/ship-kit-state-1`]: payload(id, line) },
   };
@@ -349,8 +371,174 @@ test("a run from a repository whose name only starts with this one's is untruste
 
 test("the repository comparison ignores case", () => {
   const g = genuine(101, 500);
-  const result = single(g, { run: run(500, "general", { repository: { full_name: "OWNER/REPO" } }) }).trust(g.comment);
+  const result = single(g, { run: run(500, "general", { repository: { id: REPO_ID, full_name: "OWNER/REPO" } }) }).trust(g.comment);
   assert.equal(result.trusted, true, result.reason);
+});
+
+// makeTrustState: binding to this pull request into the default branch ---
+
+/** Asserts `result` is untrusted for `reason` and that no artifact was read. */
+function refusedBeforeArtifacts(w, result, reason) {
+  assert.equal(result.trusted, false);
+  assert.match(result.reason, reason);
+  assert.equal(w.calls.listKey.length, 0);
+  assert.equal(w.calls.download.length, 0);
+}
+
+test("a genuine run of this pull request into the default branch, at the state's head, is trusted", () => {
+  const g = genuine(101, 500);
+  assert.deepEqual(g.run.pull_requests.map((pr) => [pr.number, pr.base.ref]), [[PR, DEFAULT]]);
+  const result = single(g).trust(g.comment);
+  assert.equal(result.trusted, true, result.reason);
+});
+
+test("a forged run for a pull request into another base (a writer's own branch) is untrusted", () => {
+  const g = genuine(101, 500);
+  for (const baseRef of ["evil", "main2", "MAIN", "", null]) {
+    const { w, trust } = single(g, { run: run(500, "general", { pull_requests: [prEntry(PR, { baseRef })] }) });
+    refusedBeforeArtifacts(w, trust(g.comment), /default branch/);
+  }
+});
+
+test("a run listing a different pull request is untrusted", () => {
+  const g = genuine(101, 500);
+  for (const prs of [[prEntry(8)], [prEntry(8, { baseRef: "evil" })]]) {
+    const { w, trust } = single(g, { run: run(500, "general", { pull_requests: prs }) });
+    refusedBeforeArtifacts(w, trust(g.comment), /another pull request/);
+  }
+});
+
+test("a run listing no pull request (a fork's run, or one whose PR was merged or closed) is untrusted", () => {
+  const g = genuine(101, 500);
+  for (const prs of [[], null, undefined, "x", { 0: prEntry() }]) {
+    const { w, trust } = single(g, { run: run(500, "general", { pull_requests: prs }) });
+    refusedBeforeArtifacts(w, trust(g.comment), /not exactly the one/);
+  }
+});
+
+test("a run listing this pull request plus another is untrusted, in either order", () => {
+  const g = genuine(101, 500);
+  for (const prs of [[prEntry(PR), prEntry(8)], [prEntry(8), prEntry(PR)], [prEntry(PR), prEntry(PR)]]) {
+    const { w, trust } = single(g, { run: run(500, "general", { pull_requests: prs }) });
+    refusedBeforeArtifacts(w, trust(g.comment), /pull request/);
+  }
+  const { w, trust } = single(g, { run: run(500, "general", { pull_requests: [prEntry(PR), prEntry(8)] }) });
+  refusedBeforeArtifacts(w, trust(g.comment), /lists 2 pull requests/);
+});
+
+test("a run whose head SHA is not the state's head is untrusted", () => {
+  const g = genuine(101, 500);
+  for (const head_sha of ["b".repeat(40), HEAD.toUpperCase(), `${HEAD} `, "", null, undefined]) {
+    const { w, trust } = single(g, { run: run(500, "general", { head_sha }) });
+    refusedBeforeArtifacts(w, trust(g.comment), /head/);
+  }
+});
+
+test("a state at another head of a genuine run is untrusted even when its artifact matches", () => {
+  const line = marker({ runId: 500, head: "b".repeat(40) });
+  const c = comment(101, line);
+  const w = world({
+    runs: { 500: run(500) },
+    artifacts: { 500: [artifact("ship-kit-state-1")] },
+    files: { "500/ship-kit-state-1": payload(101, line) },
+  });
+  refusedBeforeArtifacts(w, trustWith(w)(c), /head/);
+});
+
+test("a listed pull request with this number in another repository is untrusted", () => {
+  const g = genuine(101, 500);
+  const cases = [
+    { pull_requests: [prEntry(PR, { baseRepoId: 9999 })] },
+    { pull_requests: [prEntry(PR, { baseRepoId: String(REPO_ID) })] },
+    { pull_requests: [{ ...prEntry(PR), base: { ref: DEFAULT } }] },
+    { pull_requests: [{ ...prEntry(PR), base: { ref: DEFAULT, repo: null } }] },
+  ];
+  for (const overrides of cases) {
+    const { w, trust } = single(g, { run: run(500, "general", overrides) });
+    refusedBeforeArtifacts(w, trust(g.comment), /another repository/);
+  }
+});
+
+test("a run with no repository id is untrusted even when its pull request has none either", () => {
+  const g = genuine(101, 500);
+  const noId = { ...prEntry(PR), base: { ref: DEFAULT, repo: { name: "repo" } } };
+  for (const repository of [{ full_name: "owner/repo" }, { id: "4242", full_name: "owner/repo" }, { id: 0, full_name: "owner/repo" }]) {
+    const prs = repository.id === undefined ? [noId] : [prEntry(PR, { baseRepoId: repository.id })];
+    const { w, trust } = single(g, { run: run(500, "general", { repository, pull_requests: prs }) });
+    refusedBeforeArtifacts(w, trust(g.comment), /another repository/);
+  }
+});
+
+test("a listed pull request that is not an object, has no base, or gives its number as a string is untrusted", () => {
+  const g = genuine(101, 500);
+  const cases = [[null], ["7"], [7], [{ ...prEntry(PR), number: "7" }], [{ ...prEntry(PR), base: null }], [{ ...prEntry(PR), base: "main" }]];
+  for (const prs of cases) {
+    const { w, trust } = single(g, { run: run(500, "general", { pull_requests: prs }) });
+    const result = trust(g.comment);
+    assert.equal(result.trusted, false, JSON.stringify(prs));
+    assert.equal(w.calls.listKey.length, 0);
+  }
+});
+
+test("a marker a run for another pull request posted on this one is untrusted", () => {
+  // The run is genuine for PR 8 into the default branch and its artifact
+  // names this comment, but the comment is on PR 7.
+  const g = genuine(101, 500);
+  const { w, trust } = single(g, { run: run(500, "general", { pull_requests: [prEntry(8)] }) });
+  refusedBeforeArtifacts(w, trust(g.comment), /another pull request than #7/);
+  const onEight = { ...g.comment, issue_url: issueUrl(8) };
+  const other = single(g, { run: run(500, "general", { pull_requests: [prEntry(8)] }) });
+  assert.equal(other.trust(onEight).trusted, true, "the same run is trusted on the pull request it lists");
+});
+
+test("the pull request comes from the comment's issue_url, which must name this repository", () => {
+  const g = genuine(101, 500);
+  const refused = [
+    undefined, null, 7, "",
+    issueUrl(PR, "other/repo"),
+    issueUrl(PR, "owner/repo-evil"),
+    issueUrl(PR, "xowner/repo"),
+    `${API}/repos/owner/repo/pulls/${PR}`,
+    `${API}/repos/owner/repo/issues/${PR}/comments`,
+    `${API}/repos/owner/repo/issues/${PR}?x=1`,
+    `${API}/repos/owner/repo/issues/0${PR}`,
+    `${API}/repos/owner/repo/issues/0`,
+    `${API}/repos/owner/repo/issues/-7`,
+    `${API}/repos/owner/repo/issues/7.0`,
+    `${API}/repos/owner/repo/issues/12345678901`,
+    `${API}/repos/owner/x/repo/issues/${PR}`,
+    `/repos/owner/repo/issues/${PR}`,
+    `http://api.github.com/repos/owner/repo/issues/${PR}`,
+    `${API}/x/repos/owner/repo/issues/${PR}`,
+    `${API}/repos/owner/repo/issues/${PR}\n`,
+  ];
+  for (const issue_url of refused) {
+    const { w, trust } = single(g);
+    const result = trust({ ...g.comment, issue_url });
+    assert.equal(result.trusted, false, String(issue_url));
+    assert.match(result.reason, /issue_url|another repository/, String(issue_url));
+    assert.equal(w.calls.get.length, 0, "no API call for a comment whose pull request is unknown");
+  }
+});
+
+test("the issue_url's repository compares case-insensitively and any API host is accepted", () => {
+  const g = genuine(101, 500);
+  for (const issue_url of [issueUrl(PR, "OWNER/Repo"), `https://ghe.example.com/api/v3/repos/owner/repo/issues/${PR}`]) {
+    const result = single(g).trust({ ...g.comment, issue_url });
+    assert.equal(result.trusted, true, `${issue_url}: ${result.reason}`);
+  }
+});
+
+test("one cached run lookup still checks each comment's own pull request", () => {
+  const g = genuine(101, 500);
+  const w = world({ runs: { 500: g.run }, artifacts: { 500: g.artifacts }, files: g.files });
+  const trust = trustWith(w);
+  const cache = new Map();
+  assert.equal(trust(g.comment, cache).trusted, true);
+  const result = trust({ ...g.comment, issue_url: issueUrl(8) }, cache);
+  assert.equal(result.trusted, false);
+  assert.match(result.reason, /another pull request than #8/);
+  assert.equal(w.calls.get.length, 1);
 });
 
 test("no artifact is untrusted", () => {
@@ -511,7 +699,7 @@ test("a throwing non-Error value is untrusted with a reason", () => {
 
 test("a caller-supplied cache reuses one run's lookups across comments", () => {
   const a = genuine(101, 500);
-  const bLine = marker({ runId: 500, kind: "general", head: "c".repeat(40) });
+  const bLine = marker({ runId: 500, kind: "general", complete: false });
   const b = comment(102, bLine);
   const w = world({
     runs: { 500: a.run },
@@ -647,7 +835,7 @@ test("marker-shaped comments by other authors or edited ones do not use up the c
 
 test("collectTrustedStates caches run lookups per run id within one call", () => {
   const a = genuine(101, 500);
-  const bLine = marker({ runId: 500, head: "c".repeat(40) });
+  const bLine = marker({ runId: 500, complete: false });
   const b = comment(102, bLine);
   const w = world({
     runs: { 500: a.run },

@@ -11,6 +11,30 @@
 // comments can push real states past the 30-marker cap, and editing the
 // newest genuine comment untrusts it; both only widen the review, never
 // trust a forgery.
+//
+// A pull_request_target run of a PR into any branch other than the default
+// one runs that branch's copy of the caller and reports the same bare path,
+// so a writer can push an edited caller to a branch, open a PR into it, and
+// have that run grant itself write access, post a marker on any PR and
+// upload a matching artifact. So the run must also be bound to the PR the
+// comment is on: the single-run lookup's `pull_requests` lists exactly one
+// PR, with the number in the comment's `issue_url`, in this repository and
+// based on the default branch, and the run's `head_sha` equals the head the
+// state records. Consequences, fail closed:
+// - A fork PR's run lists no PR, so a fork PR never has a trusted prior
+//   state: every round is a full review and earns no promotion credit.
+// - GitHub fills `pull_requests` when it is read, from the open PRs whose
+//   head is the run's head branch; it is empty once the PR is merged or
+//   closed. States on a merged or closed PR are therefore never trusted.
+// - A genuine run whose head branch also heads another open PR lists both
+//   and is not trusted.
+// Residual risk: no run field records which branch's copy of the caller a
+// run executed, so the live association is the only tie. A writer who
+// opens a second PR from this PR's head branch into a branch holding an
+// edited caller, lets its run post here and then closes it, or who
+// retargets this PR from such a branch to the default branch after the run
+// posts, leaves a run that passes. Proof of the ref a run executed (an
+// OIDC token's claims) is planned for release 6.
 
 import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +50,8 @@ export const MAX_STATE_BYTES = 256 * 1024;
 
 const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 const PAYLOAD_KEYS = ["commentId", "marker"];
+/** A REST issue comment's `issue_url`: the API host, optionally /api/v3, then the issue. */
+const ISSUE_URL = /^https:\/\/[^/?#]+(?:\/api\/v3)?\/repos\/([^/]+)\/([^/]+)\/issues\/([1-9][0-9]{0,9})$/;
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -70,6 +96,20 @@ function precheck(comment) {
   return { ok: true, state: decoded.state, line };
 }
 
+/**
+ * The pull request a comment is on, from the `issue_url` the API gives
+ * every issue comment; it must name `slug`'s repository.
+ * @returns {{ok: true, number: number} | {ok: false, reason: string}}
+ */
+function pullRequestOf(comment, slug) {
+  const match = typeof comment.issue_url === "string" ? ISSUE_URL.exec(comment.issue_url) : null;
+  if (match === null) return { ok: false, reason: "comment's issue_url names no pull request" };
+  if (`${match[1]}/${match[2]}`.toLowerCase() !== slug.toLowerCase()) {
+    return { ok: false, reason: "comment is on another repository's pull request" };
+  }
+  return { ok: true, number: Number(match[3]) };
+}
+
 /** Evaluates `read` once per key in `cache`, remembering failures too. */
 function cached(cache, key, read) {
   if (!cache.has(key)) {
@@ -88,8 +128,9 @@ function cached(cache, key, read) {
  * @param {{gh: {get: Function, listKey: Function}, repo: string, defaultBranch: string,
  *   download: (runId: number, artifactName: string) => string}} deps
  * @returns {(comment: object, cache?: Map) => ({trusted: true, state: object} | {trusted: false, reason: string})}
- *   `cache` shares run lookups, artifact listings and downloads between
- *   calls; omitted, every call reads afresh
+ *   `comment` is a REST issue comment, whose `issue_url` names the pull
+ *   request it is on; `cache` shares run lookups, artifact listings and
+ *   downloads between calls; omitted, every call reads afresh
  */
 export function makeTrustState({ gh, repo, defaultBranch, download }) {
   const { owner, name, slug } = repoSlug(repo);
@@ -97,8 +138,11 @@ export function makeTrustState({ gh, repo, defaultBranch, download }) {
   if (!gh || typeof gh.get !== "function" || typeof gh.listKey !== "function") throw new TypeError("gh must provide get and listKey");
   if (typeof download !== "function") throw new TypeError("download must be a function");
 
-  /** @returns {unknown} the run's path, once its status, id, event and repository check out */
-  function runPath(runId) {
+  /**
+   * @returns {{path: unknown, headSha: unknown, pullRequests: unknown, repositoryId: unknown}}
+   *   the run's own record, once its status, id, event and repository check out
+   */
+  function readRun(runId) {
     const { status, json } = gh.get(api`repos/${owner}/${name}/actions/runs/${runId}`);
     if (status !== 200) throw new Error(`run lookup returned HTTP ${status}`);
     if (!isPlainObject(json)) throw new Error("run lookup returned no run object");
@@ -108,7 +152,27 @@ export function makeTrustState({ gh, repo, defaultBranch, download }) {
     if (typeof fullName !== "string" || fullName.toLowerCase() !== slug.toLowerCase()) {
       throw new Error("run belongs to another repository");
     }
-    return json.path;
+    return { path: json.path, headSha: json.head_sha, pullRequests: json.pull_requests, repositoryId: json.repository.id };
+  }
+
+  /**
+   * @returns {string | null} why the run is not bound to pull request
+   *   `number` of this repository into the default branch, or null
+   */
+  function unbound(run, number) {
+    const prs = run.pullRequests;
+    if (!Array.isArray(prs) || prs.length !== 1) {
+      return `run lists ${Array.isArray(prs) ? prs.length : "no"} pull requests, not exactly the one this comment is on`;
+    }
+    const [pr] = prs;
+    if (!isPlainObject(pr) || pr.number !== number) return `run is for another pull request than #${number}`;
+    const base = isPlainObject(pr.base) ? pr.base : {};
+    if (base.ref !== defaultBranch) return `run's pull request is based on ${JSON.stringify(base.ref)}, not the default branch`;
+    const baseRepoId = isPlainObject(base.repo) ? base.repo.id : undefined;
+    if (!Number.isSafeInteger(run.repositoryId) || run.repositoryId < 1 || baseRepoId !== run.repositoryId) {
+      return "run's pull request is in another repository";
+    }
+    return null;
   }
 
   function stateArtifacts(runId) {
@@ -141,9 +205,16 @@ export function makeTrustState({ gh, repo, defaultBranch, download }) {
       if (!pre.ok) return { trusted: false, reason: pre.reason };
       const { state, line } = pre;
       const { runId, kind } = state;
-      const path = cached(cache, `run:${runId}`, () => runPath(runId));
-      if (!callerPathMatches(path, kind, defaultBranch)) {
-        return { trusted: false, reason: `run path ${JSON.stringify(path)} is not the managed caller for ${kind}` };
+      const pr = pullRequestOf(comment, slug);
+      if (!pr.ok) return { trusted: false, reason: pr.reason };
+      const run = cached(cache, `run:${runId}`, () => readRun(runId));
+      if (!callerPathMatches(run.path, kind, defaultBranch)) {
+        return { trusted: false, reason: `run path ${JSON.stringify(run.path)} is not the managed caller for ${kind}` };
+      }
+      const problem = unbound(run, pr.number);
+      if (problem !== null) return { trusted: false, reason: problem };
+      if (run.headSha !== state.head) {
+        return { trusted: false, reason: `run head ${JSON.stringify(run.headSha)} is not the state's head ${state.head}` };
       }
       const names = cached(cache, `artifacts:${runId}`, () => stateArtifacts(runId));
       if (names.length === 0) return { trusted: false, reason: "run has no unexpired state artifact" };
